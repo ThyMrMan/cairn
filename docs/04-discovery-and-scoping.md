@@ -120,8 +120,10 @@ hosts_assets_on:
   - lh3.googleusercontent.com
   - "*.ggpht.com"
   - fonts.gstatic.com
+  - resources.blogblog.com           # theme CSS/JS bundles; affects appearance
+  - themes.googleusercontent.com     # skin background images (see the CSS-escape note above)
 hosts_off:
-  - www.blogger.com
+  - www.blogger.com                  # auth CSS and comment-iframe JS: no archival value
   - "*.google-analytics.com"
   - "*.doubleclick.net"
 reject_patterns:
@@ -135,6 +137,13 @@ notes: |
   Blogger serves every post twice (?m=1 mobile). Rejecting it halves the crawl
   with no content loss. /search is robots-disallowed but is where label pages
   live — enable the robots override if you want them.
+
+  The host lists come from a real capture's gap report, not from guesswork.
+  www.blogger.com is deliberately off: what a blog pulls from it is
+  dyn-css/authorization.css and comment_from_post_iframe.js, which style the
+  owner's admin bar and load a comment iframe that cannot work offline
+  anyway. resources.blogblog.com is on, because that is where the theme's
+  compiled CSS and JS live and their absence is visible.
 ```
 
 The `?m=1` reject is worth calling out during development: without it, a Blogger crawl is roughly double the size and every page is stored twice with different URLs.
