@@ -18,13 +18,24 @@ export function dateTime(iso: string | null | undefined): string {
   });
 }
 
+/**
+ * A human interval, in either direction.
+ *
+ * Future timestamps are real here — a cookie jar's earliest expiry is the
+ * whole point of showing one — and treating them as past produced
+ * "-30d ago" for something 30 days away.
+ */
 export function relative(iso: string | null | undefined): string {
   if (!iso) return "never";
   const diff = Date.now() - new Date(iso).getTime();
-  const mins = Math.round(diff / 60_000);
-  if (Math.abs(mins) < 1) return "just now";
-  if (Math.abs(mins) < 60) return `${mins}m ago`;
+  const past = diff >= 0;
+  const mins = Math.round(Math.abs(diff) / 60_000);
+  const phrase = (value: number, unit: string) =>
+    past ? `${value}${unit} ago` : `in ${value}${unit}`;
+
+  if (mins < 1) return past ? "just now" : "any moment";
+  if (mins < 60) return phrase(mins, "m");
   const hours = Math.round(mins / 60);
-  if (Math.abs(hours) < 24) return `${hours}h ago`;
-  return `${Math.round(hours / 24)}d ago`;
+  if (hours < 24) return phrase(hours, "h");
+  return phrase(Math.round(hours / 24), "d");
 }

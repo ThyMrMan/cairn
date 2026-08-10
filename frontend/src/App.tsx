@@ -6,9 +6,13 @@ import { Spinner } from "./components/ui";
 import { endpoints } from "./lib/api";
 import { useAuth } from "./lib/auth";
 import Dashboard from "./pages/Dashboard";
+import Jobs from "./pages/Jobs";
 import Login from "./pages/Login";
+import Profiles from "./pages/Profiles";
 import Settings from "./pages/Settings";
 import Setup from "./pages/Setup";
+import SiteDetail from "./pages/SiteDetail";
+import Sites from "./pages/Sites";
 
 export default function App() {
   const { user, loading, setupComplete } = useAuth();
@@ -40,6 +44,10 @@ export default function App() {
     <Routes>
       <Route element={<Layout />}>
         <Route index element={<Dashboard />} />
+        <Route path="sites" element={<Sites />} />
+        <Route path="sites/:id" element={<SiteDetail />} />
+        <Route path="profiles" element={<Profiles />} />
+        <Route path="jobs" element={<Jobs />} />
         <Route path="settings" element={<Settings />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>

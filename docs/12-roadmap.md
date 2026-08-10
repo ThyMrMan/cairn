@@ -47,21 +47,34 @@ Also worth doing: run `--warc-dedup` against a second capture and verify you get
 
 ---
 
-## M1 — Capture core
+## M1 — Capture core ✅ **complete**
 
 **Ships:** point it at a URL, get a WARC.
+
+> **Status.** Built and verified end to end: add a site in the UI, press Capture, watch URLs stream past in the live log, get a WARC whose payload is real page text — read back with `warcio`, not merely checked for existence. 203 tests pass on Linux with real wget; mypy strict and ruff clean.
+>
+> **The flagged risk is closed.** The asset-host translation works: a reject regex that blocks pages on an assets-only host still lets `--page-requisites` pull that host's images. Settled by running wget 1.25.0 against a two-host fixture, not by reading the manual.
+>
+> Six things the plan got wrong, corrected in place:
+>
+> - **`--domains` is a hard gate that `--page-requisites` does not bypass.** Leaving an asset host out of `--domains` drops its images entirely, so asset hosts must be listed *and* fenced by the regex. There is no regex-free formulation ([04](04-discovery-and-scoping.md#translation-to-wget)).
+> - **No regex over URLs can separate an extension-less image from an extension-less page.** The documented allowlist silently drops Blogger's proxied images. Hosts now carry an explicit `allow_extensionless` flag, defaulting off, with an `asset-audit` post-processor reporting referenced-but-missing assets so neither choice fails silently.
+> - **wget does not de-duplicate a URL passed in both `--input-file` and on the command line.** [05](05-capture-engines.md#command-construction) showed both; the first real capture crawled the entire fixture site twice, at double the time and size, with no error.
+> - **wget's `--warc-cdx` is written incrementally**, in lockstep with the log, so `url` events can stream with real status, MIME and digest rather than being reconciled after the crawl.
+> - **A finished job's SSE stream never closed.** It replayed history then blocked forever, holding a connection and a task open for every completed job anyone opened.
+> - **The app's own CSP blocked the app's own inline script** — the theme applied before first paint. A white flash for dark-mode users and a console violation, breaking nothing else, therefore invisible. The policy now carries a hash computed from the shipped file.
+>
+> **Still open from this milestone:** the Blogger interstitial has been exercised through the profile pipeline (parse, seal, materialize, coverage-check) but not yet against a live flagged blog end to end — that needs a real one, and is the first thing to do with M2.
 
 - Engine registry, manifest loading, JSON Schema validation
 - Job supervisor: queue, spawn, NDJSON parsing, event fan-out, cancellation, crash recovery
 - `wget-warc` engine, complete
 - Access profiles, `cookies` mode only: upload, parse, validate, coverage report, encrypted storage
 - Storage layer: site directories, capture directories, atomic writes, `site.yaml`, `manifest.json`
-- Post-processors: `checksum`, `stats`
+- Post-processors: `checksum`, `stats` (plus `manifest` and an advisory `asset-audit`)
 - UI: add site, capture button, live log via SSE, capture list, URL list with errors
 
 **Done when:** you archive a real Blogger site behind an interstitial, end to end, from the UI, and the WARC contains real content.
-
-**Highest-risk item:** the scope-to-wget regex translation, specifically the asset-host case ([04](04-discovery-and-scoping.md#translation-to-wget)). Build it against real sites early.
 
 ---
 

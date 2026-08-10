@@ -52,7 +52,11 @@ Read in order for a full picture; each is standalone if you're looking for one t
 
 ## Status
 
-**M0 (foundation & auth) is complete** — see the [roadmap](docs/12-roadmap.md). You can run the container, create an account, and sign in. Capture, discovery and replay arrive in M1–M3.
+**M0 (foundation & auth) and M1 (capture core) are complete** — see the [roadmap](docs/12-roadmap.md).
+
+You can run the container, create an account, add a site, upload a `cookies.txt` for a blog behind a content warning, and press **Capture** — then watch URLs stream past in a live log and end up with a WARC on disk, with checksums, a `manifest.json`, and the failures listed and greppable.
+
+What is not there yet: the domain picker (M2), browsing the archive in the UI (M3), and folders and tags (M4). Until discovery lands, a new site is scoped to its own host, which is the safe default rather than a placeholder.
 
 ## Running it
 
@@ -199,12 +203,16 @@ The checks CI runs:
 
 ```
 backend/cairn/      FastAPI app, services, models, migrations, CLI
+  engines/          the addon contract, and the built-in wget-warc engine
+  services/         scope, storage, jobs, profiles, post-processing
 frontend/           React + Vite SPA (builds into backend/cairn/static)
 docker/rootfs/      s6-overlay service definitions
 unraid/             Community Applications template
 tests/              pytest suite
 docs/               design documentation — read 00-decisions.md first
 ```
+
+The end-to-end capture tests need GNU wget and are skipped on Windows: Git for Windows ships a mingw32 build whose WARC temp files hit the 260-character path limit inside pytest's temp directories. Run them in the container or in CI.
 
 ## A note on responsible use
 

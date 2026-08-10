@@ -222,6 +222,7 @@ argv = [
     "--no-verbose",
     "--output-file",
     str(out / "crawl.log"),
+    # Seeds go here OR positionally, never both — see the warning below.
     "--input-file",
     str(job_dir / "seeds.txt"),
 ]
@@ -252,10 +253,13 @@ else:
 argv += ["--user-agent", ua]
 for k, v in auth.get("headers", {}).items():
     argv += ["--header", f"{k}: {v}"]
-argv += seeds
+
+# NOT `argv += seeds` when --input-file is already present.
 ```
 
 **Never build this as a shell string.** `subprocess` with an argv list and `shell=False`, always. URLs, hostnames, and regexes are user-controlled and go straight into this command.
+
+**Seeds go through exactly one channel.** An earlier version of this document passed `--input-file` *and* appended the seeds positionally. wget does not de-duplicate across the two: it queues the URL twice and crawls the entire site a second time, for double the duration and roughly double the WARC, with no warning and exit code 0. The first real end-to-end capture did exactly that — the tell was 11 URL records for 5 unique pages. Use the seed file when it exists, positional arguments otherwise.
 
 ### Flag notes worth knowing
 
@@ -290,7 +294,23 @@ https://example.blogspot.com/missing:
 2026-08-09 14:25:35 ERROR 404: Not Found.
 ```
 
-Parse into `url` events. Prefer wget's own CDX output (`--warc-cdx`, read incrementally) over log scraping where possible — it carries status, MIME, digest, and offset in a stable format, whereas the human-readable log format has drifted between versions.
+Prefer wget's own CDX output (`--warc-cdx`) over log scraping — it carries status, MIME, digest and offset in a stable format, whereas the human-readable log has drifted between versions.
+
+**The CDX can be read incrementally.** Confirmed on 1.25.0: wget appends one line per archived record as it goes, in lockstep with the log, rather than flushing at the end. So `url` events can stream with real metadata during the crawl instead of being reconciled afterwards. Its exact shape, which the parser is written against:
+
+```
+ CDX a b a m s k r M V g u
+http://example.com/i.html 20260810203702 http://example.com/i.html text/html 200 \
+  ZHZVNSD7CHQFFQFY74ZTUDD5DD3YBW77 - - 898 /out/part-00000.warc.gz <urn:uuid:98b0…>
+```
+
+Eleven fields, **space**-separated (not tab), `-` for absent values, in order: url, timestamp, url again, MIME, status, payload digest (base32 SHA-1), redirect target, meta, compressed offset, filename, record id. The same URL legitimately appears more than once — a redirect target that is also fetched directly — so the consumer must tolerate repeats.
+
+The two streams divide cleanly: the CDX has everything that became a record; the log has the failures that never did (connection refused, DNS, timeouts), which are invisible in the CDX and are exactly the ones worth showing a user.
+
+**With `--warc-max-size` set**, segments are `part-00000.warc.gz`, `part-00001.warc.gz`, … plus a `part-meta.warc.gz`, but there is still exactly one `part.cdx` covering all of them.
+
+**A failing wget writes nothing to stderr** when `--output-file` is in use — everything, including the fatal error, goes to that file. A failure therefore surfaces as a bare exit code unless the engine reads the tail of `crawl.log` into its `result` message. "Could not open temporary WARC manifest file" and "Invalid regular expression" both live only there.
 
 ---
 
@@ -310,19 +330,25 @@ runtime:
   command: ["python", "-m", "cairn.post.cdxj"]
 ```
 
-Built-in chain:
+Built-in chain (✅ = shipped):
 
-| Order | ID | Does | Required |
-|---:|---|---|:-:|
-| 10 | `cdxj-index` | Builds `index/site.cdxj` across all of the site's WARCs | ✓ |
-| 20 | `checksum` | SHA-256 every artifact, write into `manifest.json` | ✓ |
-| 30 | `stats` | Roll up counts and sizes onto the site row | ✓ |
-| 40 | `pywb-collection` | Regenerate pywb config, reload the collection | ✓ |
-| 50 | `symlink-tree` | Refresh `/data/by-tag` (debounced) | |
-| 60 | `text-extract` | Extract readable text into `derived/text/` for search (M8) | |
-| 70 | `screenshot` | Homepage thumbnail for the site card (needs browser) | |
-| 80 | `wacz-export` | Package as `.wacz` if the site opts in | |
-| 90 | `notify` | ntfy / Apprise / webhook on completion or failure | |
+| Order | ID | Does | Required | |
+|---:|---|---|:-:|:-:|
+| 10 | `cdxj-index` | Builds `index/site.cdxj` across all of the site's WARCs | ✓ | M3 |
+| 20 | `checksum` | SHA-256 every artifact, write into `manifest.json` | ✓ | ✅ |
+| 30 | `stats` | Roll up counts and sizes onto the site row | ✓ | ✅ |
+| 35 | `manifest` | Write `manifest.json` itself | ✓ | ✅ |
+| 40 | `pywb-collection` | Regenerate pywb config, reload the collection | ✓ | M3 |
+| 50 | `symlink-tree` | Refresh `/data/by-tag` (debounced) | | M4 |
+| 60 | `asset-audit` | Report referenced-but-uncaptured assets and lazy-load hints | | ✅ |
+| 60 | `text-extract` | Extract readable text into `derived/text/` for search (M8) | | M8 |
+| 70 | `screenshot` | Homepage thumbnail for the site card (needs browser) | | M8 |
+| 80 | `wacz-export` | Package as `.wacz` if the site opts in | | M8 |
+| 90 | `notify` | ntfy / Apprise / webhook on completion or failure | | M6 |
+
+**The shipped chain runs in-process, not as subprocesses.** The manifest, the ordering and the required/optional distinction are all real; the isolation is not, because the built-ins need none and a subprocess contract nobody has written a second implementation of is a contract that will turn out to be wrong. It becomes a real addon boundary in M7, alongside the engine SDK, for the same reason engines got the seam first ([D3](00-decisions.md#d3--wget-for-v1-behind-an-engine-interface-from-day-one)).
+
+`checksum` computes the hash itself rather than recording what the engine claimed — otherwise the weekly integrity job verifies the engine's memory instead of the archive. Artifact paths are resolved against the capture directory with symlinks followed, and anything escaping it is refused: engine output is data, not instruction.
 
 ---
 

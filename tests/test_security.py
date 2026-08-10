@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -40,6 +44,46 @@ def test_security_headers_present(client: TestClient) -> None:
 
 def test_api_responses_are_not_cacheable(authed: TestClient) -> None:
     assert authed.get("/api/auth/me").headers["Cache-Control"] == "no-store"
+
+
+def test_csp_allows_the_pages_own_inline_script(tmp_path: Path) -> None:
+    """A CSP that blocks your own script fails silently.
+
+    index.html carries one inline script that applies the stored theme before
+    first paint. Under a bare `script-src 'self'` the browser refuses to run
+    it: no error the user sees, just a white flash for dark-mode users and a
+    violation in the console. The policy must carry its hash.
+    """
+    from cairn.api.middleware import inline_script_hashes
+
+    index = tmp_path / "index.html"
+    index.write_text(
+        "<html><head><script>document.title='x'</script>"
+        '<script type="module" src="/assets/app.js"></script></head></html>',
+        encoding="utf-8",
+    )
+    hashes = inline_script_hashes(index)
+
+    # The inline one is hashed; the external one is covered by 'self'.
+    assert len(hashes) == 1
+    assert hashes[0].startswith("'sha256-")
+
+    expected = base64.b64encode(hashlib.sha256(b"document.title='x'").digest()).decode()
+    assert hashes[0] == f"'sha256-{expected}'"
+
+
+def test_csp_hash_matches_the_shipped_index_html() -> None:
+    """The hash is computed from the file, so editing the script cannot leave
+    the policy pointing at the previous version."""
+    from cairn.api.middleware import inline_script_hashes
+    from cairn.app import STATIC_DIR
+
+    index = STATIC_DIR / "index.html"
+    if not index.is_file():
+        pytest.skip("frontend has not been built")
+
+    hashes = inline_script_hashes(index)
+    assert hashes, "the built page has an inline script but no hash was produced"
 
 
 def test_csp_frame_src_names_the_replay_origin(tmp_path: object) -> None:

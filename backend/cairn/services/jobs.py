@@ -604,15 +604,24 @@ class _Collector:
             self.url_count += 1
             if event.revisit:
                 self.revisit_count += 1
-            if event.error or (event.status is not None and event.status >= 400):
+            failed = bool(event.error) or (event.status is not None and event.status >= 400)
+            if failed:
                 self.error_count += 1
-                # Only failures stream individually; a live feed of every
-                # success on a 50k-page crawl is noise nobody reads.
-                self._bus.publish(
-                    job_id,
-                    EV_URL,
-                    {"url": event.url, "status": event.status, "error": event.error},
-                )
+            # Every URL streams, not only the failures. A progress counter
+            # ticking beside an empty log box reads as a stall, and watching
+            # the crawl move is the entire point of the live view. Volume is
+            # bounded at both ends: politeness limits the rate, the subscriber
+            # queue is capped, and the client keeps only the last 2000 lines.
+            self._bus.publish(
+                job_id,
+                EV_URL,
+                {
+                    "url": event.url,
+                    "status": event.status,
+                    "error": event.error,
+                    "mime": event.mime,
+                },
+            )
             self._pending.append(
                 {
                     "capture_id": self._prepared.capture_id,

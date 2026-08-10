@@ -131,7 +131,11 @@ event: status
 data: {"job_id":512,"status":"ok","stats":{"urls":1847,"errors":12}}
 ```
 
-Heartbeat comment every 15 s so proxies don't idle out the connection. Client reconnects with `Last-Event-ID`; the server replays from a bounded in-memory ring buffer (last ~500 events per job) — a reconnecting log viewer that silently drops the events it missed is worse than one that says it did.
+Heartbeat comment every 15 s so proxies don't idle out the connection. Client reconnects with `Last-Event-ID`; the server replays from a bounded in-memory ring buffer (last ~500 events per job) — a reconnecting log viewer that silently drops the events it missed is worse than one that says it did. When the gap is larger than the buffer the client gets a `lagged` event rather than a quietly incomplete log.
+
+**The per-job stream ends when the job does.** It closes after the terminal `status` event, and a request for a job that already finished replays its history and then closes rather than waiting. Getting this wrong is easy and invisible: the first implementation replayed and then blocked forever, holding a connection and a server task open for every completed job anyone opened, with the client given no way to know nothing more was coming.
+
+A stalled reader must never apply backpressure to a crawl, so each subscriber has a bounded queue and is marked lagged rather than waited on. `/api/events` has no terminal condition and stays open until the client leaves.
 
 ---
 

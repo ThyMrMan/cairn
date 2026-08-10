@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import { Link } from "react-router-dom";
 
 import { EmptyState, Logo, Stat } from "../components/ui";
 import { endpoints } from "../lib/api";
@@ -9,6 +10,19 @@ export default function Dashboard() {
   const { user } = useAuth();
   const health = useQuery({ queryKey: ["health"], queryFn: endpoints.health });
   const storage = useQuery({ queryKey: ["storage"], queryFn: endpoints.storage });
+  const sites = useQuery({
+    queryKey: ["sites", ""],
+    queryFn: () => endpoints.sites({ sort: "-last_capture_at" }),
+  });
+  const activeJobs = useQuery({
+    queryKey: ["jobs", "active"],
+    queryFn: () => endpoints.jobs({ active: "true", per_page: 1 }),
+    refetchInterval: 5000,
+  });
+
+  // /api/storage reports the whole data directory; the per-site rollup is the
+  // honest number for "how much of that is archives".
+  const archiveBytes = (sites.data?.items ?? []).reduce((sum, s) => sum + s.size_bytes, 0);
 
   return (
     <div className="space-y-8">
@@ -21,9 +35,17 @@ export default function Dashboard() {
       </header>
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <Stat label="Sites" value="0" sub="none archived yet" />
-        <Stat label="Captures" value="0" />
-        <Stat label="Archive size" value={bytes(storage.data?.archives_bytes ?? 0)} />
+        <Stat
+          label="Sites"
+          value={String(sites.data?.total ?? 0)}
+          sub={sites.data?.total ? undefined : "none archived yet"}
+        />
+        <Stat
+          label="Active jobs"
+          value={String(activeJobs.data?.total ?? 0)}
+          sub={activeJobs.data?.total ? "running now" : undefined}
+        />
+        <Stat label="Archive size" value={bytes(archiveBytes)} />
         <Stat
           label="Free space"
           value={bytes(storage.data?.free_bytes)}
@@ -31,18 +53,46 @@ export default function Dashboard() {
         />
       </div>
 
-      <EmptyState
-        icon={<Logo className="h-10 w-10" />}
-        title="No sites yet"
-        action={
-          <button className="btn-primary" disabled title="Arrives in M1">
-            Add a site
-          </button>
-        }
-      >
-        Adding sites arrives in M1, together with discovery and the wget capture engine.
-        The foundation — accounts, sessions, database and packaging — is in place.
-      </EmptyState>
+      {sites.data && sites.data.items.length > 0 ? (
+        <section className="space-y-3">
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-medium">Recent sites</h2>
+            <Link to="/sites" className="text-sm text-muted hover:underline">
+              All sites →
+            </Link>
+          </div>
+          <div className="grid gap-2">
+            {sites.data.items.slice(0, 5).map((site) => (
+              <Link
+                key={site.id}
+                to={`/sites/${site.id}`}
+                className="card flex items-center justify-between gap-4 p-3.5 hover:bg-raised"
+              >
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium">{site.title}</p>
+                  <p className="truncate text-xs text-muted">{site.primary_host}</p>
+                </div>
+                <span className="shrink-0 text-xs text-muted">
+                  {site.last_capture_at ? relative(site.last_capture_at) : "never captured"}
+                </span>
+              </Link>
+            ))}
+          </div>
+        </section>
+      ) : (
+        <EmptyState
+          icon={<Logo className="h-10 w-10" />}
+          title="No sites yet"
+          action={
+            <Link to="/sites" className="btn-primary">
+              Add a site
+            </Link>
+          }
+        >
+          Point Cairn at a URL and it crawls that host to WARC. Discovery and the domain
+          picker arrive in M2; replay in the browser in M3.
+        </EmptyState>
+      )}
 
       <section className="card p-5">
         <h2 className="text-sm font-medium">System</h2>

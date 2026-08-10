@@ -73,6 +73,38 @@ export const api = {
   post: <T>(path: string, json?: unknown) => request<T>(path, { method: "POST", json }),
   patch: <T>(path: string, json?: unknown) => request<T>(path, { method: "PATCH", json }),
   del: <T>(path: string, json?: unknown) => request<T>(path, { method: "DELETE", json }),
+  put: <T>(path: string, json?: unknown) => request<T>(path, { method: "PUT", json }),
+  text: async (path: string) => {
+    const res = await fetch(`/api${path}`, {
+      headers: { [CSRF_HEADER]: CSRF_VALUE },
+      credentials: "same-origin",
+    });
+    if (!res.ok) throw new ApiError("error", `Request failed (${res.status})`, res.status);
+    return res.text();
+  },
+  upload: async <T>(path: string, file: File): Promise<T> => {
+    const body = new FormData();
+    body.append("file", file);
+    // No Content-Type header: the browser must set the multipart boundary.
+    const res = await fetch(`/api${path}`, {
+      method: "PUT",
+      headers: { [CSRF_HEADER]: CSRF_VALUE },
+      credentials: "same-origin",
+      body,
+    });
+    const text = await res.text();
+    const parsed: unknown = text ? JSON.parse(text) : null;
+    if (!res.ok) {
+      const err = parsed as ApiErrorBody | null;
+      throw new ApiError(
+        err?.error?.code ?? "error",
+        err?.error?.message ?? `Upload failed (${res.status})`,
+        res.status,
+        err?.error?.detail,
+      );
+    }
+    return parsed as T;
+  },
 };
 
 // ── response types (mirror cairn/api/schemas.py) ─────────────────────────
@@ -130,6 +162,155 @@ export type Storage = {
   archives_bytes: number;
 };
 
+// ── sites, scope, captures ───────────────────────────────────────────────
+
+export type HostRule = {
+  host: string;
+  crawl_pages: boolean;
+  fetch_assets: boolean;
+  path_prefix: string | null;
+  allow_extensionless: boolean;
+};
+
+export type Scope = {
+  seeds: string[];
+  hosts: HostRule[];
+  exclude_hosts: string[];
+  accept_patterns: string[];
+  reject_patterns: string[];
+  path_prefix: string | null;
+  max_depth: number | null;
+  max_pages: number | null;
+  max_bytes: number | null;
+  obey_robots: boolean;
+  politeness: Record<string, unknown>;
+  notes: string[];
+  wget_preview: string[];
+};
+
+export type Site = {
+  id: number;
+  slug: string;
+  title: string;
+  seed_url: string;
+  primary_host: string;
+  folder_id: number;
+  folder_path: string;
+  status: string;
+  engine_id: string;
+  profile_id: number | null;
+  keep_mirror: boolean;
+  tags: string[];
+  size_bytes: number;
+  url_count: number;
+  archive_path: string;
+  last_capture_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type SiteDetail = Site & {
+  notes: string | null;
+  engine_config: Record<string, unknown>;
+  scope: Scope;
+  capture_count: number;
+  running_job_id: number | null;
+};
+
+export type Capture = {
+  id: number;
+  site_id: number;
+  job_id: number | null;
+  kind: string;
+  engine_id: string;
+  engine_version: string | null;
+  dir_name: string;
+  status: string;
+  started_at: string;
+  finished_at: string | null;
+  url_count: number;
+  error_count: number;
+  bytes_written: number;
+};
+
+export type CaptureDetail = Capture & {
+  artifacts: { name: string; kind: string; size: number; sha256: string }[];
+  manifest: Record<string, unknown> | null;
+};
+
+export type CaptureUrl = {
+  id: number;
+  url: string;
+  host: string;
+  status_code: number | null;
+  mime: string | null;
+  size_bytes: number | null;
+  is_revisit: boolean;
+  fetched_at: string | null;
+  error: string | null;
+};
+
+export type Job = {
+  id: number;
+  type: string;
+  site_id: number | null;
+  site_title: string | null;
+  status: string;
+  progress: { done?: number; total?: number; bytes?: number; eta_s?: number } | null;
+  queued_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  error: string | null;
+  attempts: number;
+};
+
+export type Profile = {
+  id: number;
+  name: string;
+  mode: string;
+  hosts: string[];
+  user_agent: string | null;
+  cookie_count: number;
+  session_cookie_count: number;
+  hosts_covered: string[];
+  sensitive: string[];
+  warnings: string[];
+  has_material: boolean;
+  minted_at: string | null;
+  expires_at: string | null;
+  fingerprint: string | null;
+  last_verified_at: string | null;
+  last_verify_result: string | null;
+  verify_url: string | null;
+  notes: string | null;
+  created_at: string;
+};
+
+export type CookieReport = {
+  cookie_count: number;
+  hosts_covered: string[];
+  session_cookies: number;
+  expired_cookies: number;
+  earliest_expiry: string | null;
+  sensitive: string[];
+  warnings: string[];
+  errors: string[];
+  ok: boolean;
+};
+
+export type Coverage = { covered: Record<string, boolean>; warnings: string[] };
+
+export type Engine = {
+  id: string;
+  name: string;
+  version: string;
+  source: string;
+  description: string;
+  capabilities: Record<string, unknown>;
+  enabled: boolean;
+  error: string | null;
+};
+
 // ── endpoints ────────────────────────────────────────────────────────────
 
 export const endpoints = {
@@ -153,4 +334,62 @@ export const endpoints = {
   revokeOthers: () => api.del<{ ok: boolean }>("/auth/sessions"),
   audit: (page = 1) => api.get<Page<AuditEntry>>(`/audit?page=${page}`),
   storage: () => api.get<Storage>("/storage"),
+
+  // ── sites ──────────────────────────────────────────────────────────────
+  sites: (params: Record<string, string | number | undefined> = {}) =>
+    api.get<Page<Site>>(`/sites${query(params)}`),
+  site: (id: number) => api.get<SiteDetail>(`/sites/${id}`),
+  createSite: (body: {
+    seed_url: string;
+    title?: string;
+    engine_id?: string;
+    profile_id?: number | null;
+    keep_mirror?: boolean;
+    tags?: string[];
+  }) => api.post<SiteDetail>("/sites", body),
+  updateSite: (id: number, body: Record<string, unknown>) =>
+    api.patch<SiteDetail>(`/sites/${id}`, body),
+  deleteSite: (id: number) => api.del<{ ok: boolean }>(`/sites/${id}`),
+  scope: (id: number) => api.get<Scope>(`/sites/${id}/scope`),
+  putScope: (id: number, body: Record<string, unknown>) =>
+    api.put<Scope>(`/sites/${id}/scope`, body),
+
+  // ── captures ───────────────────────────────────────────────────────────
+  startCapture: (id: number, kind = "full") =>
+    api.post<{ job_id: number }>(`/sites/${id}/capture`, { kind }),
+  captures: (id: number) => api.get<Capture[]>(`/sites/${id}/captures`),
+  capture: (id: number) => api.get<CaptureDetail>(`/captures/${id}`),
+  captureLog: (id: number, tail = 500) => api.text(`/captures/${id}/log?tail=${tail}`),
+  captureUrls: (id: number, params: Record<string, string | number | undefined> = {}) =>
+    api.get<Page<CaptureUrl>>(`/captures/${id}/urls${query(params)}`),
+  deleteCapture: (id: number, force = false) =>
+    api.del<{ ok: boolean }>(`/captures/${id}?force=${force}`),
+
+  // ── jobs ───────────────────────────────────────────────────────────────
+  jobs: (params: Record<string, string | number | undefined> = {}) =>
+    api.get<Page<Job>>(`/jobs${query(params)}`),
+  job: (id: number) => api.get<Job>(`/jobs/${id}`),
+  cancelJob: (id: number) => api.post<{ ok: boolean }>(`/jobs/${id}/cancel`),
+
+  // ── profiles ───────────────────────────────────────────────────────────
+  profiles: () => api.get<Profile[]>("/profiles"),
+  createProfile: (body: { name: string; mode?: string; user_agent?: string; notes?: string }) =>
+    api.post<Profile>("/profiles", body),
+  updateProfile: (id: number, body: Record<string, unknown>) =>
+    api.patch<Profile>(`/profiles/${id}`, body),
+  deleteProfile: (id: number) => api.del<{ ok: boolean }>(`/profiles/${id}`),
+  uploadCookies: (id: number, file: File) =>
+    api.upload<CookieReport>(`/profiles/${id}/cookies`, file),
+  clearMaterial: (id: number) => api.del<{ ok: boolean }>(`/profiles/${id}/material`),
+  coverage: (id: number, siteId: number) =>
+    api.get<Coverage>(`/profiles/${id}/coverage?site_id=${siteId}`),
+
+  // ── engines ────────────────────────────────────────────────────────────
+  engines: () => api.get<Engine[]>("/engines"),
+  rescanEngines: () => api.post<Engine[]>("/engines/rescan"),
 };
+
+function query(params: Record<string, string | number | undefined>): string {
+  const pairs = Object.entries(params).filter(([, v]) => v !== undefined && v !== "");
+  return pairs.length ? `?${new URLSearchParams(pairs.map(([k, v]) => [k, String(v)]))}` : "";
+}

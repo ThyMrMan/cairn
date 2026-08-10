@@ -158,6 +158,7 @@ CREATE TABLE sites (
   profile_id    INTEGER REFERENCES access_profiles(id) ON DELETE SET NULL,
   engine_id     TEXT NOT NULL DEFAULT 'wget-warc',
   engine_config TEXT NOT NULL DEFAULT '{}',  -- JSON, validated against engine schema
+  scope_settings TEXT NOT NULL DEFAULT '{}', -- JSON: limits, robots, politeness
   keep_mirror   INTEGER NOT NULL DEFAULT 0,
   status        TEXT NOT NULL DEFAULT 'new', -- new|indexed|ready|capturing|error|archived
   archive_path  TEXT NOT NULL UNIQUE,        -- relative to /data/archives
@@ -208,6 +209,7 @@ CREATE TABLE scope_rules (
   crawl_pages   INTEGER NOT NULL DEFAULT 0,  -- follow links on this host
   fetch_assets  INTEGER NOT NULL DEFAULT 1,  -- allow subresources from this host
   path_prefix   TEXT,                        -- optional narrowing
+  allow_extensionless INTEGER NOT NULL DEFAULT 0,  -- see 04; no regex can infer this
   UNIQUE(site_id, host)
 );
 
@@ -221,6 +223,10 @@ CREATE TABLE scope_patterns (
 ```
 
 Splitting `crawl_pages` from `fetch_assets` is the schema expression of R6: you want `1.bp.blogspot.com` images without treating it as a site to crawl. Collapsing these into one boolean is the most likely early mistake.
+
+`allow_extensionless` is a column rather than a derived value because it cannot be derived: an extension-less image URL and an extension-less page URL are textually identical ([04](04-discovery-and-scoping.md#what-running-it-actually-established)).
+
+**`scope_settings` is separate from `engine_config` and must stay that way.** `engine_config` is validated against the engine's own JSON Schema, and every built-in declares `additionalProperties: false` — so a site-level crawl setting stored there fails validation the moment a capture starts. They look like the same kind of bag and are not.
 
 ### Captures & URLs
 

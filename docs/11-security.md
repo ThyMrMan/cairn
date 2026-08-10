@@ -128,7 +128,8 @@ The `defusedxml` point deserves emphasis. Sitemap parsing is a core code path pr
 ## Response headers (app origin)
 
 ```
-Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline';
+Content-Security-Policy: default-src 'self'; script-src 'self' 'sha256-{INLINE}';
+                         style-src 'self' 'unsafe-inline';
                          img-src 'self' data: blob:; frame-src {REPLAY_ORIGIN};
                          connect-src 'self'; frame-ancestors 'none'; base-uri 'none';
                          form-action 'self'; object-src 'none'
@@ -138,6 +139,12 @@ X-Frame-Options: DENY
 Referrer-Policy: same-origin
 Permissions-Policy: geolocation=(), microphone=(), camera=(), payment=()
 ```
+
+**`{INLINE}` is computed at startup from the shipped `index.html`, never hardcoded.** The page carries exactly one inline script — it applies the stored theme before first paint so a dark-mode user does not get a white flash. Under a bare `script-src 'self'` the browser refuses to run it, and this is a good example of the kind of failure a strict CSP produces: nothing errors, nothing breaks, the flash guard simply becomes dead code and a violation appears in a console nobody is reading. It shipped that way in M0 and was found in M1 only by reading the browser console during a UI check.
+
+Hashing the file rather than pinning a constant means editing the script cannot leave the policy pointing at the previous version — which would reintroduce the same silent failure with no diff to notice. If the inline script is ever removed, the hash list is simply empty and the policy tightens on its own.
+
+The lesson generalizes: *verify a CSP in a browser, not by reading the header*. A policy that blocks your own code looks identical to one that works.
 
 `frame-src {REPLAY_ORIGIN}` is the only third-party frame permitted, and it's set from `CAIRN_REPLAY_PUBLIC_URL` rather than wildcarded. `frame-ancestors 'none'` prevents the app itself being framed — including by an archived page.
 

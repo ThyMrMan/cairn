@@ -192,7 +192,29 @@ Selections become a **resolved scope object** — engine-independent, stored on 
 
 **Verified on Debian's wget 1.25.0 (the container base):** `--regex-type=pcre` works and honours lookahead correctly. Note that the version banner reports **neither** `+pcre` nor `-pcre` — that flag only ever described PCRE1, while Debian links PCRE2 and doesn't advertise it. Grepping the banner therefore rejects a perfectly good wget; the image's build-time check compiles an actual lookahead pattern instead ([10](10-deployment-unraid.md#build)).
 
-If you ever hit a wget that genuinely lacks it, the fallback is to invert the logic into an `--accept-regex` that positively lists asset extensions on those hosts. Encode whichever you use in the engine, because getting it wrong means either crawling image CDNs as websites or dropping images entirely.
+### What running it actually established
+
+Three findings from putting this translation in front of wget 1.25.0 with a two-host fixture. All three constrain what the engine may generate, and the first two were open questions this document previously got wrong by omission.
+
+**1. The translation works.** A reject regex that blocks page URLs on an assets-only host still lets `--page-requisites` fetch that host's images, CSS and fonts, including requisites discovered two levels into the crawl. This was M1's flagged risk.
+
+**2. `--domains` is a hard gate, and `--page-requisites` does not bypass it.** Omitting an asset host from `--domains` — the obvious "just don't allow it" reading — drops its assets entirely rather than fetching them as requisites. So an assets-only host must be **both** listed in `--domains` and fenced by the reject regex. There is no regex-free formulation, and the fallback below is the only alternative shape.
+
+**3. No regex over URLs can distinguish an extension-less image from an extension-less page.** The URL text is identical. That makes the allowlist above silently drop Blogger's proxied images:
+
+```
+https://lh3.googleusercontent.com/blogger_img_proxy/AEn0k_...   ← no extension, is an image
+https://lh3.googleusercontent.com/about                         ← no extension, is a page
+```
+
+Both readings cost something. Rejecting extension-less URLs loses images with no error anywhere; accepting them lets wget crawl a CDN's HTML, which is the failure this whole design exists to prevent. Neither default is right for every host, so it is a per-host decision:
+
+- `allow_extensionless: false` (default) — safe, and the scope preview says plainly that extension-less URLs on that host will be skipped.
+- `allow_extensionless: true` — set by the Blogger preset for `blogger.googleusercontent.com` and `lh3.googleusercontent.com`, which serve images through extension-less URLs and do not serve linked HTML.
+
+Because neither setting is reliably correct, the `asset-audit` post-processor closes the loop from the other end: after a capture it reads the archived HTML back out of the WARC and reports assets a page referenced but the crawl never fetched. That catches a dropped image regardless of which way the flag was set, and catches lazy-loaded images too — which no scope setting can reach, since wget does not execute JavaScript.
+
+If you ever hit a wget that genuinely lacks PCRE, the fallback is to invert the logic into an `--accept-regex` that positively lists asset extensions on those hosts. Encode whichever you use in the engine, because getting it wrong means either crawling image CDNs as websites or dropping images entirely.
 
 ### Scope preview
 

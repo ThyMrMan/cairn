@@ -8,10 +8,10 @@ const NAV = [
   { to: "/", label: "Dashboard", end: true },
   // Enabled as the milestones land; shown disabled so the shape of the app is
   // visible from day one rather than appearing piecemeal.
-  { to: "/sites", label: "Sites", soon: "M1" },
+  { to: "/sites", label: "Sites" },
   { to: "/folders", label: "Folders", soon: "M4" },
-  { to: "/profiles", label: "Access profiles", soon: "M1" },
-  { to: "/jobs", label: "Jobs", soon: "M1" },
+  { to: "/profiles", label: "Access profiles" },
+  { to: "/jobs", label: "Jobs" },
   { to: "/settings", label: "Settings" },
 ];
 

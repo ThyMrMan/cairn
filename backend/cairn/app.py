@@ -143,7 +143,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.state.settings = settings
 
-    app.add_middleware(SecurityHeadersMiddleware, settings=settings)
+    app.add_middleware(SecurityHeadersMiddleware, settings=settings, static_dir=STATIC_DIR)
     errors.install_handlers(app)
 
     app.include_router(health_router.router, prefix="/api")
