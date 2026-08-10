@@ -45,10 +45,28 @@ def _cmd_migrate(_args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_reset_password(args: argparse.Namespace) -> int:
-    """Recovery path for a lost password. Requires filesystem access."""
+def _read_new_password(from_stdin: bool) -> str | None:
+    """Prompt for a password, or read one line from stdin.
+
+    `--stdin` exists because getpass needs a TTY, and some consoles (notably
+    Unraid's browser terminal, and `docker exec` without -it) do not give you
+    one.
+    """
     import getpass
 
+    if from_stdin:
+        password = sys.stdin.readline().rstrip("\n")
+        return password or None
+
+    password = getpass.getpass("New password: ")
+    if password != getpass.getpass("Confirm: "):
+        print("Passwords did not match.", file=sys.stderr)
+        return None
+    return password
+
+
+def _cmd_reset_password(args: argparse.Namespace) -> int:
+    """Recovery path for a lost password. Requires filesystem access."""
     from cairn.crypto.passwords import hash_password, validate_password_strength
     from cairn.services import audit, auth
 
@@ -60,9 +78,9 @@ def _cmd_reset_password(args: argparse.Namespace) -> int:
             print(f"No such user: {args.username}", file=sys.stderr)
             return 1
 
-        password = getpass.getpass("New password: ")
-        if password != getpass.getpass("Confirm: "):
-            print("Passwords did not match.", file=sys.stderr)
+        password = _read_new_password(args.stdin)
+        if not password:
+            print("No password provided.", file=sys.stderr)
             return 1
 
         problems = validate_password_strength(password, settings.password_min_length)
@@ -73,10 +91,54 @@ def _cmd_reset_password(args: argparse.Namespace) -> int:
 
         user.password_hash = hash_password(password)
         revoked = auth.revoke_all_sessions(session, user.id)
+        # You reset a password *because* you are locked out. Leaving the
+        # lockout in place would keep you out for up to an hour afterwards.
+        cleared = auth.clear_lockout(session, user)
         audit.record(session, audit.PASSWORD_CHANGED, actor=user.username, detail={"via": "cli"})
         session.commit()
 
-    print(f"Password updated. {revoked} session(s) revoked.")
+    print(f"Password updated. {revoked} session(s) revoked, {cleared} failed attempt(s) cleared.")
+    return 0
+
+
+def _cmd_unlock(args: argparse.Namespace) -> int:
+    """Clear a rate-limit lockout without changing the password."""
+    from cairn.services import audit, auth
+
+    settings = get_settings()
+    engine = get_engine(settings.db_url)
+    with sessionmaker_for(engine)() as session:
+        user = auth.get_user(session, args.username)
+        if user is None:
+            print(f"No such user: {args.username}", file=sys.stderr)
+            return 1
+        cleared = auth.clear_lockout(session, user)
+        audit.record(session, audit.ACCOUNT_UNLOCKED, actor=user.username, detail={"via": "cli"})
+        session.commit()
+
+    print(f"Unlocked {args.username}. {cleared} failed attempt(s) cleared.")
+    return 0
+
+
+def _cmd_list_users(_args: argparse.Namespace) -> int:
+    """Show whether setup has run, and whether the account is locked."""
+    from sqlalchemy import select
+
+    from cairn.db.models import User
+    from cairn.db.types import utcnow
+
+    settings = get_settings()
+    engine = get_engine(settings.db_url)
+    with sessionmaker_for(engine)() as session:
+        users = list(session.scalars(select(User)).all())
+        if not users:
+            print("No account exists yet. Open the web UI to create one.")
+            return 0
+        for user in users:
+            locked = user.locked_until is not None and user.locked_until > utcnow()
+            state = "LOCKED until " + str(user.locked_until) if locked else "ok"
+            totp = "2FA on" if user.totp_enabled else "2FA off"
+            print(f"{user.username}\t{state}\t{totp}\tlast login: {user.last_login_at or 'never'}")
     return 0
 
 
@@ -122,13 +184,28 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("migrate", help="Apply database migrations").set_defaults(func=_cmd_migrate)
 
-    reset = sub.add_parser("reset-password", help="Reset a user's password")
+    reset = sub.add_parser(
+        "reset-password", help="Reset a user's password (also clears any lockout)"
+    )
     reset.add_argument("username")
+    reset.add_argument(
+        "--stdin",
+        action="store_true",
+        help="Read the new password from stdin instead of prompting (no TTY needed)",
+    )
     reset.set_defaults(func=_cmd_reset_password)
+
+    unlock = sub.add_parser("unlock", help="Clear a rate-limit lockout, keeping the password")
+    unlock.add_argument("username")
+    unlock.set_defaults(func=_cmd_unlock)
 
     disable = sub.add_parser("disable-totp", help="Turn off 2FA for a user")
     disable.add_argument("username")
     disable.set_defaults(func=_cmd_disable_totp)
+
+    sub.add_parser("users", help="List accounts and whether they are locked").set_defaults(
+        func=_cmd_list_users
+    )
 
     sub.add_parser("key-info", help="Show the master key fingerprint").set_defaults(
         func=_cmd_key_info

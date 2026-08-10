@@ -26,6 +26,7 @@ PASSWORD_CHANGED = "password.changed"  # noqa: S105 — an action name, not a cr
 TOTP_ENABLED = "totp.enabled"
 TOTP_DISABLED = "totp.disabled"
 TOTP_RECOVERY_USED = "totp.recovery_used"
+ACCOUNT_UNLOCKED = "account.unlocked"
 SESSION_REVOKED = "session.revoked"
 SESSIONS_REVOKED_ALL = "session.revoked_all"
 

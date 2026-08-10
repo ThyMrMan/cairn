@@ -8,7 +8,9 @@ from fastapi.testclient import TestClient
 from sqlalchemy import delete
 from sqlalchemy.orm import Session
 
+from cairn.config import Settings
 from cairn.db.models import LoginAttempt, Session_, User
+from cairn.services import auth
 from tests.conftest import PASSWORD, USERNAME, XHR
 
 # ── setup ────────────────────────────────────────────────────────────────
@@ -268,6 +270,66 @@ def test_revoke_other_sessions(authed: TestClient) -> None:
     assert authed.request("DELETE", "/api/auth/sessions", headers=XHR).status_code == 200
     assert other.get("/api/auth/me").status_code == 401
     assert authed.get("/api/auth/me").status_code == 200
+
+
+# ── recovery ─────────────────────────────────────────────────────────────
+
+
+def test_clear_lockout_actually_lets_you_back_in(
+    authed: TestClient, db: Session, settings: Settings
+) -> None:
+    """The recovery path is used *because* you are locked out.
+
+    Three separate things gate a login — locked_until, failed_logins, and the
+    login_attempts ledger. Clearing fewer than all three leaves the operator
+    still locked out, which is the one outcome the command must not produce.
+    """
+    authed.post("/api/auth/logout", headers=XHR)
+    for _ in range(6):
+        authed.post("/api/auth/login", json={"username": USERNAME, "password": "nope"}, headers=XHR)
+    assert (
+        authed.post(
+            "/api/auth/login", json={"username": USERNAME, "password": PASSWORD}, headers=XHR
+        ).status_code
+        == 429
+    )
+
+    user = db.query(User).one()
+    auth.clear_lockout(db, user)
+    db.commit()
+
+    assert user.locked_until is None
+    assert user.failed_logins == 0
+    assert db.query(LoginAttempt).filter_by(successful=False).count() == 0
+
+    res = authed.post(
+        "/api/auth/login", json={"username": USERNAME, "password": PASSWORD}, headers=XHR
+    )
+    assert res.status_code == 200, "clearing the lockout must permit a real login"
+
+
+def test_cli_reset_password_clears_the_lockout(
+    authed: TestClient, db: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End to end through the actual CLI command, not just the service."""
+    from cairn import cli
+
+    authed.post("/api/auth/logout", headers=XHR)
+    for _ in range(6):
+        authed.post("/api/auth/login", json={"username": USERNAME, "password": "nope"}, headers=XHR)
+
+    new_password = "a-brand-new-long-passphrase"
+    settings = authed.app.state.settings  # type: ignore[attr-defined]
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    monkeypatch.setattr(cli, "_read_new_password", lambda _stdin: new_password)
+
+    assert cli.main(["reset-password", USERNAME]) == 0
+
+    db.expire_all()
+    res = authed.post(
+        "/api/auth/login", json={"username": USERNAME, "password": new_password}, headers=XHR
+    )
+    assert res.status_code == 200, "reset-password must leave the account usable"
 
 
 @pytest.mark.parametrize("path", ["/api/auth/me", "/api/auth/sessions", "/api/audit"])

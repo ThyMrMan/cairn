@@ -230,6 +230,29 @@ def prune_attempts(session: Session, settings: Settings) -> int:
     return result.rowcount or 0
 
 
+def clear_lockout(session: Session, user: User) -> int:
+    """Clear every gate that would keep this user from signing in.
+
+    Three separate things block a login and all must go: the account's
+    `locked_until`, its `failed_logins` counter, and the `login_attempts`
+    ledger that `check_rate_limit` counts. Clearing only the first two leaves
+    the caller still throttled.
+
+    This is the recovery path — you run it *because* you are locked out — so
+    it deletes every unsuccessful attempt rather than only this user's. That
+    also drops the throttle on whatever address was failing, which is the
+    intended effect: the operator has filesystem access and has explicitly
+    asked to be let back in.
+    """
+    user.failed_logins = 0
+    user.locked_until = None
+    result = cast(
+        CursorResult[Any],
+        session.execute(delete(LoginAttempt).where(LoginAttempt.successful.is_(False))),
+    )
+    return result.rowcount or 0
+
+
 def check_rate_limit(session: Session, settings: Settings, *, ip: str, username: str) -> None:
     """Raise AuthError with a retry_after when this caller is throttled.
 

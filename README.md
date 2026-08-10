@@ -82,6 +82,48 @@ cp .env.example .env
 
 Then open http://localhost:8080 and create your account.
 
+## First login
+
+**There is no default username or password.** The first time you open the web UI, it shows a setup page instead of a login page, and whatever you enter there becomes the account. The endpoint behind it returns `409 Conflict` forever once any account exists, so it cannot be used to add a second one later.
+
+Requirements: username 3–64 characters (letters, digits, `.`, `-`, `_`); password at least 12 characters, not a well-known one. Turn on two-factor authentication right after, in Settings.
+
+### If you get locked out
+
+All of these need shell access to the container, which is the recovery boundary — there is no email reset and no forgot-password link.
+
+Check the state of the account:
+
+```bash
+docker exec cairn cairn users
+```
+
+Reset the password (also clears any lockout, and signs out every session):
+
+```bash
+docker exec -it cairn cairn reset-password admin
+```
+
+If your console has no TTY (Unraid's browser terminal, or `docker exec` without `-it`), pipe it instead:
+
+```bash
+docker exec -i cairn sh -c 'echo "your-new-passphrase" | cairn reset-password admin --stdin'
+```
+
+Locked out by failed attempts but you *do* know the password — just clear the lockout:
+
+```bash
+docker exec cairn cairn unlock admin
+```
+
+Lost your authenticator and your recovery codes:
+
+```bash
+docker exec cairn cairn disable-totp admin
+```
+
+Starting completely over wipes the archives too, so prefer the commands above. If you truly want a clean slate, stop the container and delete `cairn.db` from your config volume.
+
 The checks CI runs:
 
 ```bash
