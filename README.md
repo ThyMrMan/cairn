@@ -56,11 +56,17 @@ Read in order for a full picture; each is standalone if you're looking for one t
 
 ## Running it
 
-With Docker:
+With Docker. Generate a master key first — compose reads `.env` and refuses to start without one, because a generated-per-restart key would silently orphan every stored credential:
+
+```bash
+cp .env.example .env && echo "CAIRN_SECRET_KEY=$(openssl rand -base64 48)" >> .env
+```
 
 ```bash
 docker compose up -d
 ```
+
+Then open http://127.0.0.1:8080. Back up that key.
 
 For local development (Python 3.12+, Node 22+):
 
@@ -84,7 +90,19 @@ Then open http://localhost:8080 and create your account.
 
 ## First login
 
-**There is no default username or password.** The first time you open the web UI, it shows a setup page instead of a login page, and whatever you enter there becomes the account. The endpoint behind it returns `409 Conflict` forever once any account exists, so it cannot be used to add a second one later.
+**There is no default username or password, and the setup page has no URL of its own.** The app decides between three states from `GET /api/health`: no account yet → setup screen; account exists but no session → sign-in; signed in → the app. Every path renders the right one, so `/`, `/setup` and `/anything` all behave the same.
+
+Whatever you enter on the setup screen becomes the account. The endpoint behind it returns `409 Conflict` forever once any account exists, so it cannot be used to add a second one later.
+
+### Seeing Sign In instead of the setup screen
+
+That means an account already exists — the app never skips setup on a genuinely empty instance. Almost always the `/config` volume carries over from a previous run. Confirm it:
+
+```bash
+docker exec cairn cairn users
+```
+
+`No account exists yet` means you are talking to a different process than you think — check nothing else is bound to that port. Otherwise use the recovery commands below, or point the container at an empty config directory to start fresh.
 
 Requirements: username 3–64 characters (letters, digits, `.`, `-`, `_`); password at least 12 characters, not a well-known one. Turn on two-factor authentication right after, in Settings.
 

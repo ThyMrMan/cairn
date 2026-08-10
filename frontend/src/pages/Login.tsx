@@ -119,6 +119,29 @@ export default function Login() {
             </button>
           )}
         </form>
+
+        {/* Seeing this instead of the setup page means an account already
+            exists. That is usually a reused /config volume, and without a
+            hint the only visible symptom is "the setup screen is missing". */}
+        <details className="mt-6 text-center">
+          <summary className="hint cursor-pointer select-none">
+            Expecting a first-time setup screen?
+          </summary>
+          <div className="hint mt-3 space-y-2 text-left">
+            <p>
+              This instance already has an account, so setup is closed. That
+              usually means the config volume carries over from an earlier run.
+            </p>
+            <p>Check from the host:</p>
+            <code className="block rounded bg-raised p-2 font-mono text-[11px]">
+              docker exec cairn cairn users
+            </code>
+            <p>Forgotten the password, or locked out:</p>
+            <code className="block rounded bg-raised p-2 font-mono text-[11px]">
+              docker exec -it cairn cairn reset-password &lt;username&gt;
+            </code>
+          </div>
+        </details>
       </div>
     </div>
   );
