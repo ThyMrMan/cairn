@@ -22,6 +22,7 @@ import hashlib
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
+from html import unescape
 from pathlib import Path
 from typing import Any
 
@@ -257,6 +258,7 @@ _TAG_REFS = re.compile(
     re.IGNORECASE,
 )
 _CSS_URLS = re.compile(r"""url\(\s*['"]?(.*?)['"]?\s*\)""", re.IGNORECASE | re.DOTALL)
+_STYLE_BLOCK = re.compile(r"<style\b[^>]*>(.*?)</style\s*>", re.IGNORECASE | re.DOTALL)
 # A CSS escape: a backslash followed by one non-hex-digit character. Enough for
 # the \: and \/ that appear in Blogger skins; full CSS unescaping (hex escapes,
 # line continuations) is not needed to recognise a mangled URL.
@@ -280,22 +282,39 @@ def _referenced_assets(body: bytes, base_url: str) -> set[str]:
     Covers tag attributes and CSS `url(...)` in `<style>` blocks and inline
     `style=` attributes. The CSS half matters because it is where the
     references wget mishandles actually live.
+
+    Attribute values are HTML-entity decoded and `<style>` contents are not,
+    which is what the parsing rules actually say: an attribute's `&amp;` is an
+    ampersand, while `<style>` is raw text where it is three literal
+    characters. Getting that backwards reports
+    `…?targetBlogID=123&amp;zx=…` as the URL, which is both wrong on screen
+    and can never match the captured `…&zx=…` — so a fetched asset is listed
+    as missing.
     """
     from urllib.parse import urljoin
 
     text = body.decode("utf-8", errors="replace")
     found: set[str] = set()
+    candidates: list[str] = []
 
-    raws = [next((g for g in m.groups() if g), None) for m in _TAG_REFS.finditer(text)]
-    raws += [_unescape_css(m.group(1)) for m in _CSS_URLS.finditer(text)]
+    # <style> blocks: raw text, so CSS escapes apply but entities do not.
+    style_blocks = _STYLE_BLOCK.findall(text)
+    for block in style_blocks:
+        candidates += [_unescape_css(m.group(1)) for m in _CSS_URLS.finditer(block)]
 
-    for raw in raws:
-        if not raw:
+    # Everything else is attribute territory, including inline style="…".
+    outside = _STYLE_BLOCK.sub(" ", text)
+    for match in _TAG_REFS.finditer(outside):
+        raw = next((g for g in match.groups() if g), None)
+        if raw:
+            candidates.append(_unescape_css(unescape(raw)))
+    candidates += [_unescape_css(unescape(m.group(1))) for m in _CSS_URLS.finditer(outside)]
+
+    for candidate in candidates:
+        value = candidate.strip()
+        if not value or value.startswith(("data:", "javascript:", "#", "mailto:", "about:")):
             continue
-        candidate = _unescape_css(raw.strip())
-        if candidate.startswith(("data:", "javascript:", "#", "mailto:", "about:")):
-            continue
-        absolute = urljoin(base_url, candidate)
+        absolute = urljoin(base_url, value)
         if absolute.startswith(("http://", "https://")):
             found.add(absolute.split("#")[0])
     return found

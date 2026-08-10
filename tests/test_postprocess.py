@@ -91,6 +91,54 @@ def test_ignores_inline_and_non_fetchable_schemes() -> None:
     assert _referenced_assets(body, "https://blog.example.com/") == set()
 
 
+# ── HTML entities in attributes ──────────────────────────────────────────
+
+
+def test_decodes_entities_in_attribute_urls() -> None:
+    """`&amp;` in an attribute is one ampersand.
+
+    Taken from a live Blogger capture, where the audit reported
+    `…targetBlogID=548…&amp;zx=…` — a URL that is wrong on screen and can
+    never match the captured `…&zx=…`, so a fetched asset gets listed as
+    missing.
+    """
+    body = (
+        b'<html><head><link rel="stylesheet" '
+        b'href="https://www.blogger.com/dyn-css/authorization.css'
+        b'?targetBlogID=5481807035341764022&amp;zx=a1f39d26-780f"></head></html>'
+    )
+    found = _referenced_assets(body, "https://blog.example.com/")
+    assert (
+        "https://www.blogger.com/dyn-css/authorization.css"
+        "?targetBlogID=5481807035341764022&zx=a1f39d26-780f" in found
+    )
+    assert not any("&amp;" in u for u in found)
+
+
+def test_a_captured_asset_with_an_entity_reference_is_not_reported_missing() -> None:
+    """The false positive the bug produced, stated as the property that matters."""
+    body = b'<html><img src="/img.png?a=1&amp;b=2"></html>'
+    referenced = _referenced_assets(body, "https://blog.example.com/")
+    captured = {"https://blog.example.com/img.png?a=1&b=2"}
+    assert not (referenced - captured), f"false positive: {referenced - captured}"
+
+
+def test_style_block_contents_are_not_entity_decoded() -> None:
+    """<style> is raw text: `&amp;` there really is three characters.
+
+    Decoding it would invent a URL the page never referenced.
+    """
+    body = b"<html><style>a{background:url(/x.png?a=1&amp;b=2)}</style></html>"
+    found = _referenced_assets(body, "https://blog.example.com/")
+    assert "https://blog.example.com/x.png?a=1&amp;b=2" in found
+
+
+def test_inline_style_attributes_are_entity_decoded() -> None:
+    body = b'<html><div style="background:url(/y.png?a=1&amp;b=2)"></div></html>'
+    found = _referenced_assets(body, "https://blog.example.com/")
+    assert "https://blog.example.com/y.png?a=1&b=2" in found
+
+
 # ── naming the real target ───────────────────────────────────────────────
 
 
