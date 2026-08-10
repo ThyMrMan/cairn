@@ -17,6 +17,12 @@ dependencies = [
     "pyotp>=2.9",
     "python-multipart>=0.0.20",
     "itsdangerous>=2.2",
+    "pyyaml>=6.0",
+    "jsonschema>=4.23",
+    # Reads captured HTML back out of the WARC to report assets a page
+    # referenced but the crawl never fetched — the backstop for scope rules
+    # that can drop extension-less images (docs/04).
+    "warcio>=1.7",
 ]
 
 [project.optional-dependencies]
@@ -27,6 +33,7 @@ dev = [
     "ruff>=0.8",
     "mypy>=1.14",
     "types-pyyaml",
+    "types-jsonschema",
 ]
 
 [project.scripts]
@@ -39,6 +46,11 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["backend"]
 include = ["cairn*"]
+
+[tool.setuptools.package-data]
+# Built-in engine manifests and the built SPA ship inside the package; without
+# this an installed wheel has no engines and serves no UI.
+cairn = ["engines/builtin/*/engine.yaml", "static/**/*"]
 
 [tool.ruff]
 line-length = 100
@@ -74,6 +86,11 @@ plugins = ["pydantic.mypy"]
 [[tool.mypy.overrides]]
 module = "cairn.db.migrations.*"
 ignore_errors = true
+
+[[tool.mypy.overrides]]
+# warcio ships no py.typed marker.
+module = "warcio.*"
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -191,7 +191,12 @@ class Site(Base):
         ForeignKey("access_profiles.id", ondelete="SET NULL"), default=None
     )
     engine_id: Mapped[str] = mapped_column(String(64), nullable=False, default="wget-warc")
+    # Validated against the engine's own JSON Schema, which declares
+    # additionalProperties: false — so nothing but engine knobs may live here.
+    # Site-level crawl settings go in scope_settings.
     engine_config: Mapped[Any] = mapped_column(JsonText, nullable=False, default=dict)
+    # Scope decisions that are not per-host: limits, robots, politeness.
+    scope_settings: Mapped[Any] = mapped_column(JsonText, nullable=False, default=dict)
     keep_mirror: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="new")
     archive_path: Mapped[str] = mapped_column(String(1024), nullable=False, unique=True)
@@ -281,6 +286,10 @@ class ScopeRule(Base):
     crawl_pages: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     fetch_assets: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     path_prefix: Mapped[str | None] = mapped_column(String(1024), default=None)
+    # Permit extension-less URLs on an assets-only host. No regex over URLs can
+    # tell an extension-less image from an extension-less page, so this is an
+    # explicit per-host decision rather than something inferred (docs/04).
+    allow_extensionless: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     __table_args__ = (UniqueConstraint("site_id", "host", name="uq_scope_rules_site_host"),)
 

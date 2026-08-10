@@ -19,8 +19,13 @@ from cairn import __version__
 from cairn.api import errors
 from cairn.api.middleware import SecurityHeadersMiddleware
 from cairn.api.routers import auth as auth_router
+from cairn.api.routers import captures as captures_router
+from cairn.api.routers import engines as engines_router
 from cairn.api.routers import health as health_router
+from cairn.api.routers import jobs as jobs_router
+from cairn.api.routers import profiles as profiles_router
 from cairn.api.routers import setup as setup_router
+from cairn.api.routers import sites as sites_router
 from cairn.api.routers import system as system_router
 from cairn.config import Settings, get_settings, load_or_create_secret_key
 from cairn.crypto.sealing import Sealer
@@ -35,8 +40,11 @@ from cairn.db.bootstrap import (
     verify_secret_key,
     warn_about_environment,
 )
+from cairn.engines.registry import EngineRegistry
 from cairn.logging import configure_logging, get_logger
 from cairn.services.auth import purge_expired_sessions
+from cairn.services.events import EventBus
+from cairn.services.jobs import JobSupervisor
 
 log = get_logger(__name__)
 
@@ -77,6 +85,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     master_key = load_or_create_secret_key(settings)
     sealer = Sealer(master_key)
 
+    registry = EngineRegistry(settings)
+
     with factory() as session:
         # Fatal if the key changed while sealed data exists.
         try:
@@ -84,6 +94,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         except KeyMismatchError as exc:
             _fatal_config_error(str(exc))
         seed_defaults(session)
+        registry.refresh(session)
         purged = purge_expired_sessions(session)
         session.commit()
     if purged:
@@ -91,9 +102,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     warn_about_environment(settings, engine)
 
+    bus = EventBus()
+    supervisor = JobSupervisor(settings, factory, bus, registry, sealer)
+
     app.state.engine = engine
     app.state.sessionmaker = factory
     app.state.sealer = sealer
+    app.state.registry = registry
+    app.state.bus = bus
+    app.state.supervisor = supervisor
+
+    # Started last: it reconciles jobs left running by a previous process and
+    # begins dispatching, so nothing may be half-initialised behind it.
+    await supervisor.start()
 
     log.info(
         "cairn started",
@@ -102,6 +123,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        await supervisor.stop()
         engine.dispose()
         log.info("cairn stopped")
 
@@ -128,6 +150,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(setup_router.router, prefix="/api")
     app.include_router(auth_router.router, prefix="/api")
     app.include_router(system_router.router, prefix="/api")
+    app.include_router(sites_router.router, prefix="/api")
+    app.include_router(captures_router.router, prefix="/api")
+    app.include_router(jobs_router.router, prefix="/api")
+    app.include_router(profiles_router.router, prefix="/api")
+    app.include_router(engines_router.router, prefix="/api")
 
     _mount_frontend(app)
     return app

@@ -7,6 +7,7 @@ gains a `cookies_enc` column one day and an implicit serializer publishes it.
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -121,3 +122,212 @@ class Page[T](BaseModel):
     total: int
     page: int
     per_page: int
+
+
+# ── scope ────────────────────────────────────────────────────────────────
+
+
+class HostRuleModel(BaseModel):
+    host: str = Field(min_length=1, max_length=255)
+    crawl_pages: bool = False
+    fetch_assets: bool = True
+    path_prefix: str | None = None
+    allow_extensionless: bool = False
+
+
+class ScopeModel(BaseModel):
+    """The resolved scope (docs/04). `seeds` is derived from the site."""
+
+    hosts: list[HostRuleModel] = Field(default_factory=list, max_length=500)
+    exclude_hosts: list[str] = Field(default_factory=list, max_length=500)
+    accept_patterns: list[str] = Field(default_factory=list, max_length=200)
+    reject_patterns: list[str] = Field(default_factory=list, max_length=200)
+    path_prefix: str | None = None
+    max_depth: int | None = Field(default=None, ge=0, le=100)
+    max_pages: int | None = Field(default=None, ge=1)
+    max_bytes: int | None = Field(default=None, ge=0)
+    obey_robots: bool = True
+    politeness: dict[str, Any] = Field(default_factory=dict)
+
+
+class ScopeResponse(ScopeModel):
+    seeds: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+    wget_preview: list[str] = Field(default_factory=list)
+
+
+# ── sites ────────────────────────────────────────────────────────────────
+
+
+class SiteCreate(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    seed_url: str = Field(min_length=1, max_length=2048)
+    title: str | None = Field(default=None, max_length=255)
+    folder_id: int | None = None
+    notes: str | None = Field(default=None, max_length=10_000)
+    engine_id: str = Field(default="wget-warc", max_length=64)
+    profile_id: int | None = None
+    keep_mirror: bool = False
+    tags: list[str] = Field(default_factory=list, max_length=50)
+
+
+class SiteUpdate(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    title: str | None = Field(default=None, max_length=255)
+    notes: str | None = Field(default=None, max_length=10_000)
+    folder_id: int | None = None
+    engine_id: str | None = Field(default=None, max_length=64)
+    engine_config: dict[str, Any] | None = None
+    profile_id: int | None = None
+    keep_mirror: bool | None = None
+    tags: list[str] | None = Field(default=None, max_length=50)
+
+
+class SiteSummary(BaseModel):
+    id: int
+    slug: str
+    title: str
+    seed_url: str
+    primary_host: str
+    folder_id: int
+    folder_path: str
+    status: str
+    engine_id: str
+    profile_id: int | None
+    keep_mirror: bool
+    tags: list[str]
+    size_bytes: int
+    url_count: int
+    archive_path: str
+    last_capture_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class SiteDetail(SiteSummary):
+    notes: str | None
+    engine_config: dict[str, Any]
+    scope: ScopeResponse
+    capture_count: int
+    running_job_id: int | None
+
+
+# ── captures ─────────────────────────────────────────────────────────────
+
+
+class CaptureRequest(BaseModel):
+    kind: str = Field(default="full", pattern="^(full|incremental)$")
+    extra_seeds: list[str] = Field(default_factory=list, max_length=1000)
+
+
+class JobAccepted(BaseModel):
+    job_id: int
+
+
+class CaptureSummary(BaseModel):
+    id: int
+    site_id: int
+    job_id: int | None
+    kind: str
+    engine_id: str
+    engine_version: str | None
+    dir_name: str
+    status: str
+    started_at: datetime
+    finished_at: datetime | None
+    url_count: int
+    error_count: int
+    bytes_written: int
+
+
+class CaptureDetail(CaptureSummary):
+    artifacts: list[dict[str, Any]]
+    manifest: dict[str, Any] | None
+
+
+class CaptureUrlEntry(BaseModel):
+    id: int
+    url: str
+    host: str
+    status_code: int | None
+    mime: str | None
+    size_bytes: int | None
+    is_revisit: bool
+    fetched_at: datetime | None
+    error: str | None
+
+
+# ── jobs ─────────────────────────────────────────────────────────────────
+
+
+class JobSummary(BaseModel):
+    id: int
+    type: str
+    site_id: int | None
+    site_title: str | None
+    status: str
+    progress: dict[str, Any] | None
+    queued_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+    error: str | None
+    attempts: int
+
+
+# ── profiles ─────────────────────────────────────────────────────────────
+
+
+class ProfileCreate(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    name: str = Field(min_length=1, max_length=128)
+    mode: str = Field(default="cookies", pattern="^(none|cookies|userscript|interactive)$")
+    user_agent: str | None = Field(default=None, max_length=512)
+    hosts: list[str] = Field(default_factory=list, max_length=100)
+    verify_url: str | None = Field(default=None, max_length=2048)
+    notes: str | None = Field(default=None, max_length=10_000)
+
+
+class ProfileUpdate(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    name: str | None = Field(default=None, min_length=1, max_length=128)
+    user_agent: str | None = Field(default=None, max_length=512)
+    hosts: list[str] | None = Field(default=None, max_length=100)
+    verify_url: str | None = Field(default=None, max_length=2048)
+    notes: str | None = Field(default=None, max_length=10_000)
+
+
+class CookieUploadResponse(BaseModel):
+    """The parse report. Never contains cookie values (docs/06)."""
+
+    cookie_count: int
+    hosts_covered: list[str]
+    session_cookies: int
+    expired_cookies: int
+    earliest_expiry: str | None
+    sensitive: list[str]
+    warnings: list[str]
+    errors: list[str]
+    ok: bool
+
+
+class CoverageResponse(BaseModel):
+    covered: dict[str, bool]
+    warnings: list[str]
+
+
+# ── engines ──────────────────────────────────────────────────────────────
+
+
+class EngineSummary(BaseModel):
+    id: str
+    name: str
+    version: str
+    source: str
+    description: str
+    capabilities: dict[str, Any]
+    enabled: bool
+    error: str | None = None

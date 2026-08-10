@@ -1,0 +1,72 @@
+apiVersion: cairn.engine/v1
+id: wget-warc
+name: "wget (WARC)"
+version: "1.0.0"
+description: "Recursive crawl to WARC using GNU wget. Fast, no JavaScript."
+author: "built-in"
+homepage: https://www.gnu.org/software/wget/
+
+runtime:
+  type: subprocess
+  command: ["python", "-m", "cairn.engines.wget"]
+
+capabilities:
+  outputs: [warc, cdx, files, log]
+  javascript: false
+  scope: [host, path, regex]
+  auth: [cookies, headers, user_agent]
+  incremental: true
+  resumable: false
+  max_concurrency: 1
+  requires_browser: false
+
+config_schema:
+  type: object
+  additionalProperties: false
+  properties:
+    wait_s:
+      type: number
+      title: "Delay between requests (seconds)"
+      minimum: 0
+      maximum: 3600
+      default: 1.0
+    random_wait:
+      type: boolean
+      title: "Randomize delay (0.5x-1.5x)"
+      default: true
+    rate_limit:
+      type: string
+      title: "Bandwidth limit"
+      pattern: "^[0-9]+[kmKM]?$"
+      default: "2m"
+    tries:
+      type: integer
+      title: "Retries per URL"
+      minimum: 0
+      maximum: 20
+      default: 3
+    timeout_s:
+      type: integer
+      title: "Per-request timeout"
+      minimum: 1
+      maximum: 3600
+      default: 30
+    warc_max_size:
+      type: string
+      title: "WARC segment size"
+      enum: ["500M", "1G", "2G", "5G"]
+      default: "1G"
+    keep_mirror:
+      type: boolean
+      title: "Also keep plain files on disk"
+      description: "Roughly doubles storage. WARC alone is sufficient for replay."
+      default: false
+    content_on_error:
+      type: boolean
+      title: "Archive error page bodies (404s etc.)"
+      description: "Often the only record of a page that broke."
+      default: true
+    user_agent:
+      type: string
+      title: "User agent"
+      default: "Mozilla/5.0 (compatible; Cairn/1.0; +https://github.com/you/cairn)"
