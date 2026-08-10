@@ -68,6 +68,12 @@ docker compose up -d
 
 Then open http://127.0.0.1:8080. Back up that key.
 
+Or with plain `docker run` — the `-p` flags are not optional, without them the container starts, reports `healthy`, and is unreachable:
+
+```bash
+docker run -d --name cairn -p 8080:8080 -p 8081:8081 -v cairn-config:/config -v cairn-data:/data -e CAIRN_SECRET_KEY="$(openssl rand -base64 48)" --shm-size=2g ghcr.io/you/cairn:latest
+```
+
 For local development (Python 3.12+, Node 22+):
 
 ```bash
@@ -102,11 +108,20 @@ Check the container's state first — this failure has two very different shapes
 docker ps -a --filter name=cairn --format "{{.Names}} {{.Status}} {{.Ports}}"
 ```
 
-| Status | Meaning |
+**Read the `PORTS` column first — it is the single clearest tell:**
+
+| `PORTS` shows | Meaning |
 |---|---|
-| `Exited (78)` | Configuration error the app cannot fix itself. `docker logs cairn` prints a banner naming the problem and the fix — most often a `CAIRN_SECRET_KEY` that doesn't match the one the database was created with. |
-| `Up` but nothing on the port | No published port. Docker Desktop's run dialog leaves host ports empty unless you expand **Optional settings**; `docker run` needs `-p 8080:8080`. |
-| `Exited (0)` / restarting | Check `docker logs cairn` for the startup banner. |
+| `8080-8081/tcp` | **Not published.** The ports are only exposed inside Docker's network; nothing on your machine reaches them. The container still reports `healthy`, because the healthcheck runs *inside* it. Re-run with `-p 8080:8080 -p 8081:8081`, or in Docker Desktop expand **Optional settings** and fill in the host ports — it leaves them blank by default. |
+| `0.0.0.0:8080->8080/tcp` | Published correctly. If it still fails, look at `STATUS` below. |
+
+| `STATUS` shows | Meaning |
+|---|---|
+| `Exited (78)` | Configuration error the app cannot fix itself. The logs print a banner naming the problem and the fix — most often a `CAIRN_SECRET_KEY` that doesn't match the one the database was created with. |
+| `Up (healthy)` with ports published | The app is serving. Check the URL and any reverse proxy in front of it. |
+| `Exited (0)` / restarting | Check the logs for the startup banner. |
+
+Note that `docker run` without `--name` assigns a random one like `optimistic_brahmagupta`, and the `docker exec cairn …` commands below need that actual name. Pass `--name cairn` to keep them working.
 
 If you set `CAIRN_SECRET_KEY` in Docker Desktop, note it takes **Name** and **Value** as two fields — the name is `CAIRN_SECRET_KEY` and the value is the key alone, not `CAIRN_SECRET_KEY=…`.
 
