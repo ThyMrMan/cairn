@@ -279,6 +279,10 @@ for k, v in auth.get("headers", {}).items():
 
 ### Known wget limitations to document in the UI
 
+- **It does not decode CSS escape sequences in `url(...)`.** Blogger skins write theme images as `url(https\:\/\/themes.googleusercontent.com\/image?id=…)`. A browser unescapes `\:` and `\/` and fetches the absolute URL; wget takes the literal string, finds no scheme, treats it as *relative*, and requests it against the blog. The result is a 404 per page the reference appears on, at paths like `/2026/08/https%5C:%5C/%5C/themes.googleusercontent.com%5C/image?id=…`, and the real image is never fetched.
+
+  Confirmed on 1.25.0, in both `<style>` blocks and `src` attributes; an unescaped `url()` on the same page resolves correctly. Page content is unaffected — it costs a theme background. The `asset-audit` post-processor decodes the escapes, recovers the intended host, and reports it, because two 404s against your own domain with a percent-encoded backslash in them explain nothing on their own.
+
 - **Memory grows with crawl size.** wget keeps the visited-URL set and WARC dedup index in memory. A 100k-URL crawl can reach several GB. Cap `max_pages` for very large sites, or split into path-scoped captures.
 - **No JavaScript.** Lazy-loaded images (`data-src`) are missed. The engine should scan captured HTML for lazy-load attributes and emit a `warning` with a count — "312 images may be lazy-loaded and were not captured; consider the browser engine" — rather than leaving the user to discover the gaps during replay.
 - **No infinite scroll / dynamic pagination.**

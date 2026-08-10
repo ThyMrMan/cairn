@@ -19,6 +19,7 @@ optional step that fails is logged and skipped.
 from __future__ import annotations
 
 import hashlib
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -230,32 +231,105 @@ def step_asset_audit(ctx: Context) -> None:
             f"{lazy_hits} lazy-loaded image reference(s) found in {scanned} page(s). "
             "wget cannot execute JavaScript, so those images are not in this archive."
         )
+
+    mangled = _css_escaped_requests(ctx)
+    if mangled:
+        hosts = sorted({h for h in (_escaped_target_host(u) for u in mangled) if h})
+        ctx.warnings.append(
+            f"{len(mangled)} request(s) failed because the URL was CSS-escaped. "
+            "wget does not decode CSS escape sequences, so an absolute URL written "
+            r"as url(https\:\/\/host\/x.png) — which Blogger skins use for theme "
+            "images — looks relative to it and is requested against this site "
+            f"instead{': ' + ', '.join(hosts[:3]) if hosts else ''}. "
+            "The page text is unaffected; the asset itself is not in this archive."
+        )
+
     ctx.stats["referenced_assets"] = len(referenced)
     ctx.stats["missing_assets"] = len(missing)
     ctx.stats["lazy_image_hints"] = lazy_hits
+    ctx.stats["css_escaped_failures"] = len(mangled)
+
+
+_TAG_REFS = re.compile(
+    r"""<(?:img|script|source|video|audio|embed)\b[^>]*?\bsrc\s*=\s*["']([^"'>]+)["']"""
+    r"""|<link\b[^>]*?\bhref\s*=\s*["']([^"'>]+)["'][^>]*?\brel\s*=\s*["']?stylesheet"""
+    r"""|<link\b[^>]*?\brel\s*=\s*["']?stylesheet[^>]*?\bhref\s*=\s*["']([^"'>]+)["']""",
+    re.IGNORECASE,
+)
+_CSS_URLS = re.compile(r"""url\(\s*['"]?(.*?)['"]?\s*\)""", re.IGNORECASE | re.DOTALL)
+# A CSS escape: a backslash followed by one non-hex-digit character. Enough for
+# the \: and \/ that appear in Blogger skins; full CSS unescaping (hex escapes,
+# line continuations) is not needed to recognise a mangled URL.
+_CSS_ESCAPE = re.compile(r"\\([^0-9A-Fa-f\s])")
+
+
+def _unescape_css(value: str) -> str:
+    r"""Decode the backslash escapes a browser would resolve.
+
+    Blogger skins write theme images as `url(https\:\/\/host\/image?id=…)`.
+    A browser unescapes that to an absolute URL; wget does not, so it treats
+    the string as relative and requests it against the blog. Decoding here is
+    what lets the audit recognise the real target and name it.
+    """
+    return _CSS_ESCAPE.sub(r"\1", value)
 
 
 def _referenced_assets(body: bytes, base_url: str) -> set[str]:
-    """Absolute URLs of subresources referenced by an HTML body."""
-    import re
+    """Absolute URLs of subresources referenced by an HTML body.
+
+    Covers tag attributes and CSS `url(...)` in `<style>` blocks and inline
+    `style=` attributes. The CSS half matters because it is where the
+    references wget mishandles actually live.
+    """
     from urllib.parse import urljoin
 
     text = body.decode("utf-8", errors="replace")
     found: set[str] = set()
-    for match in re.finditer(
-        r"""<(?:img|script|source|video|audio|embed)\b[^>]*?\bsrc\s*=\s*["']([^"'>]+)["']"""
-        r"""|<link\b[^>]*?\bhref\s*=\s*["']([^"'>]+)["'][^>]*?\brel\s*=\s*["']?stylesheet"""
-        r"""|<link\b[^>]*?\brel\s*=\s*["']?stylesheet[^>]*?\bhref\s*=\s*["']([^"'>]+)["']""",
-        text,
-        flags=re.IGNORECASE,
-    ):
-        raw = next((g for g in match.groups() if g), None)
-        if not raw or raw.startswith(("data:", "javascript:", "#", "mailto:")):
+
+    raws = [next((g for g in m.groups() if g), None) for m in _TAG_REFS.finditer(text)]
+    raws += [_unescape_css(m.group(1)) for m in _CSS_URLS.finditer(text)]
+
+    for raw in raws:
+        if not raw:
             continue
-        absolute = urljoin(base_url, raw.strip())
+        candidate = _unescape_css(raw.strip())
+        if candidate.startswith(("data:", "javascript:", "#", "mailto:", "about:")):
+            continue
+        absolute = urljoin(base_url, candidate)
         if absolute.startswith(("http://", "https://")):
             found.add(absolute.split("#")[0])
     return found
+
+
+def _css_escaped_requests(ctx: Context) -> list[str]:
+    """URLs the crawl requested that are mangled CSS escapes.
+
+    These show up as 404s against the site's own host with a backslash in the
+    path — percent-encoded, so `%5C`. Recognising them turns a pair of
+    confusing log lines into an explanation.
+    """
+    rows = ctx.session.scalars(
+        select(CaptureUrl.url).where(
+            CaptureUrl.capture_id == ctx.capture.id,
+            CaptureUrl.url.contains("%5C") | CaptureUrl.url.contains("\\"),
+        )
+    ).all()
+    return list(rows)
+
+
+def _escaped_target_host(url: str) -> str | None:
+    """The host the mangled URL was *meant* to reach."""
+    from urllib.parse import unquote, urlsplit
+
+    decoded = _unescape_css(unquote(url))
+    match = re.search(r"https?://([^/\s\\]+)", decoded[decoded.find("//") + 2 :])
+    if match:
+        return match.group(1)
+    # The scheme survives only once; fall back to the last embedded host-like run.
+    tail = decoded.split("://")
+    if len(tail) > 2:
+        return urlsplit("//" + tail[-1]).netloc or None
+    return None
 
 
 CHAIN: list[Step] = [

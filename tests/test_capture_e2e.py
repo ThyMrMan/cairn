@@ -56,7 +56,11 @@ PAGES: dict[str, tuple[str, bytes]] = {
     ),
     "/post-1.html": (
         "text/html",
-        b"<html><body><h1>Post One</h1><p>UNIQUE-CONTENT-MARKER-ONE</p>"
+        b"<html><head><style>"
+        # Exactly how a Blogger skin writes its theme image. wget does not
+        # decode CSS escapes, so it requests this against the blog and 404s.
+        rb"body{background:url(https\:\/\/themes.example.test\/image?id=abc)}"
+        b"</style></head><body><h1>Post One</h1><p>UNIQUE-CONTENT-MARKER-ONE</p>"
         b'<img data-src="/lazy.png"></body></html>',
     ),
     "/post-2.html": (
@@ -281,6 +285,34 @@ def test_lazy_images_are_reported_rather_than_left_to_be_discovered(
     )
     assert manifest["stats"].get("lazy_image_hints", 0) >= 1
     assert any("lazy-loaded" in w for w in manifest["stats"].get("warnings", []))
+
+
+def test_css_escaped_urls_are_explained_rather_than_left_as_404s(
+    authed: TestClient, settings: Settings, site_server: str
+) -> None:
+    r"""Blogger skins write theme images as url(https\:\/\/host\/x.png).
+
+    wget does not decode CSS escapes, so it treats that absolute URL as
+    relative and requests it against the blog, producing a 404 whose cause is
+    not remotely obvious from the log. The capture should say what happened
+    and name the host the asset was really on.
+    """
+    _job, site_id = run_capture(authed, site_server)
+    site = authed.get(f"/api/sites/{site_id}").json()
+    capture = authed.get(f"/api/sites/{site_id}/captures").json()[0]
+
+    manifest = storage.read_json(
+        storage.site_dir(settings, site["archive_path"])
+        / storage.CAPTURES_DIR
+        / capture["dir_name"]
+        / storage.MANIFEST_FILE
+    )
+    stats = manifest["stats"]
+    assert stats.get("css_escaped_failures", 0) >= 1
+
+    warnings = " ".join(stats.get("warnings", []))
+    assert "CSS-escaped" in warnings
+    assert "themes.example.test" in warnings
 
 
 def test_second_capture_of_the_same_site_gets_its_own_directory(
