@@ -9,6 +9,8 @@ from __future__ import annotations
 import argparse
 import sys
 
+from sqlalchemy import select
+
 from cairn import __version__
 from cairn.config import get_settings, load_or_create_secret_key
 from cairn.crypto.sealing import key_fingerprint
@@ -162,6 +164,50 @@ def _cmd_disable_totp(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_reset_key(args: argparse.Namespace) -> int:
+    """Adopt the current key, discarding anything sealed under the old one.
+
+    The deliberate escape hatch for "I lost the old CAIRN_SECRET_KEY". It
+    destroys data, so it requires --force rather than a prompt: this is
+    usually run through `docker exec`, where a prompt may have no TTY.
+    """
+    from cairn.crypto.sealing import key_fingerprint
+    from cairn.db.bootstrap import KEY_FINGERPRINT_SETTING, count_sealed_secrets
+    from cairn.db.models import AccessProfile, Setting, User
+
+    settings = get_settings()
+    engine = get_engine(settings.db_url)
+    with sessionmaker_for(engine)() as session:
+        sealed = count_sealed_secrets(session)
+        if not args.force:
+            print(f"{sealed} sealed value(s) would be destroyed:", file=sys.stderr)
+            print("  2FA secrets, recovery codes and stored cookie jars.", file=sys.stderr)
+            print("Re-run with --force to proceed.", file=sys.stderr)
+            return 1
+
+        for user in session.scalars(select(User)).all():
+            user.totp_secret = None
+            user.totp_confirmed = False
+            user.recovery_codes = None
+        for profile in session.scalars(select(AccessProfile)).all():
+            profile.cookies_enc = None
+            profile.script_enc = None
+            profile.minted_at = None
+            profile.last_verify_result = "needs_reauth"
+
+        current = key_fingerprint(load_or_create_secret_key(settings))
+        row = session.get(Setting, KEY_FINGERPRINT_SETTING)
+        if row is None:
+            session.add(Setting(key=KEY_FINGERPRINT_SETTING, value=current))
+        else:
+            row.value = current
+        session.commit()
+
+    print(f"Re-keyed. {sealed} sealed value(s) cleared; two-factor auth is now off.")
+    print("Sign in with your password and set 2FA up again.")
+    return 0
+
+
 def _cmd_key_info(_args: argparse.Namespace) -> int:
     settings = get_settings()
     ensure_directories(settings)
@@ -210,6 +256,12 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("key-info", help="Show the master key fingerprint").set_defaults(
         func=_cmd_key_info
     )
+
+    rekey = sub.add_parser(
+        "reset-key", help="Adopt the current key, discarding values sealed under the old one"
+    )
+    rekey.add_argument("--force", action="store_true", help="Required; this destroys data")
+    rekey.set_defaults(func=_cmd_reset_key)
 
     args = parser.parse_args(argv)
     settings = get_settings()

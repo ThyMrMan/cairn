@@ -7,18 +7,20 @@ from fastapi.testclient import TestClient
 from sqlalchemy import inspect, select
 
 from cairn.config import Settings
-from cairn.crypto.sealing import key_fingerprint
+from cairn.crypto.sealing import Sealer, key_fingerprint
 from cairn.db.base import get_engine, sessionmaker_for
 from cairn.db.bootstrap import (
     KEY_FINGERPRINT_SETTING,
     KeyMismatchError,
+    count_sealed_secrets,
     ensure_directories,
     run_migrations,
     seed_defaults,
     sweep_tmp,
     verify_secret_key,
 )
-from cairn.db.models import Folder, Setting
+from cairn.db.models import AccessProfile, Folder, Setting, User
+from cairn.db.types import utcnow
 from tests.conftest import PASSWORD, TEST_KEY, USERNAME, XHR
 
 EXPECTED_TABLES = {
@@ -65,8 +67,7 @@ def test_seed_defaults_is_idempotent(settings: Settings) -> None:
         assert len(session.scalars(select(Setting)).all()) >= 1
 
 
-def test_key_change_is_fatal(settings: Settings) -> None:
-    """Starting under a new key would leave sealed data silently unreadable."""
+def test_key_fingerprint_recorded_on_first_run(settings: Settings) -> None:
     ensure_directories(settings)
     run_migrations(settings)
     factory = sessionmaker_for(get_engine(settings.db_url))
@@ -78,8 +79,109 @@ def test_key_change_is_fatal(settings: Settings) -> None:
             TEST_KEY.encode()
         )
 
-    with factory() as session, pytest.raises(KeyMismatchError, match="does not match"):
-        verify_secret_key(session, b"a-completely-different-key-32bytes!")
+
+def test_key_adoption_logs_both_fingerprints(
+    settings: Settings, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The warning must show what changed. Reading row.value after assigning
+    it reports the new fingerprint twice, which tells the operator nothing."""
+    ensure_directories(settings)
+    run_migrations(settings)
+    factory = sessionmaker_for(get_engine(settings.db_url))
+    new_key = b"a-completely-different-key-32bytes!"
+
+    with factory() as session:
+        verify_secret_key(session, TEST_KEY.encode())
+        session.commit()
+
+    with factory() as session, caplog.at_level("WARNING"):
+        verify_secret_key(session, new_key)
+        session.commit()
+
+    record = next(r for r in caplog.records if "adopted" in r.getMessage())
+    assert record.was == key_fingerprint(TEST_KEY.encode())  # type: ignore[attr-defined]
+    assert record.now == key_fingerprint(new_key)  # type: ignore[attr-defined]
+    assert record.was != record.now  # type: ignore[attr-defined]
+
+
+def test_key_change_is_adopted_when_nothing_is_sealed(settings: Settings) -> None:
+    """Setting CAIRN_SECRET_KEY after a run that auto-generated one is the
+    normal path onto a supported configuration. Refusing there protects
+    nothing — no sealed value exists — and only leaves the container dead."""
+    ensure_directories(settings)
+    run_migrations(settings)
+    factory = sessionmaker_for(get_engine(settings.db_url))
+
+    with factory() as session:
+        verify_secret_key(session, TEST_KEY.encode())
+        session.commit()
+
+    new_key = b"a-completely-different-key-32bytes!"
+    with factory() as session:
+        verify_secret_key(session, new_key)  # must not raise
+        session.commit()
+
+    with factory() as session:
+        assert session.get(Setting, KEY_FINGERPRINT_SETTING).value == key_fingerprint(new_key)
+
+
+def test_key_change_is_fatal_once_something_is_sealed(settings: Settings) -> None:
+    """With real sealed data, silently adopting a new key would destroy it."""
+    ensure_directories(settings)
+    run_migrations(settings)
+    factory = sessionmaker_for(get_engine(settings.db_url))
+    sealer = Sealer(TEST_KEY.encode())
+
+    with factory() as session:
+        verify_secret_key(session, TEST_KEY.encode())
+        session.add(
+            User(
+                username="admin",
+                password_hash="x",
+                created_at=utcnow(),
+                totp_secret=sealer.seal("SECRET", context="user.totp"),
+                totp_confirmed=True,
+            )
+        )
+        session.commit()
+
+    with factory() as session:
+        assert count_sealed_secrets(session) == 1
+        with pytest.raises(KeyMismatchError, match="does not match"):
+            verify_secret_key(session, b"a-completely-different-key-32bytes!")
+
+
+def test_sealed_secret_count_covers_every_sealed_column(settings: Settings) -> None:
+    """If a new sealed column is added without updating this count, the
+    key-change guard silently stops protecting it."""
+    ensure_directories(settings)
+    run_migrations(settings)
+    factory = sessionmaker_for(get_engine(settings.db_url))
+    sealer = Sealer(TEST_KEY.encode())
+
+    with factory() as session:
+        assert count_sealed_secrets(session) == 0
+        session.add(
+            User(
+                username="admin",
+                password_hash="x",
+                created_at=utcnow(),
+                totp_secret=sealer.seal("a", context="user.totp"),
+                recovery_codes=sealer.seal("b", context="user.recovery"),
+            )
+        )
+        session.add(
+            AccessProfile(
+                name="blogger",
+                mode="cookies",
+                cookies_enc=sealer.seal("jar", context="profile.cookies"),
+                created_at=utcnow(),
+                updated_at=utcnow(),
+            )
+        )
+        session.commit()
+        # user.totp_secret + user.recovery_codes + one profile
+        assert count_sealed_secrets(session) == 3
 
 
 def test_tmp_sweep_removes_leftover_material(settings: Settings) -> None:

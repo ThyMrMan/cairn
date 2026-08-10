@@ -13,12 +13,12 @@ from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import Engine, select
+from sqlalchemy import Engine, func, select
 from sqlalchemy.orm import Session
 
 from cairn.config import Settings
 from cairn.crypto.sealing import key_fingerprint
-from cairn.db.models import Folder, Setting
+from cairn.db.models import AccessProfile, Folder, Setting, User
 from cairn.db.types import utcnow
 from cairn.logging import get_logger
 
@@ -47,7 +47,15 @@ DEFAULT_SETTINGS: dict[str, object] = {
 
 
 class KeyMismatchError(RuntimeError):
-    """The master key changed or went missing while sealed data exists."""
+    """The master key changed or went missing while sealed data exists.
+
+    Unrecoverable from inside the container: it needs the operator to supply
+    the right key or explicitly re-key. The app exits with EXIT_CONFIG_ERROR
+    so the supervisor stops the container instead of restarting forever.
+    """
+
+
+EXIT_CONFIG_ERROR = 78  # EX_CONFIG, per sysexits(3)
 
 
 def _alembic_config(settings: Settings) -> Config:
@@ -102,12 +110,33 @@ def run_migrations(settings: Settings) -> None:
     log.info("migrations applied")
 
 
+def count_sealed_secrets(session: Session) -> int:
+    """How many stored values would become unreadable under a different key."""
+    totals = 0
+    totals += session.scalar(select(func.count(User.id)).where(User.totp_secret.isnot(None))) or 0
+    totals += (
+        session.scalar(select(func.count(User.id)).where(User.recovery_codes.isnot(None))) or 0
+    )
+    totals += (
+        session.scalar(
+            select(func.count(AccessProfile.id)).where(
+                AccessProfile.cookies_enc.isnot(None) | AccessProfile.script_enc.isnot(None)
+            )
+        )
+        or 0
+    )
+    return totals
+
+
 def verify_secret_key(session: Session, master_key: bytes) -> None:
     """Refuse to run under a different key than the one that sealed the data.
 
-    Starting with a fresh key would leave every stored cookie jar
-    undecryptable with no indication of why, so this is fatal rather than a
-    warning (docs/10).
+    The justification for refusing is that sealed values would silently become
+    undecryptable — so when *nothing is sealed yet*, there is nothing to
+    protect and refusing only blocks a legitimate setup step. Adding
+    CAIRN_SECRET_KEY after a first run that auto-generated one is the normal
+    path onto a supported configuration, and it used to leave the container
+    crash-looping. Adopt the new key instead, and say so.
     """
     current = key_fingerprint(master_key)
     row = session.get(Setting, KEY_FINGERPRINT_SETTING)
@@ -118,15 +147,37 @@ def verify_secret_key(session: Session, master_key: bytes) -> None:
         log.info("recorded master key fingerprint", extra={"fingerprint": current})
         return
 
-    if row.value != current:
-        raise KeyMismatchError(
-            "CAIRN_SECRET_KEY does not match the key this database was created with.\n"
-            f"  expected: {row.value}\n"
-            f"  got:      {current}\n"
-            "Stored cookie jars and userscripts cannot be decrypted with this key. "
-            "Restore the original key, or clear stored credentials and remove the "
-            f"'{KEY_FINGERPRINT_SETTING}' row to start fresh."
+    if row.value == current:
+        return
+
+    sealed = count_sealed_secrets(session)
+    if sealed == 0:
+        # Read the old value before overwriting it, or the log reports the new
+        # fingerprint twice and the operator cannot tell what actually changed.
+        previous = row.value
+        row.value = current
+        session.flush()
+        log.warning(
+            "Master key changed and nothing was sealed under the old one, so the new "
+            "key has been adopted. If this was not deliberate, stop the container and "
+            "restore the previous CAIRN_SECRET_KEY before storing any credentials.",
+            extra={"was": previous, "now": current},
         )
+        return
+
+    raise KeyMismatchError(
+        "CAIRN_SECRET_KEY does not match the key this database was created with.\n"
+        f"  expected fingerprint: {row.value}\n"
+        f"  got fingerprint:      {current}\n"
+        f"  sealed values at risk: {sealed}\n"
+        "\n"
+        "Those values (2FA secrets, recovery codes, cookie jars) can only be read "
+        "with the original key.\n"
+        "\n"
+        "  - Restore the original key: it is in /config/secret.key unless you moved\n"
+        "    it into CAIRN_SECRET_KEY. Check with: cairn key-info\n"
+        "  - Or accept losing them and re-key: cairn reset-key --force\n"
+    )
 
 
 def seed_defaults(session: Session) -> None:

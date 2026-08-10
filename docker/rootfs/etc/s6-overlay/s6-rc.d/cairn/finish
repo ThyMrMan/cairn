@@ -1,0 +1,14 @@
+#!/command/with-contenv sh
+# $1 is the service's exit code.
+#
+# Exit code 78 (EX_CONFIG) means the app hit a misconfiguration only the
+# operator can fix — a wrong CAIRN_SECRET_KEY, for instance. Restarting cannot
+# help, and s6's default is to restart forever, which leaves Docker reporting
+# the container as "Up" while it serves nothing and floods the log with the
+# same traceback. Stop the container instead, so the failure is visible where
+# people look.
+if [ "$1" = "78" ]; then
+  echo "[cairn] fatal configuration error (exit 78) — stopping the container."
+  echo 78 > /run/s6-linux-init-container-results/exitcode 2>/dev/null || true
+  exec /run/s6/basedir/bin/halt
+fi

@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import os
+import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import NoReturn
 
 from fastapi import FastAPI
 from fastapi.responses import FileResponse, JSONResponse
@@ -23,6 +26,8 @@ from cairn.config import Settings, get_settings, load_or_create_secret_key
 from cairn.crypto.sealing import Sealer
 from cairn.db.base import get_engine, sessionmaker_for
 from cairn.db.bootstrap import (
+    EXIT_CONFIG_ERROR,
+    KeyMismatchError,
     ensure_directories,
     run_migrations,
     seed_defaults,
@@ -36,6 +41,27 @@ from cairn.services.auth import purge_expired_sessions
 log = get_logger(__name__)
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+
+
+def _fatal_config_error(message: str) -> NoReturn:
+    """Report a misconfiguration the operator must fix, then stop the container.
+
+    Raising here would surface as a lifespan traceback and let the supervisor
+    restart the process every couple of seconds — forever, behind a container
+    that Docker still reports as "Up". A banner plus a distinct exit code lets
+    the s6 finish script halt the container, so the failure is visible where
+    people actually look.
+
+    os._exit is deliberate: it guarantees the exit code reaches the supervisor
+    without uvicorn catching the exception first. Nothing needs cleanup on
+    this path — the database session is the caller's and no work has started.
+    """
+    bar = "=" * 78
+    sys.stderr.write(
+        f"\n{bar}\nCAIRN CANNOT START — CONFIGURATION ERROR\n{bar}\n{message}\n{bar}\n"
+    )
+    sys.stderr.flush()
+    os._exit(EXIT_CONFIG_ERROR)
 
 
 @asynccontextmanager
@@ -52,8 +78,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     sealer = Sealer(master_key)
 
     with factory() as session:
-        # Fatal if the key changed: sealed data would be silently unreadable.
-        verify_secret_key(session, master_key)
+        # Fatal if the key changed while sealed data exists.
+        try:
+            verify_secret_key(session, master_key)
+        except KeyMismatchError as exc:
+            _fatal_config_error(str(exc))
         seed_defaults(session)
         purged = purge_expired_sessions(session)
         session.commit()

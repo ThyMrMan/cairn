@@ -94,6 +94,34 @@ Then open http://localhost:8080 and create your account.
 
 Whatever you enter on the setup screen becomes the account. The endpoint behind it returns `409 Conflict` forever once any account exists, so it cannot be used to add a second one later.
 
+### The page doesn't load at all
+
+Check the container's state first — this failure has two very different shapes:
+
+```bash
+docker ps -a --filter name=cairn --format "{{.Names}} {{.Status}} {{.Ports}}"
+```
+
+| Status | Meaning |
+|---|---|
+| `Exited (78)` | Configuration error the app cannot fix itself. `docker logs cairn` prints a banner naming the problem and the fix — most often a `CAIRN_SECRET_KEY` that doesn't match the one the database was created with. |
+| `Up` but nothing on the port | No published port. Docker Desktop's run dialog leaves host ports empty unless you expand **Optional settings**; `docker run` needs `-p 8080:8080`. |
+| `Exited (0)` / restarting | Check `docker logs cairn` for the startup banner. |
+
+If you set `CAIRN_SECRET_KEY` in Docker Desktop, note it takes **Name** and **Value** as two fields — the name is `CAIRN_SECRET_KEY` and the value is the key alone, not `CAIRN_SECRET_KEY=…`.
+
+Changing the key is only fatal once something has actually been sealed under the old one (2FA secrets, recovery codes, cookie jars). Before that, the new key is simply adopted and logged. To see which key is in use:
+
+```bash
+docker exec cairn cairn key-info
+```
+
+If you lost the old key and accept losing what it sealed:
+
+```bash
+docker exec cairn cairn reset-key --force
+```
+
 ### Seeing Sign In instead of the setup screen
 
 That means an account already exists — the app never skips setup on a genuinely empty instance. Almost always the `/config` volume carries over from a previous run. Confirm it:
