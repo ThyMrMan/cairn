@@ -1,0 +1,80 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>Cairn</Name>
+  <Repository>ghcr.io/you/cairn:latest</Repository>
+  <Registry>https://ghcr.io/you/cairn</Registry>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>bash</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/you/cairn/discussions</Support>
+  <Project>https://github.com/you/cairn</Project>
+  <Overview>
+    Self-hosted website archiver. Crawls whole sites to WARC, replays them in your
+    browser, organizes them into folders and tags, and keeps them current from RSS feeds.
+
+    IMPORTANT — two settings that matter:
+    1. Put the Config path on a CACHE POOL, not the array. It holds a SQLite database,
+       and SQLite on Unraid's /mnt/user FUSE layer with mover active can corrupt it.
+    2. Save your CAIRN_SECRET_KEY somewhere safe. Losing it makes stored cookies
+       unrecoverable.
+  </Overview>
+  <Category>Productivity: Tools:Utilities</Category>
+  <WebUI>http://[IP]:[PORT:8080]/</WebUI>
+  <Icon>https://raw.githubusercontent.com/you/cairn/main/frontend/public/favicon.svg</Icon>
+  <ExtraParams>--shm-size=2g</ExtraParams>
+  <DonateText/>
+  <DonateLink/>
+
+  <Config Name="WebUI Port" Target="8080" Default="8080" Mode="tcp"
+          Description="Web interface." Type="Port" Display="always"
+          Required="true" Mask="false">8080</Config>
+
+  <Config Name="Replay Port" Target="8081" Default="8081" Mode="tcp"
+          Description="Archive replay (pywb). Arrives in M3. Keep it on a separate hostname from the WebUI if you expose this to the internet — ports alone do not isolate cookies."
+          Type="Port" Display="always" Required="true" Mask="false">8081</Config>
+
+  <Config Name="Config" Target="/config" Default="/mnt/user/appdata/cairn"
+          Description="Database and settings. MUST be on a cache pool / SSD share set to cache-only. SQLite on the array with mover active can corrupt."
+          Type="Path" Display="always" Mode="rw" Required="true" Mask="false">/mnt/user/appdata/cairn</Config>
+
+  <Config Name="Archives" Target="/data" Default="/mnt/user/archives/cairn"
+          Description="WARC storage. The array is fine here; this is where the bulk lives."
+          Type="Path" Display="always" Mode="rw" Required="true" Mask="false">/mnt/user/archives/cairn</Config>
+
+  <Config Name="Secret key" Target="CAIRN_SECRET_KEY" Default=""
+          Description="Encrypts stored cookies and signs sessions. Generate with: openssl rand -base64 48 — SAVE THIS. Losing it makes stored credentials unrecoverable."
+          Type="Variable" Display="always" Required="true" Mask="true"/>
+
+  <Config Name="App public URL" Target="CAIRN_APP_PUBLIC_URL" Default=""
+          Description="External URL of the web UI, e.g. https://archive.example.com. Only needed if you reverse-proxy this."
+          Type="Variable" Display="advanced" Required="false" Mask="false"/>
+
+  <Config Name="Replay public URL" Target="CAIRN_REPLAY_PUBLIC_URL" Default=""
+          Description="External URL of the replay origin, e.g. https://replay.example.com. Must differ in HOSTNAME from the app URL, not just port — archived pages run JavaScript, and same-host means it can read your session cookie."
+          Type="Variable" Display="advanced" Required="false" Mask="false"/>
+
+  <Config Name="PUID" Target="PUID" Default="99" Description="User ID (Unraid: 99 = nobody)."
+          Type="Variable" Display="advanced" Required="true" Mask="false">99</Config>
+
+  <Config Name="PGID" Target="PGID" Default="100" Description="Group ID (Unraid: 100 = users)."
+          Type="Variable" Display="advanced" Required="true" Mask="false">100</Config>
+
+  <Config Name="UMASK" Target="UMASK" Default="022" Description="File creation mask."
+          Type="Variable" Display="advanced" Required="false" Mask="false">022</Config>
+
+  <Config Name="TZ" Target="TZ" Default="America/New_York" Description="Timezone."
+          Type="Variable" Display="always" Required="true" Mask="false">America/New_York</Config>
+
+  <Config Name="Max concurrent jobs" Target="CAIRN_MAX_CONCURRENT_JOBS" Default="2"
+          Description="How many captures may run at once."
+          Type="Variable" Display="advanced" Required="false" Mask="false">2</Config>
+
+  <Config Name="Trusted proxy" Target="CAIRN_TRUSTED_PROXY" Default=""
+          Description="IP or CIDR of your reverse proxy. Only set this if you actually have one — it enables trusting X-Forwarded-For, which otherwise lets anyone spoof their address past the login rate limiter."
+          Type="Variable" Display="advanced" Required="false" Mask="false"/>
+
+  <Config Name="Fix permissions on boot" Target="CAIRN_FIX_PERMS" Default="0"
+          Description="Set to 1 once if an existing /data tree has the wrong owner. Recursive chown over terabytes is slow — turn it back off afterwards."
+          Type="Variable" Display="advanced" Required="false" Mask="false">0</Config>
+</Container>

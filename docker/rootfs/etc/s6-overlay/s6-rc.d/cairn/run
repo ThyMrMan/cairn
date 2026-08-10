@@ -1,0 +1,13 @@
+#!/command/with-contenv sh
+umask "${UMASK:-022}"
+cd /app
+exec s6-setuidgid abc \
+  /opt/venv/bin/python -m uvicorn cairn.app:app \
+    --factory \
+    --host 0.0.0.0 \
+    --port "${CAIRN_PORT:-8080}" \
+    --no-access-log \
+    --timeout-graceful-shutdown 30
+# No --log-config: uvicorn has no "disable" value and treats /dev/null as an
+# empty config file (hard error). Our create_app() calls configure_logging(),
+# which runs after uvicorn's setup and takes over its handlers anyway.

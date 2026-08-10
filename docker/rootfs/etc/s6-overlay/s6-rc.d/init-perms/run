@@ -1,0 +1,33 @@
+#!/command/with-contenv sh
+set -e
+
+PUID="${PUID:-99}"
+PGID="${PGID:-100}"
+UMASK="${UMASK:-022}"
+
+groupmod -o -g "$PGID" abc 2>/dev/null || true
+usermod  -o -u "$PUID" abc 2>/dev/null || true
+umask "$UMASK"
+
+mkdir -p /config /config/engines /config/backups \
+         /data /data/archives /data/personas /data/tmp /data/trash /data/by-tag
+
+# /config is small and hot — fix it fully every boot.
+chown -R abc:abc /config 2>/dev/null || true
+
+# /data can be terabytes. Recursively chowning it on every boot would take
+# minutes and achieve nothing, so only the directories we create are touched.
+# Set CAIRN_FIX_PERMS=1 once if an existing tree has the wrong owner.
+chown abc:abc /data /data/archives /data/personas /data/tmp /data/trash /data/by-tag \
+  2>/dev/null || true
+
+if [ "${CAIRN_FIX_PERMS:-0}" = "1" ]; then
+  echo "[init-perms] CAIRN_FIX_PERMS=1 — recursively fixing ownership of /data (slow)"
+  chown -R abc:abc /data 2>/dev/null || true
+fi
+
+# Cookie jars are materialized here in plaintext for running jobs; nothing
+# else should ever be able to read them.
+chmod 700 /data/personas /data/tmp 2>/dev/null || true
+
+echo "[init-perms] running as uid=$PUID gid=$PGID umask=$UMASK"

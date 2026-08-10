@@ -1,0 +1,74 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --bg: 250 250 249;
+    --surface: 255 255 255;
+    --raised: 245 245 244;
+    --border: 231 229 228;
+    --fg: 28 25 23;
+    --muted: 120 113 108;
+    --accent: 13 148 136;
+    --danger: 190 18 60;
+    --warn: 180 83 9;
+    --ok: 21 128 61;
+  }
+
+  .dark {
+    --bg: 12 12 14;
+    --surface: 24 24 27;
+    --raised: 32 32 36;
+    --border: 47 47 52;
+    --fg: 237 237 235;
+    --muted: 150 148 145;
+    --accent: 45 212 191;
+    --danger: 251 113 133;
+    --warn: 251 191 36;
+    --ok: 74 222 128;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-bg text-fg antialiased;
+  }
+
+  /* Visible focus everywhere; the default outline disappears on custom
+     backgrounds and keyboard navigation stops being usable. */
+  :focus-visible {
+    @apply outline-none ring-2 ring-accent ring-offset-2 ring-offset-bg;
+  }
+}
+
+@layer components {
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-md px-3.5 py-2
+           text-sm font-medium transition-colors disabled:cursor-not-allowed
+           disabled:opacity-50;
+  }
+  .btn-primary {
+    @apply btn bg-accent text-white hover:opacity-90;
+  }
+  .btn-ghost {
+    @apply btn border border-border bg-surface hover:bg-raised;
+  }
+  .field {
+    @apply w-full rounded-md border border-border bg-surface px-3 py-2 text-sm
+           text-fg placeholder:text-muted focus:border-accent;
+  }
+  .label {
+    @apply mb-1.5 block text-sm font-medium text-fg;
+  }
+  .card {
+    @apply rounded-lg border border-border bg-surface;
+  }
+  .hint {
+    @apply text-xs text-muted;
+  }
+}

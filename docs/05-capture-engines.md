@@ -1,0 +1,365 @@
+# 05 — Capture Engines & the Addon System
+
+Covers R8. An engine is anything that takes a scope + seeds and produces archival artifacts. Core knows the contract; it knows nothing about wget.
+
+---
+
+## Why the seam exists from day one
+
+wget is a good default and a hard ceiling: no JavaScript, no lazy-loaded images, no infinite scroll, no post-login SPA. Any real Blogger archive eventually hits at least the lazy-image problem. Building the interface after the fact means threading it back through the job runner, the schema, and every UI surface that shows capture options — so it goes in with the first engine ([D3](00-decisions.md#d3--wget-for-v1-behind-an-engine-interface-from-day-one)).
+
+---
+
+## Engine manifest
+
+An engine is a directory containing `engine.yaml`. Built-ins ship in the image; addons drop into `/config/engines/<id>/`, discovered on startup and on demand from the UI.
+
+```yaml
+apiVersion: cairn.engine/v1
+id: wget-warc
+name: "wget (WARC)"
+version: "1.0.0"
+description: "Recursive crawl to WARC using GNU wget. Fast, no JavaScript."
+author: "built-in"
+homepage: https://www.gnu.org/software/wget/
+
+runtime:
+  type: subprocess                  # subprocess | docker
+  command: ["python", "-m", "cairn.engines.wget"]
+  # docker runtime instead:
+  # image: webrecorder/browsertrix-crawler:1.7.0
+  # args: ["crawl", "--config", "{job_dir}/browsertrix.yaml"]
+  # mounts: [{host: "{job_dir}", container: "/crawls", mode: rw}]
+  # shm_size: 2g
+
+capabilities:
+  outputs: [warc, cdx, files, log]  # what it can produce
+  javascript: false                 # can it execute page JS?
+  scope: [host, path, regex]        # scope dimensions it enforces
+  auth: [cookies, headers, user_agent]
+  incremental: true                 # supports dedup against a prior capture
+  resumable: false
+  max_concurrency: 1
+  requires_browser: false
+
+preflight:                          # optional; runs before the engine
+  - mint_cookies                    # only if the site's profile is userscript/interactive
+
+config_schema:                      # JSON Schema → auto-generated UI form
+  type: object
+  additionalProperties: false
+  properties:
+    wait_s:
+      type: number
+      title: "Delay between requests (seconds)"
+      minimum: 0
+      default: 1.0
+    random_wait:
+      type: boolean
+      title: "Randomize delay (0.5×–1.5×)"
+      default: true
+    rate_limit:
+      type: string
+      title: "Bandwidth limit"
+      pattern: "^[0-9]+[kmKM]?$"
+      default: "2m"
+    tries:
+      type: integer
+      title: "Retries per URL"
+      minimum: 0
+      maximum: 20
+      default: 3
+    timeout_s:
+      type: integer
+      title: "Per-request timeout"
+      default: 30
+    warc_max_size:
+      type: string
+      title: "WARC segment size"
+      enum: ["500M", "1G", "2G", "5G"]
+      default: "1G"
+    keep_mirror:
+      type: boolean
+      title: "Also keep plain files on disk"
+      description: "Roughly doubles storage. WARC alone is sufficient for replay."
+      default: false
+    content_on_error:
+      type: boolean
+      title: "Archive error page bodies (404s etc.)"
+      default: true
+    user_agent:
+      type: string
+      title: "User agent"
+      default: "Mozilla/5.0 (compatible; Cairn/1.0; +https://github.com/you/cairn)"
+```
+
+### Config schema → generated UI
+
+The JSON Schema is rendered directly into a form (title, description, type, enum, min/max, default). An addon author writes zero frontend code and gets validated, labeled controls. Core validates submitted config against the same schema server-side before persisting — never trust the client to have applied the constraints.
+
+Supported keywords for form generation: `type`, `title`, `description`, `default`, `enum`, `minimum`, `maximum`, `pattern`, `format` (`uri`, `duration`), and `x-cairn-widget` (`textarea`, `password`, `host-list`, `regex-list`) for cases the base vocabulary can't express.
+
+---
+
+## Job protocol
+
+### In — the job spec
+
+Core writes `job.json` into a fresh job directory and passes its path as `argv[1]`.
+
+```json
+{
+  "protocol": "cairn.engine/v1",
+  "job_id": 512,
+  "job_type": "capture",
+  "site": {"id": 42, "slug": "example-blog", "title": "Example Blog"},
+  "output_dir": "/data/archives/Blogs/Photography/example-blog/captures/20260809T142530Z-full-wget",
+  "temp_dir": "/data/tmp/job-512",
+  "seeds": ["https://example.blogspot.com/"],
+  "seed_file": "seeds.txt",
+  "scope": { "...": "see 04 — resolved scope object" },
+  "auth": {
+    "cookies_file": "/data/tmp/job-512/cookies.txt",
+    "user_agent": "Mozilla/5.0 …",
+    "headers": {"Accept-Language": "en-US,en;q=0.9"}
+  },
+  "incremental": {
+    "dedup_cdx": "/data/archives/…/captures/20260801T…-full-wget/wget.cdx"
+  },
+  "config": {"wait_s": 1.0, "random_wait": true, "rate_limit": "2m", "…": "…"},
+  "limits": {"max_bytes": 21474836480, "max_duration_s": 86400, "free_space_floor_bytes": 10737418240}
+}
+```
+
+`seed_file` is a newline-delimited list written next to `job.json` containing **every** URL from sitemaps and feeds. This is the mechanism that sidesteps ArchiveBox's depth ceiling entirely (its issues 1 and 4): the crawler is handed the complete URL set up front and link-following becomes a supplement, not the primary discovery mechanism.
+
+### Out — NDJSON on stdout
+
+One JSON object per line, flushed immediately. Anything the engine writes to **stderr** is captured verbatim as diagnostic output and shown on failure.
+
+```jsonc
+{"type":"started","ts":"2026-08-09T14:25:31Z","tool_version":"GNU Wget 1.21.4"}
+{"type":"log","ts":"…","level":"info","msg":"Loaded 1834 seed URLs"}
+{"type":"url","ts":"…","url":"https://example.blogspot.com/2019/04/post.html",
+ "status":200,"mime":"text/html","size":48213,
+ "digest":"sha1:XQ3…","revisit":false}
+{"type":"url","ts":"…","url":"https://example.blogspot.com/missing","status":404,"error":"Not Found"}
+{"type":"progress","ts":"…","done":412,"total":1847,"bytes":183042110,"rate_bps":204800,"eta_s":4120}
+{"type":"artifact","ts":"…","kind":"warc","path":"warc/part-00000.warc.gz",
+ "size":1073741824,"sha256":"…"}
+{"type":"warning","ts":"…","code":"interstitial_detected",
+ "msg":"Response matched content-warning heuristic","url":"https://…"}
+{"type":"result","ts":"…","status":"ok",
+ "stats":{"urls":1847,"errors":12,"revisits":0,"bytes":4182937600}}
+```
+
+| Event | Handling |
+|---|---|
+| `started` | Record tool version into `manifest.json` |
+| `log` | Appended to `crawl.log`; streamed to the UI |
+| `url` | Batched into `capture_urls` (500–1000 per transaction) |
+| `progress` | Throttled to ~1 Hz into `jobs.progress`; drives the progress bar |
+| `artifact` | Recorded with checksum; verified against disk on completion |
+| `warning` | Surfaced in the UI; `interstitial_detected` triggers cookie re-mint |
+| `result` | Terminal state; must be the last line |
+
+**Contract rules.**
+- Exit `0` with a `result` line = success. Non-zero, or exit without `result`, = failure.
+- Writes go only inside `output_dir` and `temp_dir`. Core enforces this by resolving symlinks and rejecting escapes before recording artifacts.
+- Malformed stdout lines are logged and skipped, never fatal — an engine that prints a stray line shouldn't kill a six-hour crawl.
+- `SIGTERM` means finish the current record, close and flush WARCs, emit `result` with `status: "partial"`, exit. Core waits `grace_period_s` (default 60) then sends `SIGKILL`.
+- Engines must be safe to re-run against the same site — never "resume mid-stream," always "re-crawl and dedup."
+
+### Failure statuses
+
+`ok` (everything fetched), `partial` (some URLs failed or cancelled — artifacts still valid and indexed), `failed` (no usable output).
+
+Partial is the common case on real sites and must be a first-class outcome. A crawl that got 1,835 of 1,847 pages is a successful archive with 12 known gaps, and the UI should present it that way — with the failures listed and individually retryable — not as a red X.
+
+---
+
+## The `wget-warc` engine
+
+A thin Python wrapper: build argv, spawn wget, parse its log into events, register artifacts.
+
+### Command construction
+
+```python
+argv = [
+    "wget",
+    # ── WARC output ────────────────────────────────────────────────
+    "--warc-file",
+    str(out / "warc" / "part"),  # wget appends -NNNNN.warc.gz
+    "--warc-cdx",  # for the NEXT run's --warc-dedup
+    "--warc-max-size",
+    cfg["warc_max_size"],
+    "--warc-tempdir",
+    str(tmp),  # MUST be same filesystem as out
+    "--warc-header",
+    f"operator: cairn",
+    "--warc-header",
+    f"isPartOf: {site['slug']}",
+    "--warc-header",
+    f"description: {capture_label}",
+    "--warc-header",
+    f"http-header-user-agent: {ua}",
+    # ── recursion & scope ──────────────────────────────────────────
+    "--recursive",
+    "--level=inf",
+    "--page-requisites",
+    "--span-hosts",
+    f"--domains={','.join(allowed_hosts)}",
+    # ── politeness ─────────────────────────────────────────────────
+    f"--wait={cfg['wait_s']}",
+    "--random-wait",
+    f"--limit-rate={cfg['rate_limit']}",
+    f"--tries={cfg['tries']}",
+    f"--timeout={cfg['timeout_s']}",
+    "--waitretry=10",
+    # ── container hygiene ──────────────────────────────────────────
+    "--hsts-file",
+    str(tmp / ".wget-hsts"),  # else it writes to $HOME
+    "--no-verbose",
+    "--output-file",
+    str(out / "crawl.log"),
+    "--input-file",
+    str(job_dir / "seeds.txt"),
+]
+
+if scope["reject_patterns"]:
+    argv += ["--regex-type=pcre", "--reject-regex", "|".join(scope["reject_patterns"])]
+if scope["accept_patterns"]:
+    argv += ["--accept-regex", "|".join(scope["accept_patterns"])]
+if excluded_hosts:
+    argv += [f"--exclude-domains={','.join(excluded_hosts)}"]
+if scope.get("path_prefix"):
+    argv += ["--no-parent"]
+if not scope["obey_robots"]:
+    argv += ["-e", "robots=off"]
+if scope.get("max_bytes"):
+    argv += [f"--quota={scope['max_bytes']}"]
+if auth.get("cookies_file"):
+    argv += ["--load-cookies", auth["cookies_file"], "--keep-session-cookies"]
+if cfg["content_on_error"]:
+    argv += ["--content-on-error"]
+if inc.get("dedup_cdx"):
+    argv += ["--warc-dedup", inc["dedup_cdx"]]
+if cfg["keep_mirror"]:
+    argv += ["--directory-prefix", str(out / "files")]
+else:
+    argv += ["--delete-after"]  # WARC is the source of truth
+
+argv += ["--user-agent", ua]
+for k, v in auth.get("headers", {}).items():
+    argv += ["--header", f"{k}: {v}"]
+argv += seeds
+```
+
+**Never build this as a shell string.** `subprocess` with an argv list and `shell=False`, always. URLs, hostnames, and regexes are user-controlled and go straight into this command.
+
+### Flag notes worth knowing
+
+| Flag | Why it matters |
+|---|---|
+| `--warc-file` | Do *not* include `.warc.gz` — wget appends the extension and segment number itself |
+| `--warc-tempdir` | Must be on the same filesystem as the output, or every segment close is a full byte copy |
+| `--warc-dedup=FILE` | Reads a CDX from a previous run and emits `revisit` records instead of re-storing identical payloads. This is what makes incremental feed captures cheap. Behavior differs across wget versions — pin 1.21+ |
+| `--warc-cdx` | Produces the CDX that the *next* run's `--warc-dedup` consumes. Not the replay index ([D11](00-decisions.md#d11--cdxj-for-replay-wgets-cdx-only-for-dedup)) |
+| `--delete-after` | Discards the on-disk mirror; the WARC still gets everything. Halves storage |
+| `--keep-session-cookies` | Blogger interstitial cookies are frequently session cookies. Without this they're dropped and the bypass silently fails |
+| `--content-on-error` | Archives 4xx/5xx response bodies. Often the only record of a page that broke |
+| `--hsts-file` | wget writes `~/.wget-hsts` by default; in a container with a read-only or shifting `$HOME` that's a hard failure |
+| `--regex-type=pcre` | Required — POSIX ERE has no lookahead. Verified working on Debian's wget 1.25.0, whose banner reports neither `+pcre` nor `-pcre` (that flag described PCRE1; Debian links PCRE2 silently). The image checks this by compiling a real pattern, not by grepping the banner |
+| `-N` / `--mirror` | **Avoid.** Timestamping interacts badly with WARC output and recursive re-crawls. Use `--warc-dedup` for incrementality instead |
+| `--convert-links` | Pointless with `--delete-after`, and it never affects WARC records (which are always raw). Only relevant if keeping the mirror |
+
+### Known wget limitations to document in the UI
+
+- **Memory grows with crawl size.** wget keeps the visited-URL set and WARC dedup index in memory. A 100k-URL crawl can reach several GB. Cap `max_pages` for very large sites, or split into path-scoped captures.
+- **No JavaScript.** Lazy-loaded images (`data-src`) are missed. The engine should scan captured HTML for lazy-load attributes and emit a `warning` with a count — "312 images may be lazy-loaded and were not captured; consider the browser engine" — rather than leaving the user to discover the gaps during replay.
+- **No infinite scroll / dynamic pagination.**
+- **Single-threaded.** `wget2` is the drop-in upgrade for speed.
+
+### Log parsing
+
+wget's `--no-verbose` log lines look like:
+
+```
+2026-08-09 14:25:33 URL:https://example.blogspot.com/ [48213/48213] -> "…" [1]
+https://example.blogspot.com/missing:
+2026-08-09 14:25:35 ERROR 404: Not Found.
+```
+
+Parse into `url` events. Prefer wget's own CDX output (`--warc-cdx`, read incrementally) over log scraping where possible — it carries status, MIME, digest, and offset in a stable format, whereas the human-readable log format has drifted between versions.
+
+---
+
+## Post-processors
+
+The second addon type. Same manifest and protocol, different hook point — they run after a capture completes and receive the capture directory instead of a scope.
+
+```yaml
+apiVersion: cairn.postprocessor/v1
+id: cdxj-index
+name: "CDXJ indexer"
+hook: after_capture
+order: 10                     # lower runs first
+required: true                # failure fails the capture
+runtime:
+  type: subprocess
+  command: ["python", "-m", "cairn.post.cdxj"]
+```
+
+Built-in chain:
+
+| Order | ID | Does | Required |
+|---:|---|---|:-:|
+| 10 | `cdxj-index` | Builds `index/site.cdxj` across all of the site's WARCs | ✓ |
+| 20 | `checksum` | SHA-256 every artifact, write into `manifest.json` | ✓ |
+| 30 | `stats` | Roll up counts and sizes onto the site row | ✓ |
+| 40 | `pywb-collection` | Regenerate pywb config, reload the collection | ✓ |
+| 50 | `symlink-tree` | Refresh `/data/by-tag` (debounced) | |
+| 60 | `text-extract` | Extract readable text into `derived/text/` for search (M8) | |
+| 70 | `screenshot` | Homepage thumbnail for the site card (needs browser) | |
+| 80 | `wacz-export` | Package as `.wacz` if the site opts in | |
+| 90 | `notify` | ntfy / Apprise / webhook on completion or failure | |
+
+---
+
+## Candidate engines beyond wget
+
+Ranked by value. Details and alternatives in [14](14-tooling-landscape.md).
+
+### 1. `browsertrix-crawler` — the JavaScript answer
+
+Single Docker image, Chromium-based, purpose-built for archiving. Handles lazy-load and infinite scroll via *behaviors* (autoscroll, auto-play, site-specific scripts), supports `--profile` for pre-authenticated browser profiles, outputs WARC and WACZ.
+
+This is the most valuable second engine because it covers every wget limitation at once, and its profile system is a natural home for the `interactive` access-profile mode ([06](06-access-profiles.md)). Runs via the `docker` runtime type, needs `--shm-size=2g`.
+
+### 2. `single-file-cli` — the one-file snapshot
+
+Produces a single self-contained HTML file with everything inlined. Not WARC, so not replay-through-pywb, but perfect for "just keep this one page forever" and trivially portable. Good as a *supplementary* engine that runs alongside the primary one on selected pages.
+
+### 3. `yt-dlp` — embedded media
+
+Blogs embed YouTube and Vimeo. Neither wget nor a browser crawler captures the actual video stream. A post-processor that scans captured HTML for embeds and offers per-site opt-in media capture into `derived/media/` closes a real gap — and it's the gap people notice years later.
+
+### 4. `wget2` — the speed upgrade
+
+Multi-threaded, HTTP/2, WARC support. Near drop-in replacement. Flag names differ slightly, so it's a separate engine rather than a config toggle.
+
+### 5. `warcprox` — record anything
+
+A MITM recording proxy. Point any HTTP client — a headless browser, a custom script, even your own desktop browser — through it and everything gets WARC'd. The most flexible option and the escape hatch for sites nothing else handles. Requires CA certificate handling, which is a UI/UX cost.
+
+---
+
+## Writing an addon: the short version
+
+1. `mkdir /config/engines/my-engine`
+2. Write `engine.yaml` with `id`, `runtime`, `capabilities`, `config_schema`
+3. Write an executable that reads `job.json` from `argv[1]` and emits NDJSON on stdout
+4. Restart, or hit **Rescan engines** in Settings
+5. The engine appears in the site editor with a form generated from your schema
+
+Ship a `cairn-engine-template` repo with a working Python example, a schema validator (`cairn engines validate ./my-engine`), and a protocol conformance test harness. The addon system is only real if someone other than you can use it, and the conformance test is what makes that true.

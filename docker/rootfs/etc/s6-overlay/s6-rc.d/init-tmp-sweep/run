@@ -1,0 +1,7 @@
+#!/command/with-contenv sh
+# /data/tmp holds plaintext cookie jars materialized for running jobs. A crash
+# leaves them behind, so the window is closed at every boot (docs/06).
+if [ -d /data/tmp ]; then
+  find /data/tmp -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null || true
+  echo "[init-tmp-sweep] cleared /data/tmp"
+fi

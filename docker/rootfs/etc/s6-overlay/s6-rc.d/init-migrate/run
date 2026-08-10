@@ -1,0 +1,7 @@
+#!/command/with-contenv sh
+set -e
+# The app also migrates during startup, so this is not strictly required —
+# but running it here turns a bad migration into one clear error before the
+# server exists, instead of a crash-looping service.
+cd /app
+exec s6-setuidgid abc /opt/venv/bin/cairn migrate

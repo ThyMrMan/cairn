@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# Node
+node_modules/
+frontend/dist/
+backend/cairn/static/
+*.tsbuildinfo
+
+# Local runtime data — never commit archives or databases
+/config/
+/data/
+*.db
+*.db-wal
+*.db-shm
+secret.key
+*.warc
+*.warc.gz
+*.cdxj
+*.wacz
+
+# Env
+.env
+.env.local
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
