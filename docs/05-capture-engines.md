@@ -261,6 +261,25 @@ for k, v in auth.get("headers", {}).items():
 
 **Seeds go through exactly one channel.** An earlier version of this document passed `--input-file` *and* appended the seeds positionally. wget does not de-duplicate across the two: it queues the URL twice and crawls the entire site a second time, for double the duration and roughly double the WARC, with no warning and exit code 0. The first real end-to-end capture did exactly that — the tell was 11 URL records for 5 unique pages. Use the seed file when it exists, positional arguments otherwise.
 
+### `--delete-after` is incompatible with a seed list
+
+The mirror on disk is not just output — it is how wget remembers which URLs it already has. `--delete-after` removes each file the instant it is written, and every subsequent seed then rediscovers the whole site as new.
+
+With one seed this is invisible. With a seed list it is quadratic in the size of the blog, and nothing in the log says so. Measured on wget 1.25.0 against a six-seed site whose correct result is eight records:
+
+| | records | distinct | ratio | orphan page found |
+|---|---:|---:|---:|:-:|
+| one seed, recursive | 7 | 7 | 1.0× | ✗ — unreachable by links |
+| all seeds, `--delete-after` | 38 | 8 | 4.8× | ✓ |
+| all seeds, keep the files | **8** | **8** | **1.0×** | ✓ |
+| all seeds, `--no-recursion` | 0 | 0 | — | ✗ |
+
+The orphan is a page listed in the sitemap but linked from nowhere — the case seed injection exists to cover. Only the third row gets both properties, so the engine always passes `--directory-prefix` and never `--delete-after`. `--no-clobber` and `--timestamping` make no difference; the mirror itself is the mechanism.
+
+When the user has not asked to keep the mirror it is written into the job's temp directory and removed with it, so the cost is transient disk during the crawl rather than permanent storage. That is a real cost — roughly the uncompressed size of what is being archived — and it is the price of a crawl that reaches pages no chain of links leads to.
+
+Failed requests are the one exception: a 404 writes no file, so it leaves no dedup record and a later seed may retry it. Bounded, cheap, and arguably correct, since a failure can be transient.
+
 ### Flag notes worth knowing
 
 | Flag | Why it matters |
@@ -269,7 +288,7 @@ for k, v in auth.get("headers", {}).items():
 | `--warc-tempdir` | Must be on the same filesystem as the output, or every segment close is a full byte copy |
 | `--warc-dedup=FILE` | Reads a CDX from a previous run and emits `revisit` records instead of re-storing identical payloads. This is what makes incremental feed captures cheap. Behavior differs across wget versions — pin 1.21+ |
 | `--warc-cdx` | Produces the CDX that the *next* run's `--warc-dedup` consumes. Not the replay index ([D11](00-decisions.md#d11--cdxj-for-replay-wgets-cdx-only-for-dedup)) |
-| `--delete-after` | Discards the on-disk mirror; the WARC still gets everything. Halves storage |
+| `--delete-after` | **Do not use.** See below — it silently multiplies the crawl |
 | `--keep-session-cookies` | Blogger interstitial cookies are frequently session cookies. Without this they're dropped and the bypass silently fails |
 | `--content-on-error` | Archives 4xx/5xx response bodies. Often the only record of a page that broke |
 | `--hsts-file` | wget writes `~/.wget-hsts` by default; in a container with a read-only or shifting `$HOME` that's a hard failure |

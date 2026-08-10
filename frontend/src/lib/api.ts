@@ -311,6 +311,67 @@ export type Engine = {
   error: string | null;
 };
 
+// ── discovery ────────────────────────────────────────────────────────────
+
+export type DiscoveredHost = {
+  host: string;
+  registrable: string;
+  is_seed_host: boolean;
+  link_refs: number;
+  asset_refs: number;
+  distinct_urls: number;
+  role: string;
+  sample_urls: string[];
+  crawl_pages: boolean;
+  fetch_assets: boolean;
+  allow_extensionless: boolean;
+};
+
+export type DiscoverySummary = {
+  seed_url: string;
+  seed_host: string;
+  title: string | null;
+  fingerprint: {
+    platform: string;
+    confidence: string;
+    evidence: string[];
+    preset: { id: string; name: string; notes: string } | null;
+  };
+  robots: { fetched: boolean; sitemaps: string[]; disallowed: string[] };
+  sitemaps: string[];
+  feeds: string[];
+  urls_from_sitemaps: number;
+  urls_from_feeds: number;
+  pages_fetched: number;
+  errors: string[];
+  warnings: string[];
+};
+
+export type DiscoveryResponse = {
+  discovery: {
+    id: number;
+    started_at: string;
+    finished_at: string | null;
+    pages_fetched: number;
+    urls_found: number;
+    summary: DiscoverySummary;
+  } | null;
+  hosts: DiscoveredHost[];
+  diff?: { new_hosts: string[]; gone_hosts: string[] };
+  scope_user_edited?: boolean;
+  message?: string;
+};
+
+export type ScopePreview = {
+  pages_to_crawl: number;
+  excluded_by_pattern: number;
+  crawl_hosts: string[];
+  asset_hosts: string[];
+  estimated_bytes: number;
+  estimated_seconds: number;
+  notes: string[];
+};
+
 // ── endpoints ────────────────────────────────────────────────────────────
 
 export const endpoints = {
@@ -383,6 +444,13 @@ export const endpoints = {
   clearMaterial: (id: number) => api.del<{ ok: boolean }>(`/profiles/${id}/material`),
   coverage: (id: number, siteId: number) =>
     api.get<Coverage>(`/profiles/${id}/coverage?site_id=${siteId}`),
+
+  // ── discovery ──────────────────────────────────────────────────────────
+  discover: (id: number) => api.post<{ job_id: number }>(`/sites/${id}/discover`),
+  discovery: (id: number) => api.get<DiscoveryResponse>(`/sites/${id}/discovery`),
+  scopePreview: (id: number) => api.post<ScopePreview>(`/sites/${id}/scope/preview`),
+  applyPreset: (id: number, preset: string) =>
+    api.post<Scope>(`/sites/${id}/scope/apply-preset`, { preset }),
 
   // ── engines ────────────────────────────────────────────────────────────
   engines: () => api.get<Engine[]>("/engines"),

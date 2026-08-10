@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 
+import { DomainPicker } from "../components/DomainPicker";
 import { LiveLog } from "../components/LiveLog";
 import { Alert, EmptyState, Spinner } from "../components/ui";
 import { ApiError, endpoints } from "../lib/api";
@@ -125,7 +126,10 @@ export default function SiteDetail() {
         </Alert>
       )}
 
-      <Scope siteId={siteId} />
+      <Scope
+        siteId={siteId}
+        onChanged={() => void client.invalidateQueries({ queryKey: ["site", siteId] })}
+      />
 
       <section className="space-y-3">
         <h2 className="text-sm font-medium">Captures</h2>
@@ -170,8 +174,8 @@ export default function SiteDetail() {
   );
 }
 
-function Scope({ siteId }: { siteId: number }) {
-  const [open, setOpen] = useState(false);
+function Scope({ siteId, onChanged }: { siteId: number; onChanged?: () => void }) {
+  const [open, setOpen] = useState(true);
   const scope = useQuery({
     queryKey: ["scope", siteId],
     queryFn: () => endpoints.scope(siteId),
@@ -184,50 +188,26 @@ function Scope({ siteId }: { siteId: number }) {
         className="flex w-full items-center justify-between text-left"
         onClick={() => setOpen((v) => !v)}
       >
-        <h2 className="text-sm font-medium">Crawl scope</h2>
+        <div>
+          <h2 className="text-sm font-medium">Domains and crawl scope</h2>
+          <p className="hint mt-0.5">Which hosts to crawl, and which to take files from.</p>
+        </div>
         <span className="text-xs text-muted">{open ? "Hide" : "Show"}</span>
       </button>
 
       {open && (
         <div className="mt-4 space-y-4">
-          {scope.isLoading && <Spinner className="h-4 w-4 text-muted" />}
-          {scope.data && (
-            <>
-              <table className="w-full text-sm">
-                <thead className="text-left text-xs text-muted">
-                  <tr>
-                    <th className="pb-1.5 font-medium">Host</th>
-                    <th className="pb-1.5 text-center font-medium">Crawl pages</th>
-                    <th className="pb-1.5 text-center font-medium">Fetch assets</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {scope.data.hosts.map((host) => (
-                    <tr key={host.host} className="border-t border-border">
-                      <td className="py-1.5 font-mono text-xs">{host.host}</td>
-                      <td className="py-1.5 text-center">{host.crawl_pages ? "✓" : "—"}</td>
-                      <td className="py-1.5 text-center">{host.fetch_assets ? "✓" : "—"}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+          <DomainPicker siteId={siteId} onChanged={onChanged} />
 
-              <p className="hint">
-                Selecting which domains to include arrives with discovery in M2. Until then a
-                site is scoped to its own host.
-              </p>
-
-              {scope.data.wget_preview.length > 0 && (
-                <details>
-                  <summary className="cursor-pointer text-xs text-muted">
-                    Exactly what the crawler will be told
-                  </summary>
-                  <pre className="mt-2 overflow-x-auto rounded bg-raised/60 p-3 font-mono text-[11px]">
-                    {scope.data.wget_preview.join("\n")}
-                  </pre>
-                </details>
-              )}
-            </>
+          {scope.data && scope.data.wget_preview.length > 0 && (
+            <details>
+              <summary className="cursor-pointer text-xs text-muted">
+                Exactly what the crawler will be told
+              </summary>
+              <pre className="mt-2 overflow-x-auto rounded bg-raised/60 p-3 font-mono text-[11px]">
+                {scope.data.wget_preview.join("\n")}
+              </pre>
+            </details>
           )}
         </div>
       )}

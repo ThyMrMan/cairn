@@ -52,11 +52,13 @@ Read in order for a full picture; each is standalone if you're looking for one t
 
 ## Status
 
-**M0 (foundation & auth) and M1 (capture core) are complete** — see the [roadmap](docs/12-roadmap.md).
+**M0 (foundation & auth), M1 (capture core) and M2 (discovery & scoping) are complete** — see the [roadmap](docs/12-roadmap.md).
 
-You can run the container, create an account, add a site, upload a `cookies.txt` for a blog behind a content warning, and press **Capture** — then watch URLs stream past in a live log and end up with a WARC on disk, with checksums, a `manifest.json`, and the failures listed and greppable. Confirmed against a real Blogger blog behind an interstitial: the cookie bypass works and the archived pages contain the actual content.
+You can run the container, create an account, add a site, upload a `cookies.txt` for a blog behind a content warning, and press **Index** — it reads the sitemap and feeds, works out which domains the site pulls from, and shows you a table with two checkboxes per host: crawl its pages, and fetch its files. On a Blogger blog the answer arrives already correct, including the `?m=1` reject that otherwise archives every post twice. Then press **Capture** and watch URLs stream past in a live log, ending with a WARC on disk, checksums, a `manifest.json`, and the failures listed and greppable.
 
-What is not there yet: the domain picker (M2), browsing the archive in the UI (M3), and folders and tags (M4). Until discovery lands, a new site is scoped to its own host, which is the safe default rather than a placeholder.
+Confirmed against a real Blogger blog behind an interstitial: the cookie bypass works and the archived pages contain the actual content.
+
+What is not there yet: browsing the archive in the UI (M3), and folders and tags (M4).
 
 ## Running it
 

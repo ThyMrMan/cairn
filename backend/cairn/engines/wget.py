@@ -208,11 +208,30 @@ def build_argv(spec: JobSpec, out: Path, tmp: Path, job_dir: Path) -> list[str]:
         argv += ["--warc-dedup", spec.incremental.dedup_cdx]
 
     # ── mirror ───────────────────────────────────────────────────────────
-    if cfg.get("keep_mirror"):
-        argv += ["--directory-prefix", str(out / "files")]
-    else:
-        # The WARC has everything; the mirror would roughly double storage.
-        argv.append("--delete-after")
+    #
+    # wget is always given somewhere to write files, and `--delete-after` is
+    # never used. That looks wasteful — the WARC already holds everything — but
+    # the on-disk mirror is also how wget remembers what it has fetched, and
+    # deleting each file immediately destroys that memory.
+    #
+    # It only shows with more than one seed. Measured on wget 1.25.0 against a
+    # six-seed site whose ideal result is eight records:
+    #
+    #     --delete-after        38 records, 8 distinct   4.8x
+    #     keep the files         8 records, 8 distinct   1.0x
+    #
+    # Every seed re-crawls the whole site. Handing the crawler a sitemap's
+    # worth of URLs — the entire point of discovery — would therefore multiply
+    # the work by the number of posts, hammering the origin and bloating the
+    # archive, with nothing in the log to say so.
+    #
+    # When the user does not want the mirror it goes to the job's temp
+    # directory and is removed with it, so the cost is transient disk during
+    # the crawl rather than permanent storage.
+    argv += [
+        "--directory-prefix",
+        str(out / "files") if cfg.get("keep_mirror") else str(tmp / "mirror"),
+    ]
 
     # Seeds go in exactly one place. wget does NOT de-duplicate a URL that
     # appears both in --input-file and on the command line: it queues both and

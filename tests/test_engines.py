@@ -286,18 +286,34 @@ def test_argv_has_the_warc_essentials(tmp_path: Path) -> None:
     assert "--hsts-file" in argv
 
 
-def test_argv_defaults_to_discarding_the_mirror(tmp_path: Path) -> None:
+def test_never_uses_delete_after(tmp_path: Path) -> None:
+    """--delete-after destroys wget's memory of what it has already fetched.
+
+    The mirror on disk is that memory. Deleting each file immediately makes
+    every additional seed re-crawl the whole site: measured at 4.8x the records
+    for six seeds, against 1.0x when the files are kept. Since discovery hands
+    the crawler one seed per post, that multiplies the work by the post count
+    with nothing in the log to explain it.
+    """
     argv = build_argv(wget_spec(tmp_path), tmp_path / "out", tmp_path / "tmp", tmp_path / "tmp")
-    assert "--delete-after" in argv
-    assert "--directory-prefix" not in argv
+    assert "--delete-after" not in argv
+    assert "--directory-prefix" in argv
 
 
-def test_argv_keeps_the_mirror_when_asked(tmp_path: Path) -> None:
+def test_the_discarded_mirror_goes_to_the_temp_directory(tmp_path: Path) -> None:
+    """So it is removed with the job rather than left in the archive."""
+    argv = build_argv(wget_spec(tmp_path), tmp_path / "out", tmp_path / "tmp", tmp_path / "tmp")
+    prefix = argv[argv.index("--directory-prefix") + 1]
+    assert str(tmp_path / "tmp") in prefix
+    assert str(tmp_path / "out") not in prefix
+
+
+def test_argv_keeps_the_mirror_in_the_archive_when_asked(tmp_path: Path) -> None:
     spec = wget_spec(tmp_path)
     spec.config["keep_mirror"] = True
     argv = build_argv(spec, tmp_path / "out", tmp_path / "tmp", tmp_path / "tmp")
-    assert "--delete-after" not in argv
-    assert "--directory-prefix" in argv
+    prefix = argv[argv.index("--directory-prefix") + 1]
+    assert str(tmp_path / "out") in prefix
 
 
 def test_cookies_always_arrive_with_keep_session_cookies(tmp_path: Path) -> None:

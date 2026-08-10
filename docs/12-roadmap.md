@@ -78,9 +78,21 @@ Also worth doing: run `--warc-dedup` against a second capture and verify you get
 
 ---
 
-## M2 — Discovery & scoping
+## M2 — Discovery & scoping ✅ **complete**
 
 **Ships:** the domain picker — the feature that most distinguishes this from what exists.
+
+> **Status.** Add a blog and press Index: it reads robots.txt, sitemaps and feeds, samples pages to find asset hosts, fingerprints the platform, and presents the picker with the Blogger case already correct. 272 tests pass on Linux with real wget.
+>
+> Five corrections, all from running it rather than reading about it:
+>
+> - **The PSL's private section solves multi-tenant grouping outright.** This document planned to flag `blogspot.com`-style suffixes and fall back to full-host grouping; `include_psl_private_domains=True` already returns `foo.blogspot.com` and `bar.blogspot.com` as distinct, and groups all four `N.bp.blogspot.com` as one CDN ([04](04-discovery-and-scoping.md#the-domain-picker)).
+> - **`--delete-after` is incompatible with a seed list.** The on-disk mirror is how wget remembers what it has fetched, so discarding it makes every extra seed re-crawl the whole site — 4.8× the records for six seeds, and quadratic in the size of a real blog. Invisible with one seed, which is why M1 never saw it ([05](05-capture-engines.md#--delete-after-is-incompatible-with-a-seed-list)).
+> - **A link to a file is not a link to a page.** Blogger's lightbox wraps every image in an anchor to the full-size file, which made the image CDN look like a site with thousands of inbound links.
+> - **`?page=N` sitemap pagination needs a no-new-URLs guard.** It is a Blogger convention, not a spec; a server that ignores the parameter serves page 1 sixty times over.
+> - **An HTML error page is not an empty sitemap.** It parses as well-formed XML and yields nothing, which is indistinguishable from a site that has none unless the root element is checked.
+>
+> And one bug: stripping `<script>` elements before reading attributes took their own `src` with them, so every external script was invisible to both discovery and the post-capture gap report.
 
 - Discovery engine: robots, sitemaps (paginated + index), feeds, bounded sampling crawl
 - Platform fingerprinting + Blogger preset

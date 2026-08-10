@@ -206,8 +206,17 @@ def _looks_paginated(url: str) -> bool:
 async def _blogger_sitemap_pages(
     fetcher: Fetcher, base: str, source: UrlSource, seen: set[str]
 ) -> list[tuple[str, int]]:
-    """Follow ?page=2,3,… until a page yields nothing."""
+    """Follow ?page=2,3,… until a page adds nothing new.
+
+    Stopping on "no URLs" alone is not enough. `?page=N` is a Blogger
+    convention, not part of the sitemap spec, and a server that has never
+    heard of it simply ignores the parameter and serves page 1 again — so the
+    loop happily fetches the same document sixty times and reports sixty
+    sitemaps. Stopping when a page contributes no *new* URL covers both the
+    real end of pagination and the server that was never paginating.
+    """
     found: list[tuple[str, int]] = []
+    known = set(source.urls)
     for page in range(2, MAX_SITEMAP_DOCS):
         candidate = _with_query(base, f"page={page}")
         if _normalize(candidate) in seen:
@@ -221,10 +230,16 @@ async def _blogger_sitemap_pages(
             break
         if not urls:
             break
+
+        fresh = [(loc, lastmod) for loc, lastmod in urls if loc not in known]
+        if not fresh:
+            break
+
         seen.add(_normalize(candidate))
         source.documents.append(candidate)
-        for loc, lastmod in urls:
+        for loc, lastmod in fresh:
             source.urls.append(loc)
+            known.add(loc)
             if lastmod:
                 source.lastmod[loc] = lastmod
         if len(source.urls) >= MAX_URLS:

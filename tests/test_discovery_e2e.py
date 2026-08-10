@@ -256,6 +256,22 @@ def test_discovered_feeds_are_attached_to_the_site(authed: TestClient, blogger_s
     assert any("/feeds/posts/default" in feed for feed in result["discovery"]["summary"]["feeds"])
 
 
+def test_pagination_stops_when_a_server_ignores_the_page_parameter(
+    authed: TestClient, blogger_site: str
+) -> None:
+    """`?page=N` is a Blogger convention, not part of the sitemap spec.
+
+    A server that has never heard of it serves page 1 again, so a loop that
+    only stops on an empty response fetches the same document sixty times and
+    reports sixty sitemaps. The fixture ignores the parameter, exactly like
+    most servers would.
+    """
+    _site_id, result = discovered_site(authed, blogger_site)
+    summary = result["discovery"]["summary"]
+    assert len(summary["sitemaps"]) == 1, f"refetched the same sitemap: {summary['sitemaps']}"
+    assert summary["urls_from_sitemaps"] == len(POSTS)
+
+
 def test_scope_preview_estimates_without_fetching(authed: TestClient, blogger_site: str) -> None:
     site_id, _result = discovered_site(authed, blogger_site)
     preview = authed.post(f"/api/sites/{site_id}/scope/preview", headers=XHR).json()

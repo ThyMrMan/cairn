@@ -70,7 +70,21 @@ Discovery counts hosts; it does not follow them off-host. Sampling a hundred pag
 
 ## The domain picker
 
-Every host discovered is grouped by **registrable domain** via `tldextract` (Public Suffix List). This matters more than it looks: `example.co.uk` and `other.co.uk` must not group as "uk", and `foo.blogspot.com` / `bar.blogspot.com` are *different sites* despite sharing a registrable domain — so `blogspot.com`-style multi-tenant suffixes get flagged and grouping falls back to full host.
+Every host discovered is grouped by **registrable domain** via `tldextract` (Public Suffix List). This matters more than it looks: `example.co.uk` and `other.co.uk` must not group as "uk", and `foo.blogspot.com` / `bar.blogspot.com` are *different sites* despite appearing to share a registrable domain.
+
+**The PSL already knows this, via its private section.** An earlier version of this document planned to detect multi-tenant suffixes and fall back to full-host grouping. No such workaround is needed — `include_psl_private_domains=True` gives the right answer directly, because `blogspot.com` and `github.io` are listed as suffixes in their own right:
+
+| host | default | with private domains |
+|---|---|---|
+| `foo.blogspot.com` | blogspot.com | **foo.blogspot.com** |
+| `bar.blogspot.com` | blogspot.com | **bar.blogspot.com** |
+| `1.bp.blogspot.com` | blogspot.com | **bp.blogspot.com** |
+| `myblog.github.io` | github.io | **myblog.github.io** |
+| `example.co.uk` | example.co.uk | example.co.uk |
+
+Two people's blogs stay apart, and all four `N.bp.blogspot.com` image hosts group as one CDN — exactly what the picker should show. The bundled snapshot is used with `suffix_list_urls=()` so nothing fetches a list at runtime; a container that phones home on first use fails in precisely the air-gapped setups this tool is built for.
+
+**A link to a file is not a link to a page.** Blogger wraps every post image in `<a href=".../s1600/image.jpg">` for its lightbox, so counting anchors naively gives the image CDN thousands of inbound "page" links and pushes it out of the assets-only default that is correct for it. Anchors whose URL carries an asset extension count as asset references instead.
 
 ### Classification
 

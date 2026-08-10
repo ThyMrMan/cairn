@@ -205,6 +205,43 @@ def test_each_page_is_fetched_once(authed: TestClient, site_server: str) -> None
     assert not duplicated, f"these URLs were fetched more than once: {sorted(duplicated)}"
 
 
+def test_many_seeds_do_not_multiply_the_crawl(authed: TestClient, site_server: str) -> None:
+    """Handing the crawler one seed per page must not re-crawl per seed.
+
+    wget's on-disk mirror is how it remembers what it already has. With
+    --delete-after each file vanishes immediately, so every extra seed
+    rediscovers the whole site as new — 4.8x the records for six seeds,
+    measured. Discovery supplies one seed per post, so this scales with the
+    size of the blog and shows up nowhere in the log.
+    """
+    created = authed.post(
+        "/api/sites", json={"seed_url": site_server, "title": "Many Seeds"}, headers=XHR
+    )
+    site_id = created.json()["id"]
+
+    extra = [f"{site_server.rstrip('/')}{path}" for path in ("/post-1.html", "/post-2.html")]
+    started = authed.post(
+        f"/api/sites/{site_id}/capture",
+        json={"kind": "full", "extra_seeds": extra},
+        headers=XHR,
+    )
+    assert started.status_code == 202, started.text
+    job = wait_for_job(authed, started.json()["job_id"])
+    assert job["status"] == "ok", f"capture failed: {job.get('error')!r}"
+
+    capture = authed.get(f"/api/sites/{site_id}/captures").json()[0]
+    rows = authed.get(f"/api/captures/{capture['id']}/urls?per_page=500").json()["items"]
+
+    # Only successful fetches are checked. A request that failed wrote no file,
+    # so it left no dedup record either and a later seed may retry it — which
+    # is bounded, cheap, and arguably right, since a 404 can be transient. The
+    # property that matters is that archived content is not duplicated.
+    fetched = [r["url"] for r in rows if not r["error"] and (r["status_code"] or 0) < 400]
+    repeated = {u: fetched.count(u) for u in set(fetched) if fetched.count(u) > 1}
+    assert not repeated, f"seeds multiplied the crawl: {repeated}"
+    assert len(fetched) >= 4, "the capture fetched almost nothing; the assertion is vacuous"
+
+
 def test_capture_writes_a_manifest_with_verified_checksums(
     authed: TestClient, settings: Settings, site_server: str
 ) -> None:
