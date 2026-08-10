@@ -64,7 +64,7 @@ Also worth doing: run `--warc-dedup` against a second capture and verify you get
 > - **A finished job's SSE stream never closed.** It replayed history then blocked forever, holding a connection and a task open for every completed job anyone opened.
 > - **The app's own CSP blocked the app's own inline script** — the theme applied before first paint. A white flash for dark-mode users and a console violation, breaking nothing else, therefore invisible. The policy now carries a hash computed from the shipped file.
 >
-> **Still open from this milestone:** the Blogger interstitial has been exercised through the profile pipeline (parse, seal, materialize, coverage-check) but not yet against a live flagged blog end to end — that needs a real one, and is the first thing to do with M2.
+> **Confirmed against a live flagged blog.** A real Blogger site behind a content warning, a `cookies.txt` uploaded through the UI, the interstitial bypassed, and readable content in the resulting WARC. That is the milestone's exit criterion met in full, and it retires the M-1 spike's only remaining assumption: cookies alone are sufficient for this case, so the browser-based path stays in M5 rather than being pulled forward.
 
 - Engine registry, manifest loading, JSON Schema validation
 - Job supervisor: queue, spawn, NDJSON parsing, event fan-out, cancellation, crash recovery
