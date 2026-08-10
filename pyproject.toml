@@ -19,6 +19,13 @@ dependencies = [
     "itsdangerous>=2.2",
     "pyyaml>=6.0",
     "jsonschema>=4.23",
+    "httpx>=0.28",
+    # Sitemap parsing reads attacker-controlled XML. The stdlib parsers are
+    # vulnerable to entity expansion by default (docs/11).
+    "defusedxml>=0.7",
+    "feedparser>=6.0",
+    # Public Suffix List, so example.co.uk and other.co.uk do not group as "uk".
+    "tldextract>=5.1",
     # Reads captured HTML back out of the WARC to report assets a page
     # referenced but the crawl never fetched — the backstop for scope rules
     # that can drop extension-less images (docs/04).
@@ -88,8 +95,8 @@ module = "cairn.db.migrations.*"
 ignore_errors = true
 
 [[tool.mypy.overrides]]
-# warcio ships no py.typed marker.
-module = "warcio.*"
+# These ship no py.typed marker.
+module = ["warcio.*", "defusedxml.*", "feedparser.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

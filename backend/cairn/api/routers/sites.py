@@ -308,6 +308,9 @@ def put_scope(
     except ScopeError as exc:
         raise ApiError("scope_invalid", str(exc), status_code=422) from exc
 
+    # Remember that a person chose this, so re-running discovery reports what
+    # changed instead of overwriting the selection.
+    site.scope_settings = {**(site.scope_settings or {}), "user_edited": True}
     site_service.write_site_yaml(db, settings, site)
     audit.record(db, "site.scope", actor=user.username, target=site.slug, ip=ip)
     return _scope_response(db, site)

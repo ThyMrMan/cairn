@@ -74,6 +74,27 @@ def test_finds_quoted_and_unquoted_css_urls() -> None:
     } <= found
 
 
+def test_finds_external_script_and_stylesheet_sources() -> None:
+    """Stripping a <script> element must not take its own src with it.
+
+    Removing the whole element rather than just its contents drops every
+    external script from the results — which showed up as an analytics host
+    being absent from the domain picker entirely, and would equally have hidden
+    a missing script from the gap report.
+    """
+    body = (
+        b'<html><head><script src="https://cdn.example/app.js">var inline = 1;</script>'
+        b'<script>document.write("https://not-a-real-reference.example/x.js")</script>'
+        b"<style>body{background:url(/bg.png)}</style></head></html>"
+    )
+    found = _referenced_assets(body, "https://blog.example.com/")
+    assert "https://cdn.example/app.js" in found
+    assert "https://blog.example.com/bg.png" in found
+    # URLs written inside script bodies are not references; guessing at strings
+    # in JavaScript is how bogus requests get made.
+    assert not any("not-a-real-reference" in u for u in found)
+
+
 def test_still_finds_tag_references() -> None:
     body = (
         b'<html><body><img src="/logo.png"><link rel="stylesheet" href="/style.css"></body></html>'

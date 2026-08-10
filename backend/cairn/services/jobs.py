@@ -264,6 +264,14 @@ class JobSupervisor:
         job_id = running.job_id
         temp_dir = self._settings.tmp_dir / f"job-{job_id}"
         try:
+            job_type = await asyncio.to_thread(self._job_type, job_id)
+            if job_type == "discovery":
+                # Discovery writes no WARC and needs database access to record
+                # the hosts it found, so it runs in-process rather than as an
+                # engine subprocess. It still goes through the queue, the event
+                # bus and crash recovery like everything else.
+                await self._run_discovery(running, temp_dir)
+                return
             prepared = await asyncio.to_thread(self._prepare, job_id, temp_dir)
             running.capture_id = prepared.capture_id
             await self._execute(running, prepared)
@@ -281,6 +289,114 @@ class JobSupervisor:
             # ends rather than waiting for the next boot sweep (docs/06).
             await asyncio.to_thread(_remove_tree, temp_dir)
             self._wake.set()
+
+    def _job_type(self, job_id: int) -> str:
+        with self._sessions() as session:
+            job = session.get(Job, job_id)
+            return job.type if job else ""
+
+    # ── discovery ────────────────────────────────────────────────────────
+
+    async def _run_discovery(self, running: RunningJob, temp_dir: Path) -> None:
+        from cairn.discovery.runner import DiscoveryOptions, discover
+
+        job_id = running.job_id
+        setup = await asyncio.to_thread(self._prepare_discovery, job_id, temp_dir)
+        self._bus.publish(job_id, EV_STATUS, {"status": "running"})
+
+        def progress(stage: str, fields: dict[str, Any]) -> None:
+            message = fields.pop("message", None)
+            detail = ", ".join(f"{k}={v}" for k, v in fields.items())
+            self._bus.publish(
+                job_id,
+                EV_LOG,
+                {"level": "info", "msg": f"{stage}: {message or detail or '…'}"},
+            )
+            if fields:
+                self._bus.publish(job_id, EV_PROGRESS, {"done": fields.get("pages", 0), **fields})
+
+        result = await discover(setup["seed_url"], DiscoveryOptions(**setup["options"]), progress)
+
+        status = "failed" if result.errors and not result.hosts else "ok"
+        await asyncio.to_thread(self._finish_discovery, job_id, result, status)
+        self._bus.publish(
+            job_id,
+            EV_STATUS,
+            {
+                "status": status,
+                "hosts": len(result.hosts),
+                "urls": len(result.all_urls),
+                "error": result.errors[0] if (status == "failed" and result.errors) else None,
+            },
+        )
+
+    def _prepare_discovery(self, job_id: int, temp_dir: Path) -> dict[str, Any]:
+        with self._sessions() as session:
+            job = session.get(Job, job_id)
+            if job is None or job.site_id is None:
+                raise JobError(f"job {job_id} has no site")
+            site = session.get(Site, job.site_id)
+            if site is None or site.deleted_at is not None:
+                raise JobError("the site was deleted before discovery started")
+
+            spec = job.spec or {}
+            options: dict[str, Any] = {
+                "max_pages": int(spec.get("max_pages") or 100),
+                "max_depth": int(spec.get("max_depth") or 3),
+            }
+
+            # Discovery must see what a reader sees. Without the jar, a flagged
+            # blog answers every probe with the interstitial and the picker
+            # ends up describing that instead of the blog.
+            if site.profile_id is not None:
+                temp_dir.mkdir(parents=True, exist_ok=True)
+                material = profiles.materialize(session, self._sealer, site.profile_id, temp_dir)
+                if material is not None:
+                    options["cookies_file"] = str(material.cookies_file)
+                    if material.user_agent:
+                        options["user_agent"] = material.user_agent
+
+            site.status = "capturing" if site.status == "new" else site.status
+            session.commit()
+            return {"seed_url": site.seed_url, "site_id": site.id, "options": options}
+
+    def _finish_discovery(self, job_id: int, result: Any, status: str) -> None:
+        from cairn.services import discovery_service
+
+        with self._sessions() as session:
+            job = session.get(Job, job_id)
+            if job is None or job.site_id is None:  # pragma: no cover
+                return
+            site = session.get(Site, job.site_id)
+            if site is None:  # pragma: no cover
+                return
+
+            if status == "ok":
+                discovery = discovery_service.persist(session, site, result, job_id)
+                discovery_service.record_feeds(session, site, result)
+                # Only overwrite the scope while it is still the default one.
+                # A user who has already picked domains does not want a re-run
+                # silently undoing that — the diff is shown instead.
+                if not _scope_was_edited(session, site):
+                    scope = discovery_service.scope_from_result(result, seed_url=site.seed_url)
+                    sites.save_scope(session, site, scope)
+                    sites.write_site_yaml(session, self._settings, site)
+                job.spec = {**(job.spec or {}), "discovery_id": discovery.id}
+                site.status = "ready" if site.last_capture_at else "indexed"
+            else:
+                site.status = "error"
+
+            job.status = "ok" if status == "ok" else "failed"
+            job.finished_at = utcnow()
+            job.pid = None
+            job.progress = {
+                "hosts": len(result.hosts),
+                "urls": len(result.all_urls),
+                "pages": result.pages_fetched,
+            }
+            if status != "ok":
+                job.error = "; ".join(result.errors[:3]) or "discovery found nothing"
+            session.commit()
 
     def _prepare(self, job_id: int, temp_dir: Path) -> _Prepared:
         """Create the capture row and job directory, and write the job spec."""
@@ -328,9 +444,17 @@ class JobSupervisor:
             with contextlib.suppress(OSError):
                 temp_dir.chmod(0o700)
 
-            seeds = [site.seed_url, *(job.spec.get("extra_seeds") or [])]
+            # Every URL discovery found, handed over up front. This is what
+            # makes link-following a supplement rather than the way content is
+            # found, and it is the reason a deep archive page cannot be out of
+            # reach the way it was under a depth limit (docs/04, docs/05).
+            from cairn.services import discovery_service
+
+            discovered, seed_source = discovery_service.seeds_for_capture(session, site, scope)
+            seeds = list(dict.fromkeys([*discovered, *(job.spec.get("extra_seeds") or [])]))
+            seed_source["manual"] = len(job.spec.get("extra_seeds") or []) + 1
             seed_path = temp_dir / SEED_FILE
-            storage.write_atomic(seed_path, "\n".join(dict.fromkeys(seeds)) + "\n")
+            storage.write_atomic(seed_path, "\n".join(seeds) + "\n")
 
             auth: dict[str, Any] = {"user_agent": config.get("user_agent"), "headers": {}}
             if site.profile_id is not None:
@@ -375,6 +499,8 @@ class JobSupervisor:
                 output_dir=output_dir,
                 temp_dir=temp_dir,
                 max_pages=scope.max_pages,
+                seeds=seeds,
+                seed_source=seed_source,
             )
 
     async def _execute(self, running: RunningJob, prepared: _Prepared) -> None:
@@ -507,7 +633,8 @@ class JobSupervisor:
                     tool_version=collector.tool_version,
                     stats=collector.stats,
                     scope=sites.resolved_scope(session, site).to_dict(),
-                    seeds=collector.seeds or [site.seed_url],
+                    seeds=prepared.seeds or [site.seed_url],
+                    seed_source=prepared.seed_source,
                 )
             except Exception:
                 log.exception("post-processing failed", extra={"capture": capture.id})
@@ -558,6 +685,8 @@ class _Prepared:
     output_dir: Path
     temp_dir: Path
     max_pages: int | None
+    seeds: list[str] = field(default_factory=list)
+    seed_source: dict[str, int] = field(default_factory=dict)
 
 
 class _Collector:
@@ -772,6 +901,16 @@ def _final_status(result: ResultEvent | None, returncode: int, cancelled: bool) 
     if returncode != 0:
         return "partial" if result.status == "ok" else result.status
     return result.status
+
+
+def _scope_was_edited(session: Session, site: Site) -> bool:
+    """Whether the user has picked domains themselves.
+
+    A re-run of discovery must not silently undo a deliberate selection. The
+    flag is set by the scope endpoint rather than inferred, because "differs
+    from the default" would also be true of a scope discovery itself wrote.
+    """
+    return bool((site.scope_settings or {}).get("user_edited"))
 
 
 def _failure_text(engine_error: str | None, stderr: str, returncode: int) -> str:

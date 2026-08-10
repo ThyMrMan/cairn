@@ -20,6 +20,7 @@ from cairn.api import errors
 from cairn.api.middleware import SecurityHeadersMiddleware
 from cairn.api.routers import auth as auth_router
 from cairn.api.routers import captures as captures_router
+from cairn.api.routers import discovery as discovery_router
 from cairn.api.routers import engines as engines_router
 from cairn.api.routers import health as health_router
 from cairn.api.routers import jobs as jobs_router
@@ -152,6 +153,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(system_router.router, prefix="/api")
     app.include_router(sites_router.router, prefix="/api")
     app.include_router(captures_router.router, prefix="/api")
+    app.include_router(discovery_router.router, prefix="/api")
     app.include_router(jobs_router.router, prefix="/api")
     app.include_router(profiles_router.router, prefix="/api")
     app.include_router(engines_router.router, prefix="/api")

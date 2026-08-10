@@ -22,7 +22,6 @@ import hashlib
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
-from html import unescape
 from pathlib import Path
 from typing import Any
 
@@ -33,7 +32,7 @@ from cairn.config import Settings
 from cairn.db.models import Capture, CaptureUrl, Site
 from cairn.db.types import utcnow
 from cairn.logging import get_logger
-from cairn.services import storage
+from cairn.services import htmlrefs, storage
 
 log = get_logger(__name__)
 
@@ -52,6 +51,7 @@ class Context:
     stats: dict[str, Any]
     scope: dict[str, Any]
     seeds: list[str]
+    seed_source: dict[str, int]
     artifacts: list[dict[str, Any]]
     warnings: list[str]
 
@@ -159,7 +159,7 @@ def step_manifest(ctx: Context) -> None:
         finished_at=ctx.capture.finished_at,
         status=ctx.capture.status,
         seeds=ctx.seeds,
-        seed_source={"manual": len(ctx.seeds)},
+        seed_source=ctx.seed_source,
         scope=ctx.scope,
         stats=ctx.stats,
         warc_files=ctx.artifacts,
@@ -251,73 +251,10 @@ def step_asset_audit(ctx: Context) -> None:
     ctx.stats["css_escaped_failures"] = len(mangled)
 
 
-_TAG_REFS = re.compile(
-    r"""<(?:img|script|source|video|audio|embed)\b[^>]*?\bsrc\s*=\s*["']([^"'>]+)["']"""
-    r"""|<link\b[^>]*?\bhref\s*=\s*["']([^"'>]+)["'][^>]*?\brel\s*=\s*["']?stylesheet"""
-    r"""|<link\b[^>]*?\brel\s*=\s*["']?stylesheet[^>]*?\bhref\s*=\s*["']([^"'>]+)["']""",
-    re.IGNORECASE,
-)
-_CSS_URLS = re.compile(r"""url\(\s*['"]?(.*?)['"]?\s*\)""", re.IGNORECASE | re.DOTALL)
-_STYLE_BLOCK = re.compile(r"<style\b[^>]*>(.*?)</style\s*>", re.IGNORECASE | re.DOTALL)
-# A CSS escape: a backslash followed by one non-hex-digit character. Enough for
-# the \: and \/ that appear in Blogger skins; full CSS unescaping (hex escapes,
-# line continuations) is not needed to recognise a mangled URL.
-_CSS_ESCAPE = re.compile(r"\\([^0-9A-Fa-f\s])")
-
-
-def _unescape_css(value: str) -> str:
-    r"""Decode the backslash escapes a browser would resolve.
-
-    Blogger skins write theme images as `url(https\:\/\/host\/image?id=…)`.
-    A browser unescapes that to an absolute URL; wget does not, so it treats
-    the string as relative and requests it against the blog. Decoding here is
-    what lets the audit recognise the real target and name it.
-    """
-    return _CSS_ESCAPE.sub(r"\1", value)
-
-
-def _referenced_assets(body: bytes, base_url: str) -> set[str]:
-    """Absolute URLs of subresources referenced by an HTML body.
-
-    Covers tag attributes and CSS `url(...)` in `<style>` blocks and inline
-    `style=` attributes. The CSS half matters because it is where the
-    references wget mishandles actually live.
-
-    Attribute values are HTML-entity decoded and `<style>` contents are not,
-    which is what the parsing rules actually say: an attribute's `&amp;` is an
-    ampersand, while `<style>` is raw text where it is three literal
-    characters. Getting that backwards reports
-    `…?targetBlogID=123&amp;zx=…` as the URL, which is both wrong on screen
-    and can never match the captured `…&zx=…` — so a fetched asset is listed
-    as missing.
-    """
-    from urllib.parse import urljoin
-
-    text = body.decode("utf-8", errors="replace")
-    found: set[str] = set()
-    candidates: list[str] = []
-
-    # <style> blocks: raw text, so CSS escapes apply but entities do not.
-    style_blocks = _STYLE_BLOCK.findall(text)
-    for block in style_blocks:
-        candidates += [_unescape_css(m.group(1)) for m in _CSS_URLS.finditer(block)]
-
-    # Everything else is attribute territory, including inline style="…".
-    outside = _STYLE_BLOCK.sub(" ", text)
-    for match in _TAG_REFS.finditer(outside):
-        raw = next((g for g in match.groups() if g), None)
-        if raw:
-            candidates.append(_unescape_css(unescape(raw)))
-    candidates += [_unescape_css(unescape(m.group(1))) for m in _CSS_URLS.finditer(outside)]
-
-    for candidate in candidates:
-        value = candidate.strip()
-        if not value or value.startswith(("data:", "javascript:", "#", "mailto:", "about:")):
-            continue
-        absolute = urljoin(base_url, value)
-        if absolute.startswith(("http://", "https://")):
-            found.add(absolute.split("#")[0])
-    return found
+# Extraction lives in htmlrefs so discovery and this audit cannot drift: one
+# would then offer hosts the other reports as missing.
+_referenced_assets = htmlrefs.referenced_assets
+_unescape_css = htmlrefs.unescape_css
 
 
 def _css_escaped_requests(ctx: Context) -> list[str]:
@@ -370,6 +307,7 @@ def run_chain(
     stats: dict[str, Any],
     scope: dict[str, Any],
     seeds: list[str],
+    seed_source: dict[str, int] | None = None,
 ) -> Context:
     ctx = Context(
         session=session,
@@ -381,6 +319,7 @@ def run_chain(
         stats=dict(stats),
         scope=scope,
         seeds=seeds,
+        seed_source=seed_source or {"manual": len(seeds)},
         artifacts=list(capture.warc_files or []),
         warnings=[],
     )

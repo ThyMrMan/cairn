@@ -1,0 +1,237 @@
+"""Platform fingerprinting and the presets it unlocks (docs/04 phase 1).
+
+Recognising the platform is most of the value of probing the origin. A preset
+supplies the right sitemap and feed paths, the right junk-parameter rejects,
+and the right asset hosts — turning a domain picker that needs thought into
+one that needs zero clicks for the common case.
+
+The Blogger preset's host lists are not guesses. They come from the gap report
+of a real capture, which named exactly what a Blogger page pulls from
+elsewhere.
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+from typing import Any
+from urllib.parse import urlsplit
+
+BLOGGER = "blogger"
+WORDPRESS = "wordpress"
+GHOST = "ghost"
+SUBSTACK = "substack"
+SQUARESPACE = "squarespace"
+UNKNOWN = "unknown"
+
+
+@dataclass(slots=True)
+class Preset:
+    id: str
+    name: str
+    assets_on: list[str] = field(default_factory=list)
+    hosts_off: list[str] = field(default_factory=list)
+    extensionless_ok: list[str] = field(default_factory=list)
+    reject_patterns: list[tuple[str, str]] = field(default_factory=list)
+    sitemap_paths: tuple[str, ...] = ()
+    feed_paths: tuple[str, ...] = ()
+    notes: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "assets_on": self.assets_on,
+            "hosts_off": self.hosts_off,
+            "extensionless_ok": self.extensionless_ok,
+            "reject_patterns": [{"pattern": p, "note": n} for p, n in self.reject_patterns],
+            "notes": self.notes,
+        }
+
+
+BLOGGER_PRESET = Preset(
+    id=BLOGGER,
+    name="Blogger / Blogspot",
+    assets_on=[
+        "*.bp.blogspot.com",
+        "blogger.googleusercontent.com",
+        "lh3.googleusercontent.com",
+        "*.ggpht.com",
+        "fonts.gstatic.com",
+        # The theme's compiled CSS and JS. Its absence is visible in replay.
+        "resources.blogblog.com",
+        # Skin background images, reached through CSS-escaped URLs that wget
+        # mangles — in scope so at least the scope half is right.
+        "themes.googleusercontent.com",
+    ],
+    hosts_off=[
+        # What a blog pulls from here is the owner's admin-bar CSS and a
+        # comment iframe that cannot work offline. No archival value.
+        "www.blogger.com",
+        "*.google-analytics.com",
+        "*.googletagmanager.com",
+        "*.doubleclick.net",
+    ],
+    extensionless_ok=["blogger.googleusercontent.com", "lh3.googleusercontent.com"],
+    reject_patterns=[
+        (r"[?&]m=1", "the mobile duplicate of every page — halves the crawl, loses nothing"),
+        (r"[?&]replytocom=", "one permutation per comment reply"),
+        (r"[?&]showComment=", "comment anchors"),
+        (r"/search\?updated-(max|min)=", "infinite archive pagination loops"),
+        (r"\?action=backlinks", "backlink stubs"),
+    ],
+    sitemap_paths=("/sitemap.xml",),
+    feed_paths=("/feeds/posts/default",),
+    notes=(
+        "Blogger serves every post twice — the desktop URL and a ?m=1 mobile "
+        "duplicate that most themes link to in the footer. Rejecting it halves "
+        "the crawl with no content loss. /search is robots-disallowed but is "
+        "where label pages live; enable the robots override if you want them."
+    ),
+)
+
+WORDPRESS_PRESET = Preset(
+    id=WORDPRESS,
+    name="WordPress",
+    assets_on=["*.wp.com", "secure.gravatar.com", "*.gravatar.com", "fonts.gstatic.com"],
+    hosts_off=["*.google-analytics.com", "*.googletagmanager.com", "stats.wp.com"],
+    reject_patterns=[
+        (r"[?&]replytocom=", "one permutation per comment reply"),
+        (r"/wp-json/", "the REST API duplicates every post as JSON"),
+        (r"\?share=", "share-link permutations"),
+    ],
+    sitemap_paths=("/wp-sitemap.xml", "/sitemap_index.xml", "/sitemap.xml"),
+    feed_paths=("/feed", "/feed/atom"),
+    notes=(
+        "WordPress exposes every post again under /wp-json; rejecting it avoids "
+        "archiving each one twice."
+    ),
+)
+
+GHOST_PRESET = Preset(
+    id=GHOST,
+    name="Ghost",
+    assets_on=["*.gravatar.com", "fonts.gstatic.com"],
+    hosts_off=["*.google-analytics.com"],
+    sitemap_paths=("/sitemap.xml",),
+    feed_paths=("/rss/",),
+)
+
+SUBSTACK_PRESET = Preset(
+    id=SUBSTACK,
+    name="Substack",
+    assets_on=["substackcdn.com", "*.substackcdn.com", "substack-post-media.s3.amazonaws.com"],
+    hosts_off=["*.google-analytics.com"],
+    extensionless_ok=["substackcdn.com", "*.substackcdn.com"],
+    sitemap_paths=("/sitemap.xml",),
+    feed_paths=("/feed",),
+)
+
+PRESETS: dict[str, Preset] = {
+    p.id: p for p in (BLOGGER_PRESET, WORDPRESS_PRESET, GHOST_PRESET, SUBSTACK_PRESET)
+}
+
+
+@dataclass(slots=True)
+class Fingerprint:
+    platform: str = UNKNOWN
+    confidence: str = "none"  # strong | weak | none
+    evidence: list[str] = field(default_factory=list)
+
+    @property
+    def preset(self) -> Preset | None:
+        return PRESETS.get(self.platform)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "platform": self.platform,
+            "confidence": self.confidence,
+            "evidence": self.evidence,
+            "preset": self.preset.to_dict() if self.preset else None,
+        }
+
+
+_GENERATOR_HINTS = (
+    (BLOGGER, re.compile(r"\bblogger\b", re.IGNORECASE)),
+    (WORDPRESS, re.compile(r"\bwordpress\b", re.IGNORECASE)),
+    (GHOST, re.compile(r"\bghost\b", re.IGNORECASE)),
+    (SQUARESPACE, re.compile(r"\bsquarespace\b", re.IGNORECASE)),
+)
+
+_HOST_HINTS = (
+    (BLOGGER, re.compile(r"\.blogspot\.(com|[a-z.]+)$", re.IGNORECASE)),
+    (SUBSTACK, re.compile(r"\.substack\.com$", re.IGNORECASE)),
+    (WORDPRESS, re.compile(r"\.wordpress\.com$", re.IGNORECASE)),
+    (GHOST, re.compile(r"\.ghost\.io$", re.IGNORECASE)),
+)
+
+_BODY_HINTS = (
+    (BLOGGER, re.compile(rb"blogger\.com/(?:static|dyn-css)|blogblog\.com|_WidgetManager")),
+    (WORDPRESS, re.compile(rb"/wp-content/|/wp-includes/")),
+    (GHOST, re.compile(rb"ghost-sdk|/ghost/api/")),
+    (SUBSTACK, re.compile(rb"substackcdn\.com|substack\.com/api")),
+)
+
+
+def fingerprint(
+    *,
+    url: str,
+    body: bytes | None = None,
+    generator: str | None = None,
+    headers: dict[str, str] | None = None,
+) -> Fingerprint:
+    """Identify the platform from the generator tag, the host, and the body.
+
+    A custom-domain Blogger blog has no `.blogspot.com` in its URL, so the host
+    check alone misses exactly the blogs most worth presetting. The body check
+    is what catches those.
+    """
+    result = Fingerprint()
+    host = (urlsplit(url).hostname or "").lower()
+
+    if generator:
+        for platform, pattern in _GENERATOR_HINTS:
+            if pattern.search(generator):
+                result.platform = platform
+                result.confidence = "strong"
+                result.evidence.append(f"generator meta tag says {generator!r}")
+                return result
+
+    for platform, pattern in _HOST_HINTS:
+        if pattern.search(host):
+            result.platform = platform
+            result.confidence = "strong"
+            result.evidence.append(f"hostname {host} belongs to {platform}")
+            return result
+
+    for header, value in (headers or {}).items():
+        if header.lower() == "x-powered-by" and "wordpress" in value.lower():
+            result.platform = WORDPRESS
+            result.confidence = "weak"
+            result.evidence.append(f"X-Powered-By: {value}")
+            return result
+
+    if body:
+        for platform, body_pattern in _BODY_HINTS:
+            if body_pattern.search(body):
+                result.platform = platform
+                result.confidence = "weak"
+                result.evidence.append(f"page markup matches {platform}")
+                return result
+
+    return result
+
+
+def matches_host_pattern(pattern: str, host: str) -> bool:
+    """`*.bp.blogspot.com` against a host. Only a leading `*.` is meaningful.
+
+    Deliberately not a general glob: `*` in the middle of a hostname pattern
+    invites a rule that matches far more than its author intended, and every
+    real case here is a subdomain wildcard.
+    """
+    host = host.lower().strip(".")
+    pattern = pattern.lower().strip(".")
+    if pattern.startswith("*."):
+        suffix = pattern[2:]
+        return host == suffix or host.endswith(f".{suffix}")
+    return host == pattern
