@@ -111,13 +111,20 @@ def create_site(
     session.flush()
 
     save_scope(session, site, default_scope(seed))
+
+    # The directory first, then anything that points at it. A symlink has to
+    # be typed as file-or-directory when it is created, and the only evidence
+    # available is whether the target exists — so linking first produces a
+    # *file* link that Linux resolves happily and Windows shows as a 0 KB
+    # file, for good, even once the directory turns up.
+    storage.ensure_site_dirs(settings, site.archive_path)
+
     if tags:
         from cairn.services import symlinks
 
         set_tags(session, site, tags)
         symlinks.safe_rebuild(session, settings)
 
-    storage.ensure_site_dirs(settings, site.archive_path)
     session.flush()
     write_site_yaml(session, settings, site)
 

@@ -293,6 +293,65 @@ def test_untagging_removes_the_link(db: Session, settings: Settings, seeded: Fol
     assert (settings.by_tag_dir / "travel" / "example-com").is_symlink()
 
 
+def test_a_link_is_never_created_before_its_target_exists(
+    db: Session, settings: Settings, seeded: Folder
+) -> None:
+    """A symlink's type — file or directory — is fixed when it is created, and
+    inferred from the target. Link first and it becomes a *file* link: Linux
+    resolves it anyway, so nothing here notices, while a Windows-backed
+    filesystem shows a 0 KB file for good.
+
+    Asserted by watching `os.symlink` rather than by looking at the result,
+    because the result is indistinguishable on the platform the tests run on.
+    That is exactly why this needs a test at all.
+    """
+    calls: list[bool] = []
+    real = os.symlink
+
+    def spy(src: str, dst: object, **kwargs: object) -> None:
+        # Relative source, resolved against the link's own directory.
+        target = Path(os.path.normpath(os.path.join(os.path.dirname(str(dst)), str(src))))
+        calls.append(target.is_dir())
+        real(src, dst, **kwargs)  # type: ignore[arg-type]
+
+    # Watching the whole of creation, not a rebuild afterwards: the bug was
+    # that `create_site` linked before it made the directory, and by the time
+    # anything else runs the directory is there and the evidence is gone.
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(os, "symlink", spy)
+        site_service.create_site(
+            db, settings, seed_url="https://example.com/", folder_id=seeded.id, tags=["travel"]
+        )
+
+    assert calls, "creating a tagged site linked nothing at all"
+    assert all(calls), "a link was created against a target that did not exist yet"
+
+
+def test_rebuild_recreates_links_rather_than_trusting_the_text(
+    db: Session, settings: Settings, seeded: Folder
+) -> None:
+    """The repair path for a link whose text is right and whose type is wrong.
+
+    Leaving a matching link alone is the obvious optimisation and it is what
+    made the mistyped-link bug unfixable — nothing on this side can see the
+    type, so the only reliable repair is to make it again.
+    """
+    if os.name == "nt":
+        pytest.skip("symlinks need elevation on Windows")
+
+    site = make_site(db, settings, seeded, "example.com")
+    site_service.set_tags(db, site, ["travel"])
+    symlinks.rebuild(db, settings)
+
+    link = settings.by_tag_dir / "travel" / "example-com"
+    before = link.lstat().st_ino
+    symlinks.rebuild(db, settings)
+
+    assert link.lstat().st_ino != before, "the link was left in place instead of remade"
+    assert link.is_symlink()
+    assert (link / "site.yaml").is_file()
+
+
 def test_a_hand_made_directory_under_by_tag_is_never_deleted(
     db: Session, settings: Settings, seeded: Folder
 ) -> None:

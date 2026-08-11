@@ -207,6 +207,8 @@ Both are derived from the database and both rebuild from it. They also rebuild a
 docker exec cairn cairn rebuild-symlinks
 ```
 
+That is a real repair, not just a refresh — it remakes every link rather than trusting the ones that look right. If a site under `by-tag` shows as a **0 KB file** instead of a folder, this is the fix. It means the link was written before its target directory existed, which types it as a file link; Linux resolves it either way, so only a Windows client sees the difference.
+
 If replay 404s after a restore or after rearranging things on the share, re-point the collections — pywb picks up the change on the next request, with no restart:
 
 ```bash

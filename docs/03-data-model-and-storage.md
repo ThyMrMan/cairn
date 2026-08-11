@@ -478,6 +478,11 @@ This document originally called for a debounced incremental refresh of `/data/by
 
 **The links must be relative.** The tree is read over SMB, where `/data` is not the root of anything: the share is mounted as `Z:\` or `/mnt/tower/cairn`, and an absolute `/data/archives/…` link resolves against the *client's* filesystem, where it means nothing. Samba compounds it — `wide links` defaults to off, so a link whose target appears to leave the share is refused outright. `../../archives/Blogs/example` stays inside the share and is followed on both counts.
 
+**A symlink carries a type, and the type is fixed when it is created.** File or directory, inferred from whether the target exists — so a link written before its target does becomes a *file* link. Linux resolves by path at every access and never notices; a Windows-backed filesystem bakes the answer in, and the entry shows as a 0 KB file for good, even once the directory appears. Two rules follow, and both exist because this shipped once:
+
+- Nothing links ahead of its target. `create_site` makes the site directory before it touches the tag tree, and `_link` refuses a target that is not there.
+- A rebuild recreates every link rather than leaving alone the ones whose text already matches. That optimisation is what made a mistyped link unrepairable — the text was right, only the type was wrong, and the type is invisible from the Linux side. `cairn rebuild-symlinks` is therefore a real repair.
+
 Naming inside a tag directory is computed from the database, never from what is already on disk. Site slugs are unique within a folder, not globally, so two sites can both be `example`; when that happens inside one tag, **both** get their id appended rather than the newcomer alone. A name that depends on which row arrived first cannot be recomputed, and a tree that cannot be recomputed cannot be checked.
 
 Pruning only ever removes symlinks and the empty directories that held them. A real directory under `by-tag` was put there by hand over the share, and deleting it because it is not in the database would be this tool destroying something it never owned.

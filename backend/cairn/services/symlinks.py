@@ -20,6 +20,14 @@ triggered it. Incremental was strictly worse: identical cost, plus the one
 failure mode that matters here — a tree that quietly stops matching the
 database and looks fine until somebody trusts it.
 
+**A symlink carries a type, and the type is decided at creation.** File or
+directory, inferred from the target — so a link made before its target exists
+becomes a file link. Linux resolves by path at every access and never notices;
+a Windows-backed filesystem bakes the answer in, and the entry shows as a 0 KB
+file for good, even once the directory appears. That is why `_link` refuses a
+missing target and why the tree is rebuilt rather than left alone when the
+link text already matches: the text was never the part that was wrong.
+
 Everything here is derived and disposable. Failing to link never fails the
 operation that triggered it: on a Windows development machine symlinks need
 elevation and simply do not happen, and that must cost the tag tree rather
@@ -156,10 +164,30 @@ def _prune(settings: Settings, wanted: dict[str, dict[str, str]]) -> int:
 
 
 def _link(link: Path, target: Path) -> None:
+    """Point `link` at `target`, always recreating it.
+
+    Two rules here, both learned from the same bug.
+
+    **The target must already exist.** A symlink carries a type — file or
+    directory — decided when it is created, and the only evidence available is
+    the target. Create one against a directory that does not exist yet and it
+    becomes a *file* link. Linux never notices, because it resolves by path at
+    every access; a Windows-backed filesystem does, and shows the result as a
+    0 KB file forever, even after the directory turns up. So a missing target
+    is refused rather than linked ahead of time.
+
+    **Recreate even when the text already matches.** The obvious optimisation
+    — leave it alone if `readlink` returns what we wanted — is what made the
+    bug above unrepairable: the text was right, only the type was wrong, and
+    the type is not visible from this side. Rebuilding is a couple of syscalls
+    per site, and being able to say "a rebuild fixes it" is worth more than
+    saving them.
+    """
+    if not target.is_dir():
+        raise SymlinkError(f"{target} does not exist, so a link to it would be typed as a file")
+
     wanted = os.path.relpath(target, link.parent)
     if link.is_symlink():
-        if os.readlink(link) == wanted:
-            return
         link.unlink()
     elif link.exists():
         raise SymlinkError(f"{link} exists and is not a symlink")
