@@ -33,6 +33,7 @@ from cairn.db.models import Capture, CaptureUrl, Site
 from cairn.db.types import utcnow
 from cairn.logging import get_logger
 from cairn.services import htmlrefs, storage
+from cairn.services.scope import Scope, ScopeError, build_reject_patterns
 
 log = get_logger(__name__)
 
@@ -229,9 +230,17 @@ def step_asset_audit(ctx: Context) -> None:
             continue
 
     missing = sorted(u for u in referenced if u not in captured)
-    if missing:
+    absent, excluded = _partition_missing(ctx, missing)
+    if absent:
         ctx.warnings.append(
-            f"{len(missing)} referenced asset(s) were not captured (e.g. {', '.join(missing[:3])})."
+            f"{len(absent)} referenced asset(s) were not captured (e.g. {', '.join(absent[:3])})."
+        )
+    if excluded:
+        hosts = sorted({htmlrefs.host_of(u) for u in excluded if htmlrefs.host_of(u)})
+        ctx.warnings.append(
+            f"{len(excluded)} referenced asset(s) are outside this site's scope, so they "
+            f"were not fetched: {', '.join(hosts[:4])}. That is what the domain picker is "
+            "currently set to, not a failure — turn the host on if you want them."
         )
     if lazy_hits:
         ctx.warnings.append(
@@ -252,7 +261,11 @@ def step_asset_audit(ctx: Context) -> None:
         )
 
     ctx.stats["referenced_assets"] = len(referenced)
-    ctx.stats["missing_assets"] = len(missing)
+    # `missing_assets` counts only what the scope permitted and the crawl
+    # still did not get. That is the number worth acting on; the deliberate
+    # exclusions are counted separately so neither one dilutes the other.
+    ctx.stats["missing_assets"] = len(absent)
+    ctx.stats["excluded_assets"] = len(excluded)
     ctx.stats["lazy_image_hints"] = lazy_hits
     ctx.stats["css_escaped_failures"] = len(mangled)
 
@@ -265,6 +278,47 @@ _unescape_css = htmlrefs.unescape_css
 
 def _is_success(status: str | None) -> bool:
     return bool(status) and str(status).startswith("2")
+
+
+def _partition_missing(ctx: Context, missing: list[str]) -> tuple[list[str], list[str]]:
+    """Split what a page asked for and did not get into two unlike halves.
+
+    "In scope and still absent" is a problem. "Out of scope" is a setting.
+    Reporting them as one number teaches people to ignore the report: on a
+    Blogger blog the second list is never empty, because the preset
+    deliberately drops the owner's admin-bar CSS and a comment iframe that
+    cannot work offline. Every capture would open with "3 referenced assets
+    were not captured" forever, and the one time it meant something nobody
+    would be reading it any more.
+
+    A scope that will not parse, or that carries no host rules at all, is not
+    worth guessing about — everything is reported as absent. Explaining a gap
+    away needs positive evidence that somebody chose it; absence of evidence
+    is the one direction this must not fail in.
+    """
+    try:
+        scope = Scope.from_dict(ctx.scope)
+        rejects = [re.compile(p) for p in build_reject_patterns(scope)]
+    except (ScopeError, re.error, TypeError, ValueError):
+        return list(missing), []
+
+    asset_hosts = {rule.host for rule in scope.hosts if rule.fetch_assets}
+    if not asset_hosts:
+        return list(missing), []
+    excluded_hosts = set(scope.exclude_hosts)
+
+    absent: list[str] = []
+    excluded: list[str] = []
+    for url in missing:
+        host = htmlrefs.host_of(url)
+        out_of_scope = host not in asset_hosts or host in excluded_hosts
+        # A reject pattern is just as deliberate as an unticked checkbox —
+        # including the generated one that fences an assets-only host.
+        if out_of_scope or any(pattern.search(url) for pattern in rejects):
+            excluded.append(url)
+        else:
+            absent.append(url)
+    return absent, excluded
 
 
 def _css_escaped_requests(ctx: Context) -> list[str]:

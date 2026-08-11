@@ -21,6 +21,7 @@ from cairn.services.postprocess import (
     Context,
     _escaped_target_host,
     _is_success,
+    _partition_missing,
     _referenced_assets,
     _unescape_css,
     run_chain,
@@ -328,3 +329,103 @@ def test_an_unescaped_reference_to_the_same_host_is_not_flagged() -> None:
     page = parse_page(body, "https://blog.example.com/")
     assert "https://themes.googleusercontent.com/image?id=abc" in page.assets
     assert page.escaped_assets == set()
+
+
+# ── in scope and absent, versus deliberately out of scope ────────────────
+
+BLOG_SCOPE = {
+    "hosts": [
+        {"host": "blog.example.com", "crawl_pages": True, "fetch_assets": True},
+        {"host": "cdn.example.net", "crawl_pages": False, "fetch_assets": True},
+    ],
+    "reject_patterns": [r"[?&]m=1"],
+    "seeds": ["https://blog.example.com/"],
+}
+
+
+def _partition(missing: list[str]) -> tuple[list[str], list[str]]:
+    ctx = Context(
+        session=None,  # type: ignore[arg-type]
+        settings=None,  # type: ignore[arg-type]
+        capture=Capture(),
+        site=Site(),
+        output_dir=Path("."),
+        tool_version=None,
+        stats={},
+        scope=BLOG_SCOPE,
+        seeds=[],
+        seed_source={},
+        artifacts=[],
+        warnings=[],
+    )
+    return _partition_missing(ctx, missing)
+
+
+def test_an_unticked_host_is_a_setting_not_a_gap() -> None:
+    """www.blogger.com is off by preset — its admin CSS and comment iframe
+    have no archival value. Counting that as a missing asset means every
+    Blogger capture forever opens with a warning about working as intended,
+    which is how a real gap stops being noticed."""
+    absent, excluded = _partition(
+        [
+            "https://www.blogger.com/dyn-css/authorization.css?targetBlogID=548",
+            "https://blog.example.com/logo.png",
+        ]
+    )
+    assert absent == ["https://blog.example.com/logo.png"]
+    assert excluded == ["https://www.blogger.com/dyn-css/authorization.css?targetBlogID=548"]
+
+
+def test_a_reject_pattern_is_as_deliberate_as_an_unticked_box() -> None:
+    absent, excluded = _partition(["https://blog.example.com/post.html?m=1"])
+    assert absent == []
+    assert len(excluded) == 1
+
+
+def test_an_in_scope_asset_host_still_reports_real_misses() -> None:
+    absent, excluded = _partition(["https://cdn.example.net/img/hero.jpg"])
+    assert absent == ["https://cdn.example.net/img/hero.jpg"]
+    assert excluded == []
+
+
+def test_an_unparseable_scope_reports_everything_as_absent() -> None:
+    """The cautious direction: never explain a gap away on a guess."""
+    ctx = Context(
+        session=None,  # type: ignore[arg-type]
+        settings=None,  # type: ignore[arg-type]
+        capture=Capture(),
+        site=Site(),
+        output_dir=Path("."),
+        tool_version=None,
+        stats={},
+        scope={"hosts": [{"crawl_pages": True}]},  # a host rule with no host
+        seeds=[],
+        seed_source={},
+        artifacts=[],
+        warnings=[],
+    )
+    absent, excluded = _partition_missing(ctx, ["https://anywhere.example/x.png"])
+    assert absent == ["https://anywhere.example/x.png"]
+    assert excluded == []
+
+
+def test_a_scope_with_no_asset_hosts_reports_everything_as_absent() -> None:
+    """Same reason as an unparseable scope: calling a gap deliberate needs
+    positive evidence that somebody chose it."""
+    ctx = Context(
+        session=None,  # type: ignore[arg-type]
+        settings=None,  # type: ignore[arg-type]
+        capture=Capture(),
+        site=Site(),
+        output_dir=Path("."),
+        tool_version=None,
+        stats={},
+        scope={},
+        seeds=[],
+        seed_source={},
+        artifacts=[],
+        warnings=[],
+    )
+    absent, excluded = _partition_missing(ctx, ["https://blog.example.com/logo.png"])
+    assert absent == ["https://blog.example.com/logo.png"]
+    assert excluded == []

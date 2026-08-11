@@ -245,6 +245,17 @@ Discovery already decodes them, because its extractor has to agree with the audi
 
 This is the general shape for a whole class of problem: **where discovery can see something the crawler cannot, hand it over as a seed rather than hoping the crawler finds it.** Lazy-loaded images are the same shape and are not solved this way, because a `data-src` attribute is not necessarily a URL the server will serve — that one needs a browser engine.
 
+### An exclusion is not a gap
+
+The audit splits what a page asked for and did not get into two lists that read very differently:
+
+- **In scope and still absent** — `missing_assets`. Something went wrong, or a flag is set wrong. This is the number worth acting on.
+- **Outside the scope** — `excluded_assets`. A host with its boxes unticked, or a URL a reject pattern covers. This is a setting, and the report says so and names the host.
+
+Keeping them in one number is what makes a report worth ignoring. On a Blogger blog the second list is never empty — the preset deliberately drops `www.blogger.com`, whose contribution is the owner's admin-bar CSS and a comment iframe that cannot work offline — so every capture would open with "3 referenced assets were not captured" forever. Three rounds of live testing were spent chasing exactly that, while it was working as designed.
+
+Classification needs positive evidence that somebody chose the exclusion. A scope that will not parse, or that carries no asset hosts at all, reports everything as absent — under-explaining is recoverable, explaining away a real gap is not.
+
 Because neither setting is reliably correct, the `asset-audit` post-processor closes the loop from the other end: after a capture it reads the archived HTML back out of the WARC and reports assets a page referenced but the crawl never fetched. That catches a dropped image regardless of which way the flag was set, and catches lazy-loaded images too — which no scope setting can reach, since wget does not execute JavaScript.
 
 If you ever hit a wget that genuinely lacks PCRE, the fallback is to invert the logic into an `--accept-regex` that positively lists asset extensions on those hosts. Encode whichever you use in the engine, because getting it wrong means either crawling image CDNs as websites or dropping images entirely.
