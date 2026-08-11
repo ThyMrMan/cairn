@@ -40,7 +40,7 @@
           derived/
             text/                     # <capture>.jsonl — extracted text for search
             screenshots/
-            media/
+            media/                 # <capture>/ — embedded video, if the site opts in
           exports/
             example-blog-2026-08.wacz
   by-tag/                             # generated symlink tree

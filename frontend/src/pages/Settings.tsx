@@ -19,6 +19,8 @@ export default function Settings() {
       <NotificationsSection />
       <IntegritySection />
       <StorageSection />
+      <ImportSection />
+      <MetricsSection />
       <TagsSection />
       <TrashSection />
       <PasswordSection />
@@ -26,6 +28,150 @@ export default function Settings() {
       <SessionsSection />
       <AuditSection />
     </div>
+  );
+}
+
+/**
+ * Importing an existing ArchiveBox archive.
+ *
+ * The survey runs first and always: an ArchiveBox is full of pages archived
+ * with extractors that write no WARC, and how many of them there are is the
+ * only number worth seeing before starting.
+ */
+function ImportSection() {
+  const [path, setPath] = useState("");
+  const [queued, setQueued] = useState<string | null>(null);
+
+  const survey = useMutation({ mutationFn: () => endpoints.surveyArchiveBox(path.trim()) });
+  const run = useMutation({
+    mutationFn: () => endpoints.importArchiveBox(path.trim()),
+    onSuccess: (result) =>
+      setQueued(`Queued as job #${result.job_id}. Your ArchiveBox is copied, never modified.`),
+  });
+
+  const found = survey.data;
+
+  return (
+    <Section
+      title="Import from ArchiveBox"
+      description="Reads an ArchiveBox data directory and brings each domain across as a site. The source archive is copied, never moved or written to."
+    >
+      <div className="flex flex-wrap gap-2">
+        <input
+          className="input min-w-0 flex-1 font-mono text-sm"
+          placeholder="/import"
+          value={path}
+          onChange={(e) => {
+            setPath(e.target.value);
+            survey.reset();
+          }}
+          aria-label="ArchiveBox data directory"
+        />
+        <button
+          className="btn-ghost"
+          disabled={!path.trim() || survey.isPending}
+          onClick={() => survey.mutate()}
+        >
+          {survey.isPending && <Spinner />}
+          Look
+        </button>
+      </div>
+      <p className="hint mt-2">
+        The path as <em>this container</em> sees it — mount your ArchiveBox data directory in,
+        for example <code>-v /mnt/user/archivebox:/import:ro</code>, then type{" "}
+        <code>/import</code>.
+      </p>
+
+      {survey.error && (
+        <Alert kind="error">{(survey.error as ApiError).message}</Alert>
+      )}
+
+      {found && (
+        <div className="mt-4 space-y-2 text-sm">
+          <p>
+            {found.snapshots.toLocaleString()} snapshot(s), {found.with_warcs.toLocaleString()}{" "}
+            with a WARC ({bytes(found.warc_bytes)}), layout {found.version}.
+          </p>
+          {found.problems.map((problem) => (
+            <p key={problem} className="text-warn">
+              {problem}
+            </p>
+          ))}
+          <ul className="text-xs text-muted">
+            {Object.entries(found.hosts)
+              .slice(0, 10)
+              .map(([host, count]) => (
+                <li key={host}>
+                  {host} — {count} snapshot(s)
+                </li>
+              ))}
+          </ul>
+          <button
+            className="btn-ghost"
+            disabled={!found.with_warcs || run.isPending}
+            onClick={() => run.mutate()}
+          >
+            {run.isPending && <Spinner />}
+            Import {Object.keys(found.hosts).length} site(s)
+          </button>
+          {queued && <p className="text-xs text-muted">{queued}</p>}
+          {run.error && <p className="text-xs text-danger">{(run.error as ApiError).message}</p>}
+        </div>
+      )}
+    </Section>
+  );
+}
+
+/** Prometheus. Off by default; see services/metrics.py for what it never carries. */
+function MetricsSection() {
+  const client = useQueryClient();
+  const config = useQuery({ queryKey: ["metrics-settings"], queryFn: endpoints.metricsSettings });
+  const save = useMutation({
+    mutationFn: (body: { enabled?: boolean; token?: string }) =>
+      endpoints.putMetricsSettings(body),
+    onSuccess: (data) => client.setQueryData(["metrics-settings"], data),
+  });
+  const [draft, setDraft] = useState("");
+
+  const enabled = Boolean(config.data?.enabled);
+
+  return (
+    <Section
+      title="Prometheus metrics"
+      description="An /api/metrics endpoint for a scraper. Off by default. It carries counts only — no site name, URL, host, folder or tag appears in it, because a scraper cannot log in."
+    >
+      <label className="flex items-center gap-2 text-sm">
+        <input
+          type="checkbox"
+          checked={enabled}
+          onChange={(e) => save.mutate({ enabled: e.target.checked })}
+        />
+        Expose <code>/api/metrics</code>
+      </label>
+      {enabled && (
+        <div className="mt-3 space-y-2">
+          <Field
+            label="Bearer token"
+            hint={
+              config.data?.token_set
+                ? "A token is set. Type a new one to replace it, or clear the box and save to remove it."
+                : "Optional. Prometheus sends this with bearer_token in its scrape config."
+            }
+          >
+            <input
+              className="input font-mono text-sm"
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onBlur={() => save.mutate({ token: draft })}
+              placeholder={config.data?.token_set ? "•••••••• (set)" : "none"}
+            />
+          </Field>
+          {save.error && (
+            <p className="text-xs text-danger">{(save.error as ApiError).message}</p>
+          )}
+        </div>
+      )}
+    </Section>
   );
 }
 

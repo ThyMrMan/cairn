@@ -722,3 +722,10 @@ class RetentionPolicy(BaseModel):
     keep_last: int | None = Field(default=None, ge=0, le=1000)
     keep_monthly: int | None = Field(default=None, ge=0, le=600)
     min_age_days: int | None = Field(default=None, ge=0, le=3650)
+
+
+class MetricsSettings(BaseModel):
+    """The token is write-only. Reads report whether one is set, never what."""
+
+    enabled: bool | None = None
+    token: str | None = Field(default=None, max_length=256)

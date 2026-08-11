@@ -289,7 +289,32 @@ Also worth doing: run `--warc-dedup` against a second capture and verify you get
 
 **Retention is off by default and its dry run works before it is switched on**, because the dry run is how anybody decides to switch it on. `apply` recomputes the plan inside the job rather than trusting the one a browser tab is showing, and reports every capture it refused to delete on that basis.
 
-**Left out of M8 entirely:** `yt-dlp` media capture, `single-file-cli`, ArchiveBox import, Prometheus metrics and public share links. The last is the one most likely to introduce a security hole, on the origin that replays untrusted JavaScript.
+**Left out of this pass:** `yt-dlp`, ArchiveBox import and Prometheus metrics, all three built in the pass below.
+
+---
+
+## M8 continued — media, import, metrics ✅
+
+**Ships:** the rest of the list, bar two.
+
+- [x] `yt-dlp` media post-processor
+- [x] Import from ArchiveBox
+- [x] Prometheus metrics
+
+**Done when:** a capture of a page with an embedded video has the video; a real ArchiveBox archive imports and replays; and `/api/metrics` parses as Prometheus expects. *Asserted in `test_media.py` and `test_import.py` — and the importer was additionally run against the output of a **real ArchiveBox 0.7.4**, which is where its schema came from in the first place.*
+
+**Four corrections from building them:**
+
+1. **ffmpeg costs 481 MB and buys very little here.** yt-dlp needs it only to *merge* separate video and audio streams; Debian's package is 481 MB across 200 packages, measured, against yt-dlp's own 25 MB. That is a 28% larger image to raise an archived clip from a muxed 720p to a merged 1080p, and the archival value is overwhelmingly in the clip existing at all. The default format asks for a single file that needs no merging, and a format string that does require merging fails with yt-dlp saying exactly that.
+2. **Media URLs are the one attacker-controlled fetch target in the system.** Every other URL — a seed, a feed, a `verify_url` — is one the single user typed. These come out of archived HTML somebody else wrote, so docs/11's private-range block is enforced here and only here, checking *every* address a host resolves to. The same reasoning that exempts notification webhooks applies in reverse: a seed pointed at a LAN wiki is a choice, an embed pointed at a router is not.
+3. **`ArchiveBox.conf` holds a `SECRET_KEY` and no version.** The first version of the survey read that file looking for a version string — found none, and would have been handling somebody's Django secret to learn nothing. The layout is detected from the tables instead.
+4. **The manifest was recording less about a capture that went well than one that did not.** It is written at order 35 so that a chain dying partway still leaves one, and it used to be rewritten at the end *only when there were warnings* — so the index record count, the extracted text and the media results reached disk only on captures that had something wrong with them. Found by a media test asserting the manifest, not by the media feature itself. It is now always rewritten.
+
+**Also worth knowing:** one bad entry must not abandon an import. A real archive accumulated over years has snapshots nobody remembers adding, and the first run against a real ArchiveBox died on one whose host was a Docker network alias rather than a hostname. Each domain is now imported independently, and the ones that cannot be are reported and skipped.
+
+**A domain becomes a site and the whole import becomes one capture.** One capture per snapshot would give a domain with five hundred archived pages five hundred captures of one page each. Nothing is lost by grouping: the CDXJ records each response's own date, and replay's time dimension comes from the index rather than from the directory a WARC sits in.
+
+**Left out of M8, deliberately and finally:** the `single-file-cli` engine — M7 already recorded why a third engine exercising the same interface proves nothing further — and **public share links**. That one is `Low` value and `High` effort by this document's own table, and it is the feature most likely to introduce a security hole: it deliberately punches a hole in the auth boundary, on the origin that replays untrusted JavaScript. It should be built, if at all, as its own piece of work with the constraints in [13](13-feature-backlog.md#public-share-links) in front of you, not as the tail end of a milestone.
 
 ---
 

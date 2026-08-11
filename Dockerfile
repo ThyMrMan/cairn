@@ -42,6 +42,17 @@ RUN pip install --no-cache-dir "playwright>=1.49"
 # source checkout stays installable without it.
 RUN pip install --no-cache-dir "apprise>=1.9"
 
+# yt-dlp downloads the video an archived post embedded — the one thing neither
+# wget nor a browser crawler captures. 25 MB, measured.
+#
+# ffmpeg is deliberately absent. yt-dlp needs it only to *merge* separate video
+# and audio streams, and Debian's ffmpeg is 481 MB across 200 packages —
+# measured — which is a 28% larger image to raise an archived clip from a muxed
+# 720p to a merged 1080p. So the default format asks for a single file that
+# needs no merging (services/media.py), and a format string that does require
+# merging fails with yt-dlp saying exactly that.
+RUN pip install --no-cache-dir "yt-dlp>=2025.1"
+
 
 # ── runtime ──────────────────────────────────────────────────────────────
 FROM python:3.12-slim AS runtime

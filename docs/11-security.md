@@ -49,6 +49,10 @@ Every URL the app fetches — seeds, discovery targets, feeds, sitemaps, `verify
 4. **Schemes: `http` and `https` only.** Reject `file:`, `gopher:`, `ftp:`, `dict:`.
 5. **Cap redirects** (10) and response size for non-capture fetches.
 
+**As built, honestly.** Control 1 is enforced in exactly one place: the media post-processor, which is the only thing here that fetches a URL nobody typed. A seed, a feed, a sitemap and a `verify_url` are all URLs the single user of a single-user tool entered, and blocking private ranges there would break archiving an internal wiki — the same reasoning the notification section below already applies to webhooks. Media URLs are different in kind: they come out of archived HTML somebody else wrote. Every address a media host resolves to is checked, not just the first, and a name that does not resolve is refused rather than attempted. `allow_private_hosts` lifts it per site for anyone archiving a video on their own LAN.
+
+Controls 2 and 3 — resolve-then-connect, and validating each redirect hop — are **not** built. The residual risk is DNS rebinding and a public URL redirecting into private space, and it is written here rather than left implied.
+
 wget follows redirects itself, so the engine can't validate hop-by-hop the way the app's own fetcher can. Mitigate with `--max-redirect=10` plus the scope allowlist — wget won't fetch a host that isn't in `--domains`, which incidentally makes it much harder to redirect a crawl somewhere interesting. Note the residual risk rather than pretending it's zero.
 
 ### The Docker socket is root on the host
@@ -64,6 +68,14 @@ What cairn does with it, once granted:
 - **Every container is labelled and swept.** `cairn.managed=true` plus the job id, so a process killed mid-capture does not leave a crawler running against somebody's site indefinitely. Swept at boot.
 
 None of that changes the first sentence. An engine image is third-party code running on a daemon that can do anything; the containment above limits what it reaches *by accident*, not what a hostile image could do. Install engines you trust, or leave the socket unmounted and use the ones in the image.
+
+### The metrics endpoint is unauthenticated by design
+
+A Prometheus scraper cannot log in, so `/api/metrics` is off by default and open when on. What makes that safe is the rule it is built around: **no names**. Not a site title, not a URL, not a host, not a folder, not a tag — only counts and durations, with labels drawn from fixed vocabularies (job types, statuses). An exporter is scraped by something that stores forever and is often reachable more widely than the app, and "which sites does this person archive" is the most sensitive thing this application holds that is not a credential. `metrics.token` adds a bearer token for anyone who wants one; the API reports whether a token is set and never what it is.
+
+### Importing reads somebody else's database
+
+The ArchiveBox importer opens `index.sqlite3` **read-only** (`file:…?mode=ro`) and copies WARCs rather than moving them, so a botched import cannot damage the archive it read. It deliberately does not read `ArchiveBox.conf`: a real 0.7.4 writes its Django `SECRET_KEY` there and no version at all, so reading it would mean handling somebody's secret to learn nothing.
 
 **Notification targets are outbound requests to a user-supplied URL, and they are not SSRF.** A webhook pointed at `http://192.168.1.1/` is the single user of a single-user tool choosing to POST to their own router, which they could do from a shell on the same box. Two things do apply: the request carries no credentials and no archive content beyond the notification text, and the HTTP clients run with `trust_env=False` so an inherited `HTTP_PROXY` cannot silently redirect them. The private-range block above deliberately does not extend here — a self-hosted ntfy on the LAN is the *expected* configuration, and blocking it would make the feature useless for the people it is for.
 

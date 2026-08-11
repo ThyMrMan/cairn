@@ -109,7 +109,7 @@ ignore_errors = true
 
 [[tool.mypy.overrides]]
 # These ship no py.typed marker.
-module = ["warcio.*", "defusedxml.*", "feedparser.*", "cdxj_indexer.*", "surt.*"]
+module = ["warcio.*", "defusedxml.*", "feedparser.*", "cdxj_indexer.*", "surt.*", "yt_dlp.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]

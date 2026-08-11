@@ -26,6 +26,7 @@ from cairn.api.routers import engines as engines_router
 from cairn.api.routers import exports as exports_router
 from cairn.api.routers import feeds as feeds_router
 from cairn.api.routers import health as health_router
+from cairn.api.routers import importing as importing_router
 from cairn.api.routers import interactive as interactive_router
 from cairn.api.routers import jobs as jobs_router
 from cairn.api.routers import maintenance as maintenance_router
@@ -195,6 +196,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(search_router.router, prefix="/api")
     app.include_router(exports_router.router, prefix="/api")
     app.include_router(changes_router.router, prefix="/api")
+    app.include_router(importing_router.router, prefix="/api")
 
     _mount_frontend(app)
     return app

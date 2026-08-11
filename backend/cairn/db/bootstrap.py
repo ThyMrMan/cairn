@@ -64,6 +64,17 @@ DEFAULT_SETTINGS: dict[str, object] = {
     # cold data nobody opens for years, so the alternative to a schedule is
     # finding out during a restore (docs/03).
     "integrity.verify_days": 7,
+    # Downloading the video an archived post embedded. Off, and per site:
+    # it is the one post-processor that can turn a megabyte capture into a
+    # gigabyte one, so it is switched on where somebody meant it.
+    "media.download": {"enabled": False},
+    # Prometheus. Off, and when on it carries no site names — see
+    # services/metrics.py for why that is the whole design.
+    "metrics.enabled": False,
+    "metrics.token": "",
+    # Retention, off. An archiver that deletes archives unasked is not one
+    # anybody should trust, whatever its defaults are.
+    "retention.captures": {"enabled": False},
 }
 
 

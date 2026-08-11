@@ -327,7 +327,7 @@ class JobSupervisor:
             if job_type == "move":
                 await self._run_move(running)
                 return
-            if job_type in ("export", "verify", "index", "purge"):
+            if job_type in ("export", "verify", "index", "purge", "import"):
                 await self._run_maintenance(running, job_type)
                 return
             # Before the capture, never during it: see _refresh_stale_profile.
@@ -683,6 +683,7 @@ class JobSupervisor:
             "verify": self._execute_verify,
             "index": self._execute_reindex,
             "purge": self._execute_retention,
+            "import": self._execute_import,
         }[job_type]
         result = await asyncio.to_thread(runner, job_id, say, step)
 
@@ -910,6 +911,48 @@ class JobSupervisor:
                     "problems": problems,
                 },
             )
+
+    def _execute_import(self, job_id: int, say: Any, step: Any) -> dict[str, Any]:
+        from pathlib import Path as _Path
+
+        from cairn.services import archivebox, symlinks
+
+        with self._sessions() as session:
+            job = session.get(Job, job_id)
+            if job is None:  # pragma: no cover
+                return {"status": "failed", "error": "the job vanished"}
+            spec = job.spec or {}
+            root = _Path(str(spec.get("path") or ""))
+            hosts = [str(h) for h in (spec.get("hosts") or [])] or None
+            folder_id = spec.get("folder_id")
+
+            say(f"Reading {root}. The archive there is copied, never moved or modified.")
+            try:
+                result = archivebox.import_archive(
+                    session,
+                    self._settings,
+                    root,
+                    hosts=hosts,
+                    folder_id=int(folder_id) if folder_id else None,
+                    progress=lambda message: say(message),
+                )
+            except archivebox.ArchiveBoxError as exc:
+                return self._finish_job(session, job, "failed", str(exc))
+            except OSError as exc:
+                return self._finish_job(
+                    session, job, "failed", f"could not read the archive: {exc}"
+                )
+
+            session.commit()
+            symlinks.safe_rebuild(session, self._settings)
+            say(
+                f"{len(result.sites)} site(s) from {result.snapshots} snapshot(s), "
+                f"{result.warcs} WARC(s), {result.bytes / 1024 / 1024:.1f} MB."
+            )
+            for problem in result.problems:
+                self._bus.publish(job_id, EV_LOG, {"level": "warn", "msg": problem})
+
+            return self._finish_job(session, job, "ok", None, progress=result.to_dict())
 
     def _finish_job(
         self,

@@ -698,6 +698,17 @@ export type SearchStatus = {
 
 export type ExportEntry = { name: string; size_bytes: number; created_at: string };
 
+export type ArchiveBoxSurvey = {
+  version: string;
+  snapshots: number;
+  with_warcs: number;
+  without_warcs: number;
+  warc_bytes: number;
+  hosts: Record<string, number>;
+  tags: string[];
+  problems: string[];
+};
+
 // ── diffs and retention ──────────────────────────────────────────────────
 
 export type PageSummary = {
@@ -906,6 +917,21 @@ export const endpoints = {
       `/sites/${siteId}/diff/resources${query(params as never)}`,
     ),
   retention: (siteId: number) => api.get<RetentionPlan>(`/sites/${siteId}/retention`),
+
+  // ── importing ──────────────────────────────────────────────────────────
+  metricsSettings: () =>
+    api.get<{ enabled: boolean; token_set: boolean }>("/metrics/settings"),
+  putMetricsSettings: (body: { enabled?: boolean; token?: string }) =>
+    api.put<{ enabled: boolean; token_set: boolean }>("/metrics/settings", body),
+  surveyArchiveBox: (path: string) =>
+    api.get<ArchiveBoxSurvey>(`/import/archivebox${query({ path })}`),
+  importArchiveBox: (path: string, hosts: string[] = []) =>
+    api.post<JobAccepted>(
+      `/import/archivebox?${new URLSearchParams([
+        ["path", path],
+        ...hosts.map((h) => ["host", h] as [string, string]),
+      ])}`,
+    ),
   putRetention: (siteId: number, body: Record<string, unknown>) =>
     api.put<RetentionPlan>(`/sites/${siteId}/retention`, body),
   applyRetention: (siteId: number) =>

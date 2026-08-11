@@ -269,12 +269,19 @@ The interactive session is a **CDP screencast over a WebSocket**, not the `vnc_u
 | `GET` | `/api/sites/{id}/retention` | The dry run: every capture, kept or not, and why |
 | `PUT` | `/api/sites/{id}/retention` | `{enabled?, keep_last?, keep_monthly?, min_age_days?}` → the new plan |
 | `POST` | `/api/sites/{id}/retention/apply` | `202 {job_id}`. Not reversible |
+| `GET` | `/api/import/archivebox` | `?path=` — what is in that archive, without touching it |
+| `POST` | `/api/import/archivebox` | `?path=&host=&folder_id=` → `202 {job_id}` |
+| `GET` | `/api/metrics` | Prometheus exposition. **Unauthenticated**, off by default |
+| `GET` | `/api/metrics/settings` | `{enabled, token_set}` — never the token itself |
+| `PUT` | `/api/metrics/settings` | `{enabled?, token?}` |
 | `POST` | `/api/maintenance/rebuild-symlinks` | Regenerate `/data/by-tag` |
 | `POST` | `/api/maintenance/rebuild-collections` | Re-point every pywb collection |
 | `POST` | `/api/maintenance/rebuild-db` | Reconstruct DB rows from on-disk manifests |
 | `POST` | `/api/maintenance/purge-trash` | Purge only what is past the retention window |
 
 `/api/search` never receives FTS5 syntax. What somebody types is translated: every bare term becomes a quoted string literal, and only `"a phrase"`, a trailing `*` and a leading `-` are read as operators. Typing `c++` or a stray quote is a MATCH syntax error otherwise, and `AND` is an operator rather than the word somebody meant — a search box that answers with *fts5: syntax error near* is a search box people stop using.
+
+`/api/metrics` is the only authenticated-by-default endpoint that can be opened up, because a scraper cannot log in. What makes that acceptable is what it never contains: no site title, URL, host, folder or tag, only counts with fixed-vocabulary labels. `metrics.token` adds `Authorization: Bearer`, which is what Prometheus's `bearer_token` sends natively; reads report only *whether* a token is set, never its value.
 
 `/api/sites/{id}/retention` is a dry run on every path, including when the policy is switched off — which is the state it most needs to be readable in, because the dry run is how somebody decides whether to switch it on. `apply` recomputes the plan inside the job rather than taking the one the browser is showing: a capture that has become the last copy of something in the meantime must not be deleted because an older plan said it could be, and the job reports each such refusal rather than silently skipping it.
 

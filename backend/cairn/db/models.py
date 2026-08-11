@@ -47,9 +47,10 @@ JOB_TYPES = (
     "verify",
     "purge",
     "feed-poll",
+    "import",
 )
 CAPTURE_STATUSES = ("running", "ok", "partial", "failed", "cancelled", "interrupted")
-CAPTURE_KINDS = ("full", "incremental", "feed", "manual", "resume")
+CAPTURE_KINDS = ("full", "incremental", "feed", "manual", "resume", "import")
 PROFILE_MODES = ("none", "cookies", "userscript", "interactive")
 FEED_KINDS = ("auto", "rss", "atom", "sitemap", "json", "page")
 

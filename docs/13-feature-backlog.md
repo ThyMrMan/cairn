@@ -40,13 +40,15 @@ Show what changed between two captures of a page — rendered text diff plus a l
 
 > **As built.** The work was not UI, it was deciding what to diff. Markup changes on every fetch of a page with a visit counter or a rotating advert, so the diff reads the extracted text that search already produces — measured: three fetches of one unchanged post, three body hashes, one text hash.
 
-### `yt-dlp` media capture
+### `yt-dlp` media capture ✅ *built in M8*
 
 Post-processor scanning captured HTML for YouTube/Vimeo/etc. embeds, with per-site opt-in to download the media into `derived/media/`.
 
 **Why.** Neither wget nor a browser crawler captures video streams. An archived post with a dead embed is a common and permanent disappointment — and it's the gap you discover years later when the video is gone.
 
 **Effort:** low. Opt-in per site, with a clear storage warning.
+
+> **As built.** No ffmpeg in the image: it is 481 MB across 200 packages and merges streams that a single-file format does not need. And the URLs are the one genuinely attacker-controlled fetch target here — they come out of archived HTML — so they get the private-range block docs/11 specifies.
 
 ### Notification integration ✅ *built in M6*
 
@@ -68,13 +70,15 @@ Per-site rules: keep N full captures, keep one per month beyond that, never prun
 
 > **As built.** The exception clauses are the feature; the counts are the leftovers. One protection was not on this list and is the one that bites: a capture that a later incremental capture deduplicated against cannot be pruned either, because a revisit record is a pointer with no payload — verified by pruning one and watching a real pywb answer 503 for a page whose own capture was entirely intact.
 
-### Import from ArchiveBox
+### Import from ArchiveBox ✅ *built in M8*
 
 Read an existing ArchiveBox `index.sqlite3` + `archive/` directory, group snapshots by domain into sites, index their WARCs into a collection, carry tags across.
 
 **Why.** You already have an ArchiveBox instance with work in it, and per the original notes it's already producing per-page WARCs that just need indexing — which is exactly what this tool does. Also removes the main adoption barrier for anyone else in the same position.
 
 **Effort:** medium. Mostly a schema-mapping exercise; ArchiveBox's `index.sqlite3` layout has shifted across versions, so target recent ones and fail clearly on older.
+
+> **As built.** The schema came from running a real ArchiveBox 0.7.4 against a fixture site and reading the tables back, rather than from memory — and the first import against that real output found two things a hand-made fixture would not have: `ArchiveBox.conf` holds a Django `SECRET_KEY` and no version, and one snapshot with an unusable host killed the whole import.
 
 ### Browser-based discovery
 
@@ -130,7 +134,7 @@ Notes and highlights on archived pages. Turns an archive into a research tool. S
 
 Move captures older than N months to a slower or cheaper tier (array-only, or an rclone remote), keeping the index local so replay still resolves. Fetch on demand.
 
-### Prometheus metrics
+### Prometheus metrics ✅ *built in M8*
 
 `/metrics` with job counts, capture durations, error rates, storage. Easy, and Unraid users often already run Grafana.
 

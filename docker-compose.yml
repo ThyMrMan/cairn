@@ -11,6 +11,9 @@ services:
     volumes:
       - ./config:/config          # database + settings. Put this on an SSD.
       - ./data:/data              # WARC storage. Bulk; an array is fine.
+      # Uncomment to import an existing ArchiveBox. Read-only is enough — the
+      # importer copies WARCs out and never writes to the source.
+      # - /mnt/user/archivebox:/import:ro
       # Uncomment for container engines (browsertrix). READ docs/11 FIRST:
       # the Docker socket grants root-equivalent control of this host. Without
       # it the engine shows as unavailable and everything else works as before.

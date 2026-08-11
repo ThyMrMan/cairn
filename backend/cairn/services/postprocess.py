@@ -215,6 +215,79 @@ def step_text_extract(ctx: Context) -> None:
     ctx.stats["text_boilerplate_blocks"] = result.dropped_blocks
 
 
+def step_media(ctx: Context) -> None:
+    """Fetch the video an archived post embedded, if this site asked for it.
+
+    Off unless switched on per site, because it is the one step that can turn
+    a megabyte capture into a gigabyte one. Everything it refuses — a limit
+    reached, a private host, an unsupported embed — is recorded in the stats
+    rather than dropped, since "the video is not here" is exactly the thing
+    somebody needs to find out now rather than in five years.
+    """
+    from cairn.services import media
+
+    policy = media.policy_for(ctx.session, ctx.site)
+    if not policy.get("enabled"):
+        return
+
+    ok, reason = media.available()
+    if not ok:
+        ctx.warnings.append(f"media download is on for this site but {reason}.")
+        return
+
+    urls = _embedded_media(ctx)
+    if not urls:
+        return
+
+    target = media.media_dir(ctx.settings, ctx.site.archive_path, ctx.capture.dir_name)
+    result = media.download(urls, target, policy)
+
+    ctx.stats["media"] = result.to_dict()
+    if result.downloaded:
+        ctx.stats["media_bytes"] = result.bytes
+    refused = [i for i in result.items if i.status != "downloaded"]
+    if refused:
+        ctx.warnings.append(
+            f"{len(refused)} embedded item(s) were not downloaded — e.g. {refused[0].url}: "
+            f"{refused[0].reason}"
+        )
+
+
+def _embedded_media(ctx: Context) -> list[str]:
+    """Media URLs referenced by this capture's archived HTML."""
+    try:
+        from warcio.archiveiterator import ArchiveIterator
+    except ImportError:  # pragma: no cover — declared in pyproject
+        return []
+    from cairn.services import media
+
+    found: list[str] = []
+    seen: set[str] = set()
+    for warc in sorted((ctx.output_dir / storage.WARC_DIR).glob("*.warc.gz")):
+        try:
+            with open(warc, "rb") as fh:
+                for record in ArchiveIterator(fh):
+                    if record.rec_type != "response" or not record.http_headers:
+                        continue
+                    if not _is_success(record.http_headers.get_statuscode()):
+                        continue
+                    ctype = record.http_headers.get_header("Content-Type", "") or ""
+                    if "html" not in ctype.lower():
+                        continue
+                    base = record.rec_headers.get_header("WARC-Target-URI") or ""
+                    body = record.content_stream().read(512 * 1024)
+                    for url in media.find_embeds(body, base):
+                        if url not in seen:
+                            seen.add(url)
+                            found.append(url)
+        except Exception as exc:
+            log.warning(
+                "media scan could not read a WARC", extra={"warc": warc.name, "err": str(exc)}
+            )
+            continue
+    return found
+
+
 def step_asset_audit(ctx: Context) -> None:
     """Report assets a page referenced that the capture does not contain.
 
@@ -442,6 +515,9 @@ CHAIN: list[Step] = [
     Step("cdxj-index", 40, False, step_cdxj_index),
     Step("text-extract", 50, False, step_text_extract),
     Step("asset-audit", 60, False, step_asset_audit),
+    # Last, and never required: it reaches hosts outside the site's scope and
+    # can take longer than the crawl did.
+    Step("media", 70, False, step_media),
 ]
 
 
@@ -485,14 +561,19 @@ def run_chain(
             if step.required and capture.status == "ok":
                 capture.status = "partial"
 
+    # Rewritten unconditionally, after everything has run. The manifest is
+    # written at order 35 so that a chain that dies partway through still
+    # leaves one, but every step after it — the index record count, the
+    # extracted text, the asset audit, the media — accumulates stats the first
+    # write cannot have seen. Rewriting only when there were warnings, which
+    # is what this used to do, meant a capture that went perfectly recorded
+    # less on disk than one that did not.
+    capture.warc_files = ctx.artifacts
     if ctx.warnings:
-        # The manifest is already written by then; keep the warnings where the
-        # UI reads them rather than only in the log.
-        capture.warc_files = ctx.artifacts
-        stats_with_warnings = dict(ctx.stats)
-        stats_with_warnings["warnings"] = ctx.warnings
-        ctx.stats = stats_with_warnings
-        step_manifest(ctx)
+        final = dict(ctx.stats)
+        final["warnings"] = ctx.warnings
+        ctx.stats = final
+    step_manifest(ctx)
 
     session.flush()
     return ctx

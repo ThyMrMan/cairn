@@ -100,7 +100,13 @@ For a site with no feed at all, watch a **page** instead. It is fetched on a sch
 
 **Retention** is off by default and its dry run works before you switch it on, because that is how you decide whether to. It never deletes the first capture, the newest ones, the last capture holding a page that is gone from the live site, or a capture that a later one deduplicates against — the last of which matters more than it sounds: prune it and the newer capture replays 503 for a page whose own files are perfectly intact.
 
-What is not there yet, from M8's menu: `yt-dlp` media capture, `single-file-cli`, ArchiveBox import, Prometheus metrics and public share links.
+Neither wget nor a browser captures a **video stream**, so an archived post with a YouTube embed is a page with a dead rectangle in it. Switch media download on for a site and `yt-dlp` goes back for what the page embedded, bounded per item, per capture and by count — off by default, because it is the one thing here that turns a megabyte capture into a gigabyte one. The image carries no ffmpeg: it is 481 MB and only merges separate video and audio streams, so the default asks for a single file instead.
+
+Already running **ArchiveBox**? Mount its data directory and Cairn reads the index, brings each domain across as a site, carries the tags, and indexes the WARCs it already made. Your archive is copied, never moved or written to — the index is opened read-only.
+
+**Prometheus** can scrape `/api/metrics`, off by default. It carries counts and nothing else: no site name, URL, host, folder or tag appears in it, because a scraper cannot log in and an exporter tends to be reachable more widely than the app.
+
+Not built, and unlikely to be without a good reason: `single-file-cli` as a third engine, and public share links.
 
 The image carries Chromium for the userscript and interactive modes, which puts it at roughly **1.7 GB**. Everything except those two modes works without it.
 
