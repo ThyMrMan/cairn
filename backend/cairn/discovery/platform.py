@@ -65,11 +65,13 @@ BLOGGER_PRESET = Preset(
         # mangles — in scope so at least the scope half is right.
         "themes.googleusercontent.com",
         "www.gstatic.com",
+        # Serves both the theme's own widgets.js — which the page runs, and
+        # whose absence shows up as console errors in replay — and two things
+        # worth nothing, rejected by pattern below rather than by dropping the
+        # whole host.
+        "www.blogger.com",
     ],
     hosts_off=[
-        # What a blog pulls from here is the owner's admin-bar CSS and a
-        # comment iframe that cannot work offline. No archival value.
-        "www.blogger.com",
         "*.google-analytics.com",
         "*.googletagmanager.com",
         "*.doubleclick.net",
@@ -89,6 +91,16 @@ BLOGGER_PRESET = Preset(
         (r"[?&]showComment=", "comment anchors"),
         (r"/search\?updated-(max|min)=", "infinite archive pagination loops"),
         (r"\?action=backlinks", "backlink stubs"),
+        (
+            r"^https?://www\.blogger\.com/dyn-css/",
+            "the owner's admin-bar CSS, cache-busted with a fresh zx= on every "
+            "page load — a new URL each time, so it is one extra fetch per page "
+            "and no two of them are shared",
+        ),
+        (
+            r"^https?://www\.blogger\.com/[^?]*comment[_-]from[_-]post[_-]iframe",
+            "the comment iframe bootstrap; the iframe it builds cannot work offline",
+        ),
     ],
     sitemap_paths=("/sitemap.xml",),
     feed_paths=("/feeds/posts/default",),

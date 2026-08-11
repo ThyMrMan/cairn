@@ -30,7 +30,13 @@ from cairn.discovery.platform import (
 )
 from cairn.discovery.sources import parse_feed, parse_sitemap
 from cairn.services.htmlrefs import parse_page
-from cairn.services.scope import HostRule, asset_only_reject_pattern
+from cairn.services.scope import (
+    HostRule,
+    Scope,
+    asset_only_reject_pattern,
+    build_reject_patterns,
+    combine_patterns,
+)
 
 # ── sitemaps ─────────────────────────────────────────────────────────────
 
@@ -285,7 +291,10 @@ def test_defaults_preselect_the_blogger_case_with_zero_clicks() -> None:
     assert not by_host["1.bp.blogspot.com"].crawl_pages
 
     assert not by_host["www.google-analytics.com"].fetch_assets
-    assert not by_host["www.blogger.com"].fetch_assets
+    # www.blogger.com is assets-on but never crawlable: it serves the theme's
+    # widgets.js, and its two worthless paths are rejected by pattern instead.
+    assert by_host["www.blogger.com"].fetch_assets
+    assert not by_host["www.blogger.com"].crawl_pages
 
 
 def test_a_neighbouring_blog_is_off_by_default() -> None:
@@ -322,6 +331,44 @@ def test_blogger_skin_images_survive_the_assets_only_reject() -> None:
     rule = HostRule(host=skin.host, fetch_assets=True, allow_extensionless=skin.allow_extensionless)
     pattern = asset_only_reject_pattern(rule)
     assert not re.search(pattern, "https://themes.googleusercontent.com/image?id=L1lcAxxz")
+
+
+def test_blogger_com_is_split_rather_than_dropped_wholesale() -> None:
+    """It serves the theme's own widgets.js, whose absence shows up as console
+    errors in replay, alongside two things worth nothing. Turning the whole
+    host off loses all three; rejecting by pattern keeps the one that matters.
+
+    The admin CSS is the interesting reject: Blogger cache-busts it with a
+    fresh `zx=` per page load, so it is a different URL every time — one extra
+    fetch per page, and no two of them shareable. Two captures of the same
+    blog a day apart asked for zx=a1f39d26… and zx=16cf8f57…
+    """
+    hosts = classify(
+        seed_host="b.blogspot.com",
+        link_refs={"b.blogspot.com": 5, "www.blogger.com": 14},
+        asset_refs={"www.blogger.com": 12},
+        urls_by_host={},
+    )
+    apply_defaults(hosts, BLOGGER_PRESET)
+    blogger = next(h for h in hosts if h.host == "www.blogger.com")
+    assert blogger.fetch_assets
+    assert not blogger.crawl_pages
+
+    scope = Scope(
+        seeds=["https://b.blogspot.com/"],
+        hosts=[
+            HostRule("b.blogspot.com", crawl_pages=True, fetch_assets=True),
+            HostRule("www.blogger.com", crawl_pages=False, fetch_assets=True),
+        ],
+        reject_patterns=[p for p, _note in BLOGGER_PRESET.reject_patterns],
+    )
+    rejects = re.compile(combine_patterns(build_reject_patterns(scope)))
+
+    assert not rejects.search("https://www.blogger.com/static/v1/widgets/4033524873-widgets.js")
+    assert rejects.search("https://www.blogger.com/dyn-css/authorization.css?targetBlogID=5&zx=a1")
+    assert rejects.search(
+        "https://www.blogger.com/static/v1/jsbin/2830521187-comment_from_post_iframe.js"
+    )
 
 
 def test_asset_only_host_is_enabled_even_without_a_preset() -> None:
