@@ -6,6 +6,7 @@ import { Spinner } from "./components/ui";
 import { endpoints } from "./lib/api";
 import { useAuth } from "./lib/auth";
 import Dashboard from "./pages/Dashboard";
+import Folders from "./pages/Folders";
 import Jobs from "./pages/Jobs";
 import Login from "./pages/Login";
 import Profiles from "./pages/Profiles";
@@ -46,6 +47,7 @@ export default function App() {
         <Route index element={<Dashboard />} />
         <Route path="sites" element={<Sites />} />
         <Route path="sites/:id" element={<SiteDetail />} />
+        <Route path="folders" element={<Folders />} />
         <Route path="profiles" element={<Profiles />} />
         <Route path="jobs" element={<Jobs />} />
         <Route path="settings" element={<Settings />} />

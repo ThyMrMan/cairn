@@ -239,6 +239,47 @@ def sweep_tmp(settings: Settings) -> None:
         log.info("swept temp directory", extra={"entries": removed})
 
 
+def reconcile_organization(session: Session, settings: Settings) -> None:
+    """Make the folder tree, the tag tree and the trash agree with the database.
+
+    All four steps are repairs, not the normal path — folders are created on
+    disk when they are created in the UI, the tag tree is rebuilt whenever tags
+    change, and trash is swept here because there is no scheduler until M6.
+    What this covers is the cases nothing else can: a restore from backup, a
+    volume recreated empty, somebody rearranging things over SMB, and a
+    container killed part-way through a cross-filesystem move.
+
+    Never fatal. A boot that cannot write symlinks is a boot without a tag
+    tree, not a container that will not start.
+    """
+    from cairn.db.models import Folder
+    from cairn.services import storage, symlinks, trash
+
+    try:
+        stale = storage.sweep_staging(settings.archives_dir)
+        if stale:
+            log.warning("removed interrupted move staging directories", extra={"count": stale})
+
+        made = 0
+        for folder in session.scalars(select(Folder)).all():
+            directory = storage.resolve_within(settings.archives_dir, folder.path)
+            if not directory.exists():
+                directory.mkdir(parents=True, exist_ok=True)
+                made += 1
+        if made:
+            log.info("recreated missing folder directories", extra={"count": made})
+
+        purged, freed = trash.purge_expired(session, settings)
+        if purged:
+            log.info("purged expired trash at boot", extra={"sites": purged, "bytes": freed})
+
+        linked, removed = symlinks.rebuild(session, settings)
+        if linked or removed:
+            log.info("tag tree rebuilt", extra={"linked": linked, "removed": removed})
+    except (OSError, ValueError) as exc:
+        log.warning("could not fully reconcile the archive tree", extra={"err": str(exc)})
+
+
 def warn_about_environment(settings: Settings, engine: Engine) -> None:
     """Log the misconfigurations that look fine until they very much aren't."""
     if settings.replay_shares_host_with_app():

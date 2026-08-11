@@ -19,6 +19,8 @@ from cairn.db.models import Feed, Folder, ScopePattern, ScopeRule, Site, SiteTag
 from cairn.db.types import utcnow
 from cairn.logging import get_logger
 from cairn.services import storage
+from cairn.services import tags as tag_service
+from cairn.services.filters import SiteFilter
 from cairn.services.scope import HostRule, Scope, ScopeError, default_scope
 
 log = get_logger(__name__)
@@ -110,7 +112,10 @@ def create_site(
 
     save_scope(session, site, default_scope(seed))
     if tags:
+        from cairn.services import symlinks
+
         set_tags(session, site, tags)
+        symlinks.safe_rebuild(session, settings)
 
     storage.ensure_site_dirs(settings, site.archive_path)
     session.flush()
@@ -121,15 +126,14 @@ def create_site(
 
 
 def _resolve_folder(session: Session, folder_id: int | None) -> Folder:
-    if folder_id is not None:
-        folder = session.get(Folder, folder_id)
-        if folder is None:
-            raise SiteError(f"folder {folder_id} does not exist")
-        return folder
-    folder = session.scalar(select(Folder).where(Folder.parent_id.is_(None)).limit(1))
-    if folder is None:  # pragma: no cover — seed_defaults always creates one
-        raise SiteError("no folders exist; the default folder is missing")
-    return folder
+    from cairn.services import folders
+
+    try:
+        if folder_id is not None:
+            return folders.require_folder(session, folder_id)
+        return folders.root_folder(session)
+    except folders.FolderError as exc:
+        raise SiteError(str(exc)) from exc
 
 
 # ── scope ────────────────────────────────────────────────────────────────
@@ -246,17 +250,25 @@ def scope_is_unindexed(session: Session, site: Site) -> bool:
 
 
 def set_tags(session: Session, site: Site, names: list[str]) -> list[Tag]:
-    wanted = [n.strip() for n in names if n and n.strip()]
-    session.query(SiteTag).filter(SiteTag.site_id == site.id).delete()
+    """Replace a site's tags wholesale.
 
+    Naming goes through `tags.get_or_create`, so the slug rules — and the
+    directory names under `/data/by-tag` that follow from them — are decided in
+    one place rather than here as well.
+    """
+    wanted = [n.strip() for n in names if n and n.strip()]
+    if len(wanted) > tag_service.MAX_TAGS_PER_SITE:
+        raise SiteError(f"a site can carry at most {tag_service.MAX_TAGS_PER_SITE} tags")
+
+    session.query(SiteTag).filter(SiteTag.site_id == site.id).delete()
     tags: list[Tag] = []
     for name in dict.fromkeys(wanted):  # de-duplicate, preserve order
-        slug = storage.slugify(name, fallback="tag")
-        tag = session.scalar(select(Tag).where(Tag.slug == slug))
-        if tag is None:
-            tag = Tag(name=name[:64], slug=slug)
-            session.add(tag)
-            session.flush()
+        try:
+            tag = tag_service.get_or_create(session, name)
+        except tag_service.TagError as exc:
+            raise SiteError(str(exc)) from exc
+        if tag.id in {t.id for t in tags}:  # two names, one slug
+            continue
         session.add(SiteTag(site_id=site.id, tag_id=tag.id))
         tags.append(tag)
     session.flush()
@@ -269,8 +281,30 @@ def tags_for(session: Session, site_id: int) -> list[str]:
             select(Tag.name)
             .join(SiteTag, SiteTag.tag_id == Tag.id)
             .where(SiteTag.site_id == site_id)
+            .order_by(Tag.name)
         ).all()
     )
+
+
+def tag_map(session: Session, site_ids: list[int]) -> dict[int, list[str]]:
+    """Tags for many sites in one query.
+
+    The list endpoint needs these for every row, and doing it per site is the
+    N+1 that makes a site list slow exactly when somebody has enough sites to
+    want one.
+    """
+    if not site_ids:
+        return {}
+    rows = session.execute(
+        select(SiteTag.site_id, Tag.name)
+        .join(Tag, Tag.id == SiteTag.tag_id)
+        .where(SiteTag.site_id.in_(site_ids))
+        .order_by(SiteTag.site_id, Tag.name)
+    ).all()
+    out: dict[int, list[str]] = {site_id: [] for site_id in site_ids}
+    for site_id, name in rows:
+        out.setdefault(site_id, []).append(name)
+    return out
 
 
 # ── the on-disk record ───────────────────────────────────────────────────
@@ -313,45 +347,17 @@ def visible() -> Select[tuple[Site]]:
 
 def list_sites(
     session: Session,
+    site_filter: SiteFilter,
     *,
-    folder_id: int | None = None,
-    tag: str | None = None,
-    status: str | None = None,
-    q: str | None = None,
-    sort: str = "-updated_at",
     page: int = 1,
     per_page: int = 50,
 ) -> tuple[list[Site], int]:
-    stmt = visible()
-    if folder_id is not None:
-        stmt = stmt.where(Site.folder_id == folder_id)
-    if status:
-        stmt = stmt.where(Site.status == status)
-    if tag:
-        stmt = stmt.where(
-            Site.id.in_(
-                select(SiteTag.site_id).join(Tag, Tag.id == SiteTag.tag_id).where(Tag.slug == tag)
-            )
-        )
-    if q:
-        needle = f"%{q.strip()}%"
-        stmt = stmt.where(
-            Site.title.ilike(needle) | Site.seed_url.ilike(needle) | Site.primary_host.ilike(needle)
-        )
-
+    """Filtered, sorted, paged. Every condition comes from the one filter
+    object, so the API and a saved view cannot mean different things by the
+    same query (docs/09)."""
+    stmt = site_filter.apply(session, visible())
     total = session.scalar(select(func.count()).select_from(stmt.subquery())) or 0
-
-    descending = sort.startswith("-")
-    column = {
-        "title": Site.title,
-        "created_at": Site.created_at,
-        "updated_at": Site.updated_at,
-        "last_capture_at": Site.last_capture_at,
-        "size_bytes": Site.size_bytes,
-        "url_count": Site.url_count,
-    }.get(sort.lstrip("-"), Site.updated_at)
-    stmt = stmt.order_by(column.desc() if descending else column.asc())
-    stmt = stmt.limit(per_page).offset((page - 1) * per_page)
+    stmt = site_filter.order(stmt).limit(per_page).offset((page - 1) * per_page)
     return list(session.scalars(stmt).all()), total
 
 
@@ -360,26 +366,6 @@ def get_site(session: Session, site_id: int) -> Site | None:
     if site is None or site.deleted_at is not None:
         return None
     return site
-
-
-def soft_delete(session: Session, settings: Settings, site: Site) -> None:
-    """Mark deleted and move the directory to trash, in that order.
-
-    The row is marked first so a failure moving files leaves a hidden site
-    rather than a visible site with no archive behind it.
-    """
-    site.deleted_at = utcnow()
-    site.status = "archived"
-    session.flush()
-
-    source = storage.site_dir(settings, site.archive_path)
-    if source.exists():
-        target = settings.trash_dir / f"{site.id}-{site.slug}"
-        try:
-            settings.trash_dir.mkdir(parents=True, exist_ok=True)
-            source.rename(target)
-        except OSError as exc:
-            log.error("could not move site to trash", extra={"site": site.id, "err": str(exc)})
 
 
 def raise_if_scope_invalid(scope: Scope) -> None:

@@ -272,6 +272,9 @@ class JobSupervisor:
                 # bus and crash recovery like everything else.
                 await self._run_discovery(running, temp_dir)
                 return
+            if job_type == "move":
+                await self._run_move(running)
+                return
             prepared = await asyncio.to_thread(self._prepare, job_id, temp_dir)
             running.capture_id = prepared.capture_id
             await self._execute(running, prepared)
@@ -397,6 +400,85 @@ class JobSupervisor:
             if status != "ok":
                 job.error = "; ".join(result.errors[:3]) or "discovery found nothing"
             session.commit()
+
+    # ── moves ────────────────────────────────────────────────────────────
+
+    async def _run_move(self, running: RunningJob) -> None:
+        """Relocate an archive across filesystems.
+
+        Only reached when a rename was impossible — every ordinary move
+        happens inside the request that asked for it, because it is one
+        `rename(2)` and finishing it in a job would mean showing a progress bar
+        for an operation that already completed. What lands here is the copy:
+        long enough to want cancelling, and much more likely to be interrupted
+        by the container stopping, which is what the job machinery is for.
+        """
+        job_id = running.job_id
+        self._bus.publish(job_id, EV_STATUS, {"status": "running"})
+        self._bus.publish(
+            job_id,
+            EV_LOG,
+            {
+                "level": "info",
+                "msg": "The archive is moving to a different filesystem, so it has to be "
+                "copied rather than renamed. This takes as long as the data is large.",
+            },
+        )
+        result = await asyncio.to_thread(self._execute_move, job_id)
+        self._bus.publish(job_id, EV_STATUS, {"status": result.get("status", "ok"), **result})
+
+    def _execute_move(self, job_id: int) -> dict[str, Any]:
+        from cairn.services import folders, moves
+
+        with self._sessions() as session:
+            job = session.get(Job, job_id)
+            if job is None:  # pragma: no cover
+                return {"status": "failed", "error": "the job vanished"}
+            spec = job.spec or {}
+            op = str(spec.get("op") or "")
+
+            try:
+                if op == "move-site":
+                    site = session.get(Site, int(spec["site_id"]))
+                    target = folders.require_folder(session, int(spec["target_folder_id"]))
+                    if site is None:
+                        raise moves.MoveError("the site was deleted before the move started")
+                    outcome = moves.move_site(session, self._settings, site, target, copy_ok=True)
+                elif op == "rename-folder":
+                    folder = folders.require_folder(session, int(spec["folder_id"]))
+                    plan = folders.plan_rename(
+                        session, self._settings, folder, name=str(spec["name"])
+                    )
+                    outcome = moves.relocate(session, self._settings, plan, copy_ok=True)
+                elif op == "reparent-folder":
+                    folder = folders.require_folder(session, int(spec["folder_id"]))
+                    parent = spec.get("parent_id")
+                    plan = folders.plan_reparent(
+                        session,
+                        self._settings,
+                        folder,
+                        parent_id=int(parent) if parent is not None else None,
+                    )
+                    outcome = moves.relocate(session, self._settings, plan, copy_ok=True)
+                else:  # pragma: no cover — the API is the only producer
+                    raise moves.MoveError(f"unknown move operation {op!r}")
+            except (moves.MoveError, folders.FolderError, OSError) as exc:
+                job.status = "failed"
+                job.error = str(exc)
+                job.finished_at = utcnow()
+                session.commit()
+                return {"status": "failed", "error": str(exc)}
+
+            job.status = "ok"
+            job.finished_at = utcnow()
+            job.progress = {"method": outcome.method, "sites": len(outcome.site_ids)}
+            session.commit()
+            return {
+                "status": "ok",
+                "method": outcome.method,
+                "from": outcome.old_path,
+                "to": outcome.new_path,
+            }
 
     def _prepare(self, job_id: int, temp_dir: Path) -> _Prepared:
         """Create the capture row and job directory, and write the job spec."""

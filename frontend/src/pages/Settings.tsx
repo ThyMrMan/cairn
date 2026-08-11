@@ -4,7 +4,7 @@ import { useState, type FormEvent } from "react";
 import { Alert, Field, Spinner } from "../components/ui";
 import { ApiError, endpoints } from "../lib/api";
 import { useAuth } from "../lib/auth";
-import { dateTime, relative } from "../lib/format";
+import { bytes, dateTime, relative } from "../lib/format";
 import { useVersion } from "../lib/version";
 
 export default function Settings() {
@@ -15,11 +15,248 @@ export default function Settings() {
         <p className="mt-1 text-sm text-muted">This instance, your account, and security.</p>
       </header>
       <AboutSection />
+      <StorageSection />
+      <TagsSection />
+      <TrashSection />
       <PasswordSection />
       <TotpSection />
       <SessionsSection />
       <AuditSection />
     </div>
+  );
+}
+
+function StorageSection() {
+  const client = useQueryClient();
+  const storage = useQuery({ queryKey: ["storage"], queryFn: endpoints.storage });
+  const [result, setResult] = useState<string | null>(null);
+  const data = storage.data;
+
+  return (
+    <Section
+      title="Storage"
+      description="Per-site totals are measured at the end of each capture, not by walking the
+                  array on every page load. Free space and trash are read live."
+    >
+      {data && (
+        <>
+          <dl className="grid max-w-lg grid-cols-[10rem_1fr] gap-y-2 text-sm">
+            <dt className="text-muted">Archives</dt>
+            <dd className="tabular-nums">
+              {bytes(data.archives_bytes)} across {data.sites} site(s)
+            </dd>
+            <dt className="text-muted">Trash</dt>
+            <dd className="tabular-nums">
+              {bytes(data.trash_bytes)} across {data.trash_sites} site(s)
+            </dd>
+            <dt className="text-muted">Free on disk</dt>
+            <dd className="tabular-nums">
+              {bytes(data.free_bytes)} of {bytes(data.total_bytes)}
+            </dd>
+          </dl>
+
+          {data.folders.length > 0 && (
+            <table className="mt-4 w-full text-sm">
+              <thead className="text-left text-xs uppercase text-muted">
+                <tr>
+                  <th className="py-1 font-medium">Folder</th>
+                  <th className="py-1 text-right font-medium">Sites</th>
+                  <th className="py-1 text-right font-medium">Size</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border">
+                {data.folders.map((folder) => (
+                  <tr key={folder.id}>
+                    <td className="py-1.5 font-mono text-xs">{folder.path}</td>
+                    <td className="py-1.5 text-right tabular-nums">{folder.total_site_count}</td>
+                    <td className="py-1.5 text-right tabular-nums">
+                      {bytes(folder.total_size_bytes)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </>
+      )}
+
+      <div className="mt-4 flex flex-wrap gap-2">
+        <button
+          className="btn-ghost text-xs"
+          onClick={async () => {
+            const out = await endpoints.rebuildSymlinks();
+            setResult(`Tag tree rebuilt: ${out.linked} link(s), ${out.removed} removed.`);
+            await client.invalidateQueries({ queryKey: ["storage"] });
+          }}
+        >
+          Rebuild the tag tree
+        </button>
+        <button
+          className="btn-ghost text-xs"
+          onClick={async () => {
+            const out = await endpoints.rebuildCollections();
+            setResult(`Replay collections re-pointed: ${out.linked} linked, ${out.removed} removed.`);
+          }}
+        >
+          Re-point replay collections
+        </button>
+      </div>
+      {result && (
+        <p className="mt-2 text-xs text-muted">{result}</p>
+      )}
+    </Section>
+  );
+}
+
+function TagsSection() {
+  const client = useQueryClient();
+  const tags = useQuery({ queryKey: ["tags"], queryFn: endpoints.tags });
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = async () => {
+    await client.invalidateQueries({ queryKey: ["tags"] });
+    await client.invalidateQueries({ queryKey: ["sites"] });
+  };
+
+  const guard = async (fn: () => Promise<unknown>) => {
+    setError(null);
+    try {
+      await fn();
+      await refresh();
+    } catch (err) {
+      setError((err as ApiError).message);
+    }
+  };
+
+  return (
+    <Section
+      title="Tags"
+      description="Each tag is also a directory under /data/by-tag holding a symlink per site,
+                  so the same grouping is browsable over SMB. Renaming a tag moves that
+                  directory."
+    >
+      {error && <Alert kind="error">{error}</Alert>}
+      {tags.data?.length ? (
+        <ul className="divide-y divide-border">
+          {tags.data.map((tag) => (
+            <li key={tag.id} className="flex flex-wrap items-center gap-3 py-2 text-sm">
+              <input
+                type="color"
+                className="h-6 w-8 shrink-0 rounded border border-border bg-transparent"
+                value={tag.color ?? "#888888"}
+                aria-label={`Colour for ${tag.name}`}
+                onChange={(event) =>
+                  void guard(() => endpoints.updateTag(tag.id, { color: event.target.value }))
+                }
+              />
+              <span className="flex-1 font-medium">{tag.name}</span>
+              <span className="font-mono text-xs text-muted">by-tag/{tag.slug}</span>
+              <span className="w-16 text-right text-xs text-muted">{tag.site_count} site(s)</span>
+              <button
+                className="btn-ghost text-xs text-danger"
+                onClick={() => void guard(() => endpoints.deleteTag(tag.id))}
+              >
+                Delete
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="text-sm text-muted">
+          No tags yet. Add one when creating a site, or from the bulk actions on the Sites page.
+        </p>
+      )}
+    </Section>
+  );
+}
+
+function TrashSection() {
+  const client = useQueryClient();
+  const trash = useQuery({ queryKey: ["trash"], queryFn: endpoints.trash });
+  const [error, setError] = useState<string | null>(null);
+  const [confirmEmpty, setConfirmEmpty] = useState(false);
+
+  const guard = async (fn: () => Promise<unknown>) => {
+    setError(null);
+    try {
+      await fn();
+      await client.invalidateQueries({ queryKey: ["trash"] });
+      await client.invalidateQueries({ queryKey: ["sites"] });
+      await client.invalidateQueries({ queryKey: ["storage"] });
+    } catch (err) {
+      setError((err as ApiError).message);
+    }
+  };
+
+  return (
+    <Section
+      title="Trash"
+      description="Deleted sites keep their archive until they are purged. The sweep runs when
+                  the container starts, so the retention window is a floor on how long
+                  something is kept, not a promise about when it goes."
+    >
+      {error && <Alert kind="error">{error}</Alert>}
+      {trash.data?.length ? (
+        <>
+          <ul className="divide-y divide-border">
+            {trash.data.map((entry) => (
+              <li key={entry.id} className="flex flex-wrap items-center gap-3 py-2 text-sm">
+                <div className="min-w-0 flex-1">
+                  <p className="truncate font-medium">{entry.title}</p>
+                  <p className="truncate text-xs text-muted">
+                    {entry.folder_path} · deleted {relative(entry.deleted_at)}
+                    {entry.on_disk
+                      ? ` · purged in ${entry.purge_after_days} day(s)`
+                      : " · the archive is already gone"}
+                  </p>
+                </div>
+                <span className="shrink-0 text-xs tabular-nums text-muted">
+                  {bytes(entry.size_bytes)}
+                </span>
+                <button
+                  className="btn-ghost text-xs"
+                  onClick={() => void guard(() => endpoints.restoreSite(entry.id))}
+                >
+                  Restore
+                </button>
+                <button
+                  className="btn-ghost text-xs text-danger"
+                  onClick={() => void guard(() => endpoints.purgeSite(entry.id))}
+                >
+                  Delete for good
+                </button>
+              </li>
+            ))}
+          </ul>
+          <div className="mt-4 flex flex-wrap gap-2">
+            {confirmEmpty ? (
+              <>
+                <button
+                  className="btn-danger text-xs"
+                  onClick={() =>
+                    void guard(async () => {
+                      await endpoints.emptyTrash();
+                      setConfirmEmpty(false);
+                    })
+                  }
+                >
+                  Yes, delete {trash.data.length} archive(s) permanently
+                </button>
+                <button className="btn-ghost text-xs" onClick={() => setConfirmEmpty(false)}>
+                  Cancel
+                </button>
+              </>
+            ) : (
+              <button className="btn-ghost text-xs text-danger" onClick={() => setConfirmEmpty(true)}>
+                Empty the trash
+              </button>
+            )}
+          </div>
+        </>
+      ) : (
+        <p className="text-sm text-muted">Nothing in the trash.</p>
+      )}
+    </Section>
   );
 }
 

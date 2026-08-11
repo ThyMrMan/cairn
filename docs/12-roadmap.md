@@ -128,19 +128,31 @@ Also worth doing: run `--warc-dedup` against a second capture and verify you get
 
 ---
 
-## M4 — Organization
+## M4 — Organization ✅
 
 **Ships:** folders, tags, filtering. The thing ArchiveBox couldn't do.
 
-- Folder tree: create, rename, reparent, drag-and-drop; directory moves as jobs
-- Tags with colors and autocomplete; bulk tagging
-- Filter bar with compound queries; saved smart views
-- `symlink-tree` post-processor for `/data/by-tag`
-- Site cards with thumbnails, sizes, last-capture, status
-- Trash with restore and scheduled purge
-- Storage overview per folder and per site
+- [x] Folder tree: create, rename, reparent, drag-and-drop; directory moves
+- [x] Tags with colours; bulk tagging
+- [x] Filter bar with compound queries; saved smart views
+- [x] `/data/by-tag` symlink tree
+- [x] Site cards with tags, sizes, last-capture, status
+- [x] Trash with restore and a retention sweep
+- [x] Storage overview per folder and per site
 
-**Done when:** twenty sites organized into a nested tree with tags, filterable in the UI, and the same structure is navigable on disk over SMB.
+**Done when:** twenty sites organized into a nested tree with tags, filterable in the UI, and the same structure is navigable on disk over SMB. *Asserted in `test_organization_e2e.py`: twenty sites across a nested tree, compound folder-and-tag queries returning strictly fewer than either side alone, every folder a real directory at the path the API reports, and every `by-tag` entry a **relative** symlink that resolves to a real site.*
+
+**Five corrections from building it:**
+
+1. **A move is not slow enough to be a job — except when it is.** Inside one filesystem a directory move is one `rename(2)` and finishes before the response is written, whatever it holds; returning `202` for that means a progress bar for work already done. The slow case is real but narrow — different filesystems, which on Unraid means `/data` spanning array disks — so `rename_directory` raises `CrossDeviceMoveError` rather than falling back silently, and only that case becomes a job. docs/09 had specified `202` unconditionally.
+2. **The copy fallback has to be staged.** `shutil.move` does copytree-then-rmtree onto the target, so a container stopped mid-copy leaves a half-written directory that looks like a real archive beside a partly-deleted source. Writing to `.moving-<name>` and renaming into place makes the interrupted state recoverable and sweepable.
+3. **`by-tag` links must be relative.** An absolute `/data/…` link works perfectly in the container and resolves to nothing on a client that mounted the share, and Samba refuses it outright as a wide link — so the one place this feature is *for* is the one place it would fail. The exit criterion asserts non-absoluteness directly.
+4. **The tag tree is rebuilt whole, not incrementally.** docs/03 called for a debounced refresh; a full rebuild is a few hundred `symlink(2)` calls, so incremental cost the same and added the only failure mode that matters — a tree that silently stops matching the database.
+5. **There is no `symlink-tree` post-processor, and there should not be.** This list called for one, but a capture cannot change a site's tags, so it would have been a no-op on every capture and absent from every operation that does change them. The rebuild hangs off tag, folder and site changes instead, plus boot.
+
+**Left out on purpose:** thumbnails, which this list also asked for. They need a screenshot, which needs a browser, which arrives in M5. Site cards carry tags, size, URL count, last capture and status instead of a picture that would have to be a placeholder.
+
+**One thing to know:** the retention sweep runs at boot and on demand, not on a timer — there is no scheduler until M6. The window is a floor on how long a deleted archive is kept, never a promise about when it goes.
 
 ---
 

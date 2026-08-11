@@ -234,6 +234,38 @@ def test_relinking_an_existing_collection_is_idempotent(site_tree: Settings) -> 
     assert (second / replay.ARCHIVE_LINK).is_symlink()
 
 
+@needs_symlinks
+def test_moving_a_site_re_points_its_collection(
+    db: object, settings: Settings, tmp_path: Path
+) -> None:
+    """The M4 half of the M3 design.
+
+    A collection is two symlinks into the site directory, so a folder move
+    leaves them dangling. Probed against pywb 2.9.1: a stale link answers 404
+    and a re-pointed one answers correctly on the very next request, with no
+    restart — so re-pointing them is the whole of what a move owes replay.
+    """
+    from sqlalchemy.orm import Session
+
+    from cairn.services import folders, moves
+    from cairn.services import sites as site_service
+
+    session = db  # the fixture is a live Session against the app's database
+    assert isinstance(session, Session)
+
+    site = site_service.create_site(session, settings, seed_url="https://example.com/")
+    replay.link_collection(settings, site.id, site.archive_path)
+    target = folders.create_folder(session, settings, name="Archive", parent_id=None)
+
+    moves.move_site(session, settings, site, target)
+
+    coll = replay.collection_dir(settings, site.id)
+    assert (coll / replay.ARCHIVE_LINK).resolve() == storage.site_dir(
+        settings, site.archive_path
+    ).resolve()
+    assert (coll / replay.ARCHIVE_LINK).exists(), "the collection is dangling after the move"
+
+
 def test_generated_config_discovers_collections_rather_than_listing_them(
     settings: Settings,
 ) -> None:

@@ -35,11 +35,28 @@ Login failures return one generic message regardless of cause. Never distinguish
 | Method | Path | Notes |
 |---|---|---|
 | `GET` | `/api/folders` | Full tree with per-folder site counts and rolled-up sizes |
-| `POST` | `/api/folders` | `{parent_id, name}` |
-| `PATCH` | `/api/folders/{id}` | Rename or reparent → `202` (moves files on disk) |
-| `DELETE` | `/api/folders/{id}` | `409` if non-empty unless `?reassign_to=<id>` |
+| `POST` | `/api/folders` | `{name, parent_id?}` — creates the directory too |
+| `PATCH` | `/api/folders/{id}` | Rename, reparent (`{parent_id, reparent: true}`) or reorder → `MoveOutcome` |
+| `DELETE` | `/api/folders/{id}` | `409` if it holds anything, unless `?reassign_to=<id>` |
 | `GET` | `/api/tags` | With usage counts |
-| `POST` `PATCH` `DELETE` | `/api/tags[/{id}]` | Name, slug, color |
+| `POST` `PATCH` `DELETE` | `/api/tags[/{id}]` | Name, colour, description |
+| `GET` `POST` `PATCH` `DELETE` | `/api/views[/{id}]` | Saved smart views |
+
+### `MoveOutcome`, and why moves are not always `202`
+
+Every endpoint that changes a path returns the same shape:
+
+```json
+{"status": "done", "method": "rename", "path": "Weblogs/Photography", "job_id": null}
+```
+
+This document originally specified `202` for a folder change, on the assumption that moving files is slow. It is not: inside one filesystem a move is one `rename(2)` and completes before the response is written, whatever the directory holds. Returning `202` for that would mean showing a progress bar for an operation that already finished, and polling a job that is already `ok`.
+
+The slow case is real but rare — the two ends on different filesystems, which on Unraid means `/data` spanning array disks. There the move is a byte copy, and it becomes a `move` job: `status: "queued"` with a `job_id` to watch on the existing jobs stream. The client cannot predict which it will get, so the server says.
+
+`PATCH /api/sites/{id}` with a changed `folder_id` takes the fast path only. If that folder turns out to be on another filesystem it returns `409 cross_device` pointing at `POST /api/sites/{id}/move`, rather than silently starting a ten-minute copy inside what looked like a metadata edit.
+
+Reparenting needs `reparent: true` alongside `parent_id`, because JSON cannot otherwise distinguish "leave the parent alone" from "move it to the top level" — both would arrive as a missing or null field.
 
 ---
 
@@ -53,6 +70,8 @@ Login failures return one generic message regardless of cause. Never distinguish
 | `PATCH` | `/api/sites/{id}` | Title, notes, folder, tags, engine, engine config, profile, `keep_mirror` |
 | `DELETE` | `/api/sites/{id}` | Soft delete → `trash/`; `?purge=true` for immediate |
 | `POST` | `/api/sites/{id}/restore` | Undelete from trash |
+| `POST` | `/api/sites/{id}/move` | `{folder_id}` → `MoveOutcome` |
+| `POST` | `/api/sites/bulk` | `{site_ids, add_tags?, remove_tags?, folder_id?}` |
 | `GET` | `/api/sites/{id}/urls` | Captured URLs; `?status=&mime=&host=&q=&errors_only=` |
 | `GET` | `/api/sites/{id}/stats` | Sizes, counts, capture history, growth over time |
 
@@ -72,6 +91,15 @@ sort                    # title|created_at|last_capture_at|size_bytes|url_count 
 ```
 
 The same filter object serializes into `saved_views.query`, so a saved smart view is literally a stored query string. Keep them identical — a divergence between "what the filter bar produces" and "what a saved view stores" is a bug factory.
+
+**As built:** one `SiteFilter` class does all four jobs — reads query parameters, writes them back, reads stored JSON, and compiles to SQL — and `GET /api/sites` reads its filter off the raw query string rather than declaring parameters, because `tag` repeats and because declaring them twice is the divergence this warns about. Saving a view round-trips the query through the same object, so a stored filter that no longer parses fails once, when it is saved or listed, instead of silently matching everything.
+
+Two details that fall out of it:
+
+- **Only non-default fields are serialized.** A view saved today carries no opinion about a field added next year, rather than an accidental `false` that would quietly narrow it.
+- **`has_errors` and `never_captured` have three states.** `has_errors=false` means "only sites with clean captures", which is not the same as not filtering on it — so absent, true and false are all distinct.
+
+Anything a filter can express must survive a round trip through both serializations unchanged. That is asserted directly in `test_filters.py` rather than left as a thing to remember.
 
 ---
 
@@ -196,10 +224,15 @@ A stalled reader must never apply backpressure to a crawl, so each subscriber ha
 | `GET` | `/api/settings` | All DB-backed settings |
 | `PATCH` | `/api/settings` | Partial update |
 | `GET` | `/api/storage` | Per-folder and per-site usage, free space, trash size |
+| `GET` | `/api/trash` | Deleted sites, their size, and days until purge |
+| `DELETE` | `/api/trash` | Purge everything in the trash now |
 | `POST` | `/api/maintenance/verify` | Checksum verification → `202` |
-| `POST` | `/api/maintenance/rebuild-symlinks` | |
+| `POST` | `/api/maintenance/rebuild-symlinks` | Regenerate `/data/by-tag` |
+| `POST` | `/api/maintenance/rebuild-collections` | Re-point every pywb collection |
 | `POST` | `/api/maintenance/rebuild-db` | Reconstruct DB rows from on-disk manifests |
-| `POST` | `/api/maintenance/purge-trash` | |
+| `POST` | `/api/maintenance/purge-trash` | Purge only what is past the retention window |
+
+`/api/storage` reports per-site totals from `sites.size_bytes`, measured by the `stats` post-processor at the end of each capture — not by walking the tree on request. On a NAS array that walk is thousands of cold `stat` calls and the page would take seconds while spinning up disks nobody asked to wake. Free space and trash size are measured live, being one `statvfs` and one directory that is normally small.
 | `GET` | `/api/audit` | Auth and admin events |
 | `GET` | `/api/export/config` | Full config backup as JSON — **excludes secret material** |
 | `POST` | `/api/import/config` | Restore |

@@ -5,12 +5,12 @@ import { useTheme } from "../lib/theme";
 import { useVersion } from "../lib/version";
 import { Logo } from "./ui";
 
+// Every destination is live as of M4; the "arrives in Mx" placeholder this
+// list used to carry is gone with the last of them.
 const NAV = [
   { to: "/", label: "Dashboard", end: true },
-  // Enabled as the milestones land; shown disabled so the shape of the app is
-  // visible from day one rather than appearing piecemeal.
   { to: "/sites", label: "Sites" },
-  { to: "/folders", label: "Folders", soon: "M4" },
+  { to: "/folders", label: "Folders" },
   { to: "/profiles", label: "Access profiles" },
   { to: "/jobs", label: "Jobs" },
   { to: "/settings", label: "Settings" },
@@ -30,36 +30,22 @@ export default function Layout() {
         </div>
 
         <nav className="flex-1 space-y-0.5 px-3">
-          {NAV.map((item) =>
-            item.soon ? (
-              <span
-                key={item.to}
-                className="flex cursor-not-allowed items-center justify-between rounded-md
-                           px-3 py-2 text-sm text-muted opacity-60"
-                title={`Arrives in ${item.soon}`}
-              >
-                {item.label}
-                <span className="rounded bg-raised px-1.5 py-0.5 text-[10px] font-medium">
-                  {item.soon}
-                </span>
-              </span>
-            ) : (
-              <NavLink
-                key={item.to}
-                to={item.to}
-                end={item.end}
-                className={({ isActive }) =>
-                  `block rounded-md px-3 py-2 text-sm transition-colors ${
-                    isActive
-                      ? "bg-raised font-medium text-fg"
-                      : "text-muted hover:bg-raised hover:text-fg"
-                  }`
-                }
-              >
-                {item.label}
-              </NavLink>
-            ),
-          )}
+          {NAV.map((item) => (
+            <NavLink
+              key={item.to}
+              to={item.to}
+              end={item.end}
+              className={({ isActive }) =>
+                `block rounded-md px-3 py-2 text-sm transition-colors ${
+                  isActive
+                    ? "bg-raised font-medium text-fg"
+                    : "text-muted hover:bg-raised hover:text-fg"
+                }`
+              }
+            >
+              {item.label}
+            </NavLink>
+          ))}
         </nav>
 
         <div className="space-y-2 border-t border-border p-3">

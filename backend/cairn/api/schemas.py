@@ -170,7 +170,156 @@ class ScopeResponse(ScopeModel):
     wget_preview: list[str] = Field(default_factory=list)
 
 
+# ── folders & tags ───────────────────────────────────────────────────────
+
+
+class FolderCreate(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    name: str = Field(min_length=1, max_length=128)
+    parent_id: int | None = None
+
+
+class FolderUpdate(BaseModel):
+    """A rename and a reparent are both a path change, so they share a shape.
+
+    `parent_id` needs three states — absent (leave it), a number (move there),
+    and null (move to the top level) — which JSON gives us only if absence is
+    distinguishable from null. Hence the sentinel rather than `int | None`.
+    """
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    name: str | None = Field(default=None, min_length=1, max_length=128)
+    parent_id: int | None = None
+    reparent: bool = False
+    sort_order: int | None = Field(default=None, ge=0, le=100_000)
+
+
+class FolderNodeModel(BaseModel):
+    id: int
+    parent_id: int | None
+    name: str
+    slug: str
+    path: str
+    sort_order: int
+    site_count: int
+    total_site_count: int
+    size_bytes: int
+    total_size_bytes: int
+    children: list[FolderNodeModel] = Field(default_factory=list)
+
+
+FolderNodeModel.model_rebuild()
+
+
+class MoveOutcome(BaseModel):
+    """What happened, or what was queued to happen.
+
+    A move is one `rename(2)` and finishes inside the request — except when
+    the two ends are on different filesystems, where it is a byte copy and
+    becomes a job. The client cannot predict which, so it is told: `done`
+    carries the new path, `queued` carries a job to watch.
+    """
+
+    status: str  # done | queued
+    method: str  # rename | copy | noop
+    path: str
+    job_id: int | None = None
+
+
+class TagCreate(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    name: str = Field(min_length=1, max_length=64)
+    color: str | None = Field(default=None, max_length=16)
+    description: str | None = Field(default=None, max_length=1000)
+
+
+class TagUpdate(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    name: str | None = Field(default=None, min_length=1, max_length=64)
+    color: str | None = Field(default=None, max_length=16)
+    description: str | None = Field(default=None, max_length=1000)
+
+
+class TagSummary(BaseModel):
+    id: int
+    name: str
+    slug: str
+    color: str | None
+    description: str | None
+    site_count: int
+
+
+# ── saved views ──────────────────────────────────────────────────────────
+
+
+class SavedViewCreate(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    name: str = Field(min_length=1, max_length=128)
+    query: dict[str, Any] = Field(default_factory=dict)
+    pinned: bool = False
+
+
+class SavedViewUpdate(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    name: str | None = Field(default=None, min_length=1, max_length=128)
+    query: dict[str, Any] | None = None
+    pinned: bool | None = None
+
+
+class SavedViewSummary(BaseModel):
+    id: int
+    name: str
+    query: dict[str, Any]
+    query_string: str
+    pinned: bool
+
+
+# ── trash ────────────────────────────────────────────────────────────────
+
+
+class TrashEntry(BaseModel):
+    id: int
+    slug: str
+    title: str
+    seed_url: str
+    folder_path: str
+    deleted_at: datetime | None
+    size_bytes: int
+    on_disk: bool
+    purge_after_days: int | None
+
+
+# ── bulk ─────────────────────────────────────────────────────────────────
+
+
+class BulkSiteRequest(BaseModel):
+    """Several sites, one change. Any combination of the three is allowed."""
+
+    site_ids: list[int] = Field(min_length=1, max_length=500)
+    add_tags: list[str] = Field(default_factory=list, max_length=20)
+    remove_tags: list[str] = Field(default_factory=list, max_length=20)
+    folder_id: int | None = None
+
+
+class BulkSiteResponse(BaseModel):
+    tagged: int
+    untagged: int
+    moved: int
+    queued_job_ids: list[int] = Field(default_factory=list)
+    skipped: list[str] = Field(default_factory=list)
+
+
 # ── sites ────────────────────────────────────────────────────────────────
+
+
+class SiteMoveRequest(BaseModel):
+    folder_id: int
 
 
 class SiteCreate(BaseModel):

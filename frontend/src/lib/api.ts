@@ -161,6 +161,15 @@ export type AuditEntry = {
 
 export type Page<T> = { items: T[]; total: number; page: number; per_page: number };
 
+export type FolderUsage = {
+  id: number;
+  path: string;
+  site_count: number;
+  size_bytes: number;
+  total_site_count: number;
+  total_size_bytes: number;
+};
+
 export type Storage = {
   data_dir: string;
   total_bytes: number;
@@ -168,6 +177,99 @@ export type Storage = {
   free_bytes: number;
   sites: number;
   archives_bytes: number;
+  trash_sites: number;
+  trash_bytes: number;
+  folders: FolderUsage[];
+  largest_sites: { id: number; title: string; path: string; size_bytes: number; url_count: number }[];
+};
+
+// ── organization ─────────────────────────────────────────────────────────
+
+export type Folder = {
+  id: number;
+  parent_id: number | null;
+  name: string;
+  slug: string;
+  path: string;
+  sort_order: number;
+  site_count: number;
+  total_site_count: number;
+  size_bytes: number;
+  total_size_bytes: number;
+  children: Folder[];
+};
+
+export type Tag = {
+  id: number;
+  name: string;
+  slug: string;
+  color: string | null;
+  description: string | null;
+  site_count: number;
+};
+
+/**
+ * A move is one rename and finishes in the request — unless the two ends are
+ * on different filesystems, where it is a byte copy and becomes a job. The
+ * client cannot predict which, so the server says.
+ */
+export type MoveOutcome = {
+  status: "done" | "queued";
+  method: "rename" | "copy" | "noop";
+  path: string;
+  job_id: number | null;
+};
+
+export type SavedView = {
+  id: number;
+  name: string;
+  query: SiteFilter;
+  query_string: string;
+  pinned: boolean;
+};
+
+export type TrashEntry = {
+  id: number;
+  slug: string;
+  title: string;
+  seed_url: string;
+  folder_path: string;
+  deleted_at: string | null;
+  size_bytes: number;
+  on_disk: boolean;
+  purge_after_days: number | null;
+};
+
+/**
+ * Mirrors `cairn.services.filters.SiteFilter` field for field. The server
+ * round-trips a saved view through the same object, so anything added here
+ * has to exist there under the same name or it is silently dropped.
+ */
+export type SiteFilter = {
+  folder_id?: number;
+  folder_recursive?: boolean;
+  tags?: string[];
+  tag_mode?: "all" | "any";
+  status?: string;
+  engine_id?: string;
+  profile_id?: number;
+  host?: string;
+  has_errors?: boolean;
+  never_captured?: boolean;
+  last_capture_after?: string;
+  last_capture_before?: string;
+  size_min?: number;
+  size_max?: number;
+  q?: string;
+  sort?: string;
+};
+
+export type BulkResult = {
+  tagged: number;
+  untagged: number;
+  moved: number;
+  queued_job_ids: number[];
+  skipped: string[];
 };
 
 // ── sites, scope, captures ───────────────────────────────────────────────
@@ -436,13 +538,61 @@ export const endpoints = {
   storage: () => api.get<Storage>("/storage"),
   version: () => api.get<Version>("/version"),
 
+  // ── organization ───────────────────────────────────────────────────────
+  folders: () => api.get<Folder[]>("/folders"),
+  createFolder: (body: { name: string; parent_id?: number | null }) =>
+    api.post<Folder>("/folders", body),
+  renameFolder: (id: number, name: string) =>
+    api.patch<MoveOutcome>(`/folders/${id}`, { name }),
+  reparentFolder: (id: number, parentId: number | null) =>
+    api.patch<MoveOutcome>(`/folders/${id}`, { parent_id: parentId, reparent: true }),
+  deleteFolder: (id: number, reassignTo?: number) =>
+    api.del<{ ok: boolean }>(
+      `/folders/${id}${reassignTo != null ? `?reassign_to=${reassignTo}` : ""}`,
+    ),
+
+  tags: () => api.get<Tag[]>("/tags"),
+  createTag: (body: { name: string; color?: string | null; description?: string | null }) =>
+    api.post<Tag>("/tags", body),
+  updateTag: (id: number, body: Record<string, unknown>) => api.patch<Tag>(`/tags/${id}`, body),
+  deleteTag: (id: number) => api.del<{ ok: boolean }>(`/tags/${id}`),
+
+  views: () => api.get<SavedView[]>("/views"),
+  createView: (body: { name: string; query: SiteFilter; pinned?: boolean }) =>
+    api.post<SavedView>("/views", body),
+  updateView: (id: number, body: Record<string, unknown>) =>
+    api.patch<SavedView>(`/views/${id}`, body),
+  deleteView: (id: number) => api.del<{ ok: boolean }>(`/views/${id}`),
+
+  trash: () => api.get<TrashEntry[]>("/trash"),
+  emptyTrash: () => api.del<{ ok: boolean }>("/trash"),
+  purgeTrash: () => api.post<{ purged: number; freed_bytes: number }>("/maintenance/purge-trash"),
+  rebuildSymlinks: () =>
+    api.post<{ linked: number; removed: number }>("/maintenance/rebuild-symlinks"),
+  rebuildCollections: () =>
+    api.post<{ linked: number; removed: number }>("/maintenance/rebuild-collections"),
+
   // ── sites ──────────────────────────────────────────────────────────────
   sites: (params: Record<string, string | number | undefined> = {}) =>
     api.get<Page<Site>>(`/sites${query(params)}`),
+  /** Filtered listing. `filterToQuery` produces exactly what a saved view stores. */
+  filterSites: (filter: SiteFilter, page = 1, perPage = 50) =>
+    api.get<Page<Site>>(`/sites?${filterToQuery(filter, { page, per_page: perPage })}`),
+  moveSite: (id: number, folderId: number) =>
+    api.post<MoveOutcome>(`/sites/${id}/move`, { folder_id: folderId }),
+  restoreSite: (id: number) => api.post<SiteDetail>(`/sites/${id}/restore`),
+  purgeSite: (id: number) => api.del<{ ok: boolean }>(`/sites/${id}?purge=true`),
+  bulkSites: (body: {
+    site_ids: number[];
+    add_tags?: string[];
+    remove_tags?: string[];
+    folder_id?: number | null;
+  }) => api.post<BulkResult>("/sites/bulk", body),
   site: (id: number) => api.get<SiteDetail>(`/sites/${id}`),
   createSite: (body: {
     seed_url: string;
     title?: string;
+    folder_id?: number;
     engine_id?: string;
     profile_id?: number | null;
     keep_mirror?: boolean;
@@ -513,4 +663,28 @@ export const endpoints = {
 function query(params: Record<string, string | number | undefined>): string {
   const pairs = Object.entries(params).filter(([, v]) => v !== undefined && v !== "");
   return pairs.length ? `?${new URLSearchParams(pairs.map(([k, v]) => [k, String(v)]))}` : "";
+}
+
+/**
+ * Serialize a filter the way the server reads one.
+ *
+ * `tags` becomes repeated `tag` parameters, which is the one place the wire
+ * name differs from the field name — the server accepts both `tag` repeated
+ * and `tags` comma-separated, and this picks the form that cannot be confused
+ * by a tag containing a comma.
+ */
+export function filterToQuery(
+  filter: SiteFilter,
+  extra: Record<string, string | number | undefined> = {},
+): string {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(filter)) {
+    if (value === undefined || value === "" || (Array.isArray(value) && !value.length)) continue;
+    if (key === "tags") for (const tag of value as string[]) params.append("tag", tag);
+    else params.set(key, String(value));
+  }
+  for (const [key, value] of Object.entries(extra)) {
+    if (value !== undefined && value !== "") params.set(key, String(value));
+  }
+  return params.toString();
 }

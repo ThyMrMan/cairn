@@ -1,13 +1,15 @@
-"""System endpoints: version, audit log, storage. Expands in later milestones."""
+"""System endpoints: version and the audit log.
+
+Storage moved to the maintenance router when it stopped being a stub and
+became a report over folders, sites and trash.
+"""
 
 from __future__ import annotations
-
-import shutil
 
 from fastapi import APIRouter, Query
 from sqlalchemy import func, select
 
-from cairn.api.deps import AppSettings, CurrentUser, DbSession
+from cairn.api.deps import CurrentUser, DbSession
 from cairn.api.schemas import AuditEntry, Page, VersionResponse
 from cairn.build import build_info
 from cairn.db.models import AuditLog
@@ -45,17 +47,3 @@ def audit_log(
         page=page,
         per_page=per_page,
     )
-
-
-@router.get("/storage")
-def storage(settings: AppSettings, _user: CurrentUser) -> dict[str, object]:
-    usage = shutil.disk_usage(settings.data_dir)
-    return {
-        "data_dir": str(settings.data_dir),
-        "total_bytes": usage.total,
-        "used_bytes": usage.used,
-        "free_bytes": usage.free,
-        # Placeholders until M1 populates the sites table.
-        "sites": 0,
-        "archives_bytes": 0,
-    }

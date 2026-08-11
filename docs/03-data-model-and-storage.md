@@ -61,7 +61,11 @@
 - **Capture directories are immutable once complete.** Name format `<UTC ISO8601 basic>-<kind>-<engine>`, e.g. `20260809T142530Z-full-wget`. Sorts chronologically, self-describing, no lookup needed.
 - **Slugs are sanitized and stable.** Lowercase, `[a-z0-9-]` only, collisions get `-2`. The slug never changes when the display title changes — renaming a site must not move its files.
 - **`tmp/` is on the same filesystem as `archives/`** so finished WARCs move by rename, not copy. This matters: `--warc-tempdir` on a different mount turns every segment close into a full byte copy.
-- **`trash/` gives you an undo.** Deleting a site moves the directory there and schedules a purge after N days (default 30, configurable, `0` = immediate).
+- **`trash/` gives you an undo.** Deleting a site moves the directory to `trash/<id>-<slug>` and marks the row; only a purge unlinks bytes. Entries are keyed by id as well as slug because trash is flat and two sites in different folders can share a slug.
+
+  **The retention window is a floor, not a schedule.** The sweep runs at boot and on demand, because there is no scheduler until M6 — a container left running for two months purges nothing. `0` means "on the next sweep", not "immediately at the moment of deletion", so a mistaken delete stays recoverable.
+
+  A trashed site keeps its slug reserved: `UNIQUE(folder_id, slug)` spans deleted rows and is left that way deliberately. The visible cost is that deleting `example.com` and re-adding it before purging gives the newcomer `example-com-2`. The alternative trades that for a restored archive coming back under a suffixed name while a site created minutes ago holds its original — and between the two, the thing that has been on disk for years is the one that should keep the name it has always had.
 
 ### Storage sizing
 
@@ -142,7 +146,32 @@ CREATE TABLE site_tags (
 );
 ```
 
-`path` is materialized because the folder tree is read constantly and rewritten rarely. Renaming a folder rewrites descendants' paths in one `UPDATE ... WHERE path LIKE 'old/%'` and schedules a directory rename job. `ON DELETE RESTRICT` on `parent_id` is deliberate — deleting a folder with children should be an explicit, confirmed operation, never a cascade that silently takes archives with it.
+`path` is materialized because the folder tree is read constantly and rewritten rarely. Renaming a folder rewrites descendants' paths in one pass and moves exactly one directory — a rename carries everything under it, so a folder holding forty sites renames as fast as an empty one. `ON DELETE RESTRICT` on `parent_id` is deliberate — deleting a folder with children should be an explicit, confirmed operation, never a cascade that silently takes archives with it.
+
+**The three name columns do different jobs**, and conflating any two of them breaks something:
+
+| Column | Example | What it is for |
+|---|---|---|
+| `name` | `Photography` | What a person typed. Shown in the UI. |
+| `slug` | `photography` | Uniqueness within a parent, case-folded and punctuation-stripped. |
+| `path` | `Blogs/Photography` | The directory path, built from sanitized **names**. |
+
+The directory uses the display name because the archive tree is browsed over SMB and `Blogs/Photography` is the entire point of having folders — `blogs/photography` would be a lesser version of the same thing and `f3a9/` no version of it. What sanitizing removes is what a share cannot carry: `<>:"/\|?*`, control characters, and trailing dots and spaces, which Windows silently drops so that `Photos.` and `Photos` would otherwise be one directory reached by two names.
+
+The slug is stricter than the filesystem needs — `Foo Bar` and `Foo-Bar` both slug to `foo-bar`, and the second is refused even though they are distinct directories. That is over-strict in the safe direction: the failure it prevents is two folders in the UI silently sharing one directory on a case-insensitive filesystem.
+
+### Moving a directory
+
+Two operations wear the same name and they are not comparable:
+
+- **A rename** is instant regardless of what the directory holds, because only the entry moves. This is every move inside one filesystem, which is every normal install.
+- **A copy** is the only option when the ends are on different filesystems — on Unraid, `/data` spanning array disks behind FUSE. It takes minutes and holds a second copy of the bytes while it runs.
+
+`storage.rename_directory` raises `CrossDeviceMoveError` rather than falling back silently, so that difference cannot hide inside a request. The caller turns the copy into a `move` job, which gets a progress row, cancellation and crash recovery like a capture.
+
+The copy is **staged**: it writes to `.moving-<name>` beside the target, renames that into place, and only then deletes the source. `shutil.move` does copytree-then-rmtree straight onto the target, so a container stopped mid-copy — which on Unraid it will be — leaves a half-written directory that looks like a real archive next to a source that may already be partly gone. Staged, the same interruption leaves an intact source and a `.moving-` directory the boot sweep removes.
+
+A move is refused while any job is queued or running for the site. wget resolves its output directory once, when the job starts; moving it underneath does not fail, it just writes the WARC into an inode the database has no name for.
 
 ### Sites
 
@@ -435,10 +464,20 @@ Everything below is regenerable and safe to delete:
 | Artifact | Rebuilt by | When |
 |---|---|---|
 | `index/site.cdxj` | `cdxj-indexer` over the site's WARCs | After every capture; on demand |
-| `/data/by-tag/**` | Symlink tree refresh | After tag/folder/site changes, debounced |
-| `/config/pywb/config.yaml` | pywb config generator | After any collection change |
+| `/data/by-tag/**` | Symlink tree rebuild | After any tag, folder or site change; at boot |
+| `/data/replay/config.yaml` and `collections/**` | `cairn replay-init` | At boot; on demand |
 | `derived/text/**` | Text extraction post-processor | After capture (M8) |
 | `sites.size_bytes`, `url_count` | Stats rollup | After capture; nightly |
 | Checksum verification | Integrity job | Weekly; reports mismatches, never auto-repairs |
 
 The integrity job matters more than it sounds. Bit rot on a NAS array is real, WARCs are cold data nobody reads for years, and a weekly pass comparing `sha256` against `manifest.json` is the difference between noticing in a week and noticing never.
+
+### The tag tree is rebuilt whole, and its links are relative
+
+This document originally called for a debounced incremental refresh of `/data/by-tag`. It is rebuilt wholesale instead. At any scale this tool reaches, a rebuild is a few hundred `symlink(2)` calls and finishes faster than the request that triggered it — so incremental was identical in cost and carried the one failure mode that matters: a tree that quietly stops matching the database and looks fine until somebody trusts it.
+
+**The links must be relative.** The tree is read over SMB, where `/data` is not the root of anything: the share is mounted as `Z:\` or `/mnt/tower/cairn`, and an absolute `/data/archives/…` link resolves against the *client's* filesystem, where it means nothing. Samba compounds it — `wide links` defaults to off, so a link whose target appears to leave the share is refused outright. `../../archives/Blogs/example` stays inside the share and is followed on both counts.
+
+Naming inside a tag directory is computed from the database, never from what is already on disk. Site slugs are unique within a folder, not globally, so two sites can both be `example`; when that happens inside one tag, **both** get their id appended rather than the newcomer alone. A name that depends on which row arrived first cannot be recomputed, and a tree that cannot be recomputed cannot be checked.
+
+Pruning only ever removes symlinks and the empty directories that held them. A real directory under `by-tag` was put there by hand over the share, and deleting it because it is not in the database would be this tool destroying something it never owned.

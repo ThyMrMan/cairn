@@ -11,9 +11,11 @@ opportunistically at the call sites.
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import re
+import shutil
 import tempfile
 import unicodedata
 from datetime import UTC, datetime
@@ -47,10 +49,26 @@ _RESERVED_NAMES = frozenset(
 
 _SLUG_STRIP = re.compile(r"[^a-z0-9]+")
 _DIR_NAME = re.compile(r"^\d{8}T\d{6}Z-[a-z0-9]+-[a-z0-9]+$")
+# Illegal in a Windows filename, and therefore unusable over SMB even though
+# Linux would take most of them. `:` is the worst of the set — it opens an
+# alternate data stream rather than failing, so the file appears to vanish.
+_DIR_ILLEGAL = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+
+MAX_DIR_NAME_LENGTH = 96
 
 
 class StoragePathError(ValueError):
     """A path escaped the directory it was supposed to stay inside."""
+
+
+class CrossDeviceMoveError(OSError):
+    """A rename would have crossed a filesystem boundary.
+
+    Raised rather than silently copying, because the two are not the same
+    operation: a rename is instant whatever the directory holds, and a copy of
+    a site's archive is minutes and a second copy of the bytes. The caller
+    decides — in practice by moving the work into a job.
+    """
 
 
 # ── naming ───────────────────────────────────────────────────────────────
@@ -80,6 +98,27 @@ def unique_slug(base: str, taken: set[str]) -> str:
         if candidate not in taken:
             return candidate
     raise StoragePathError(f"could not find a free slug for {base!r}")
+
+
+def dir_name(value: str, *, fallback: str = "") -> str:
+    """A display name reduced to something usable as a directory component.
+
+    Unlike `slugify`, this keeps capitals, spaces and non-ASCII letters: the
+    archive tree is browsed over SMB, and `Blogs/Photography` is the point of
+    having folders at all — `blogs/photography` would be a lesser version of
+    the same thing, and `f3a9/` no version of it.
+
+    What it removes is what a share cannot carry. Trailing dots and spaces are
+    stripped because Windows silently drops them, so `Photos.` and `Photos`
+    would be one directory reached by two names.
+    """
+    cleaned = _DIR_ILLEGAL.sub(" ", unicodedata.normalize("NFC", value or ""))
+    cleaned = " ".join(cleaned.split()).rstrip(". ")
+    if not cleaned or cleaned in {".", ".."}:
+        return fallback
+    if cleaned.split(".")[0].lower() in _RESERVED_NAMES:
+        return fallback
+    return cleaned[:MAX_DIR_NAME_LENGTH].rstrip(". ") or fallback
 
 
 def engine_short_name(engine_id: str) -> str:
@@ -194,6 +233,78 @@ def site_yaml_path(settings: Settings, archive_path: str) -> Path:
 
 def manifest_path(settings: Settings, archive_path: str, dir_name: str) -> Path:
     return site_dir(settings, archive_path) / CAPTURES_DIR / dir_name / MANIFEST_FILE
+
+
+# ── moving directories ───────────────────────────────────────────────────
+
+STAGING_PREFIX = ".moving-"
+
+
+def rename_directory(source: Path, target: Path) -> None:
+    """Move a directory by rename, or refuse and say why.
+
+    Within one filesystem this is the whole operation, whatever is underneath —
+    a 40 GB site moves as fast as an empty one, which is why folder moves do
+    not need to care how much they contain.
+
+    Raises `CrossDeviceMoveError` when the two ends are on different filesystems.
+    That happens on Unraid, where `/data` can span array disks behind a FUSE
+    layer, and the honest answer there is a copy, which is a different
+    operation with a different cost.
+    """
+    if not source.exists():
+        raise StoragePathError(f"{source} does not exist")
+    if target.exists():
+        raise StoragePathError(f"{target} already exists")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.rename(source, target)
+    except OSError as exc:
+        if exc.errno == errno.EXDEV:
+            raise CrossDeviceMoveError(exc.errno, str(exc), str(source)) from exc
+        raise
+
+
+def copy_directory_into_place(source: Path, target: Path) -> None:
+    """The cross-device fallback, staged so a crash cannot lose the archive.
+
+    Copy into a sibling of the target, rename that into place, and only then
+    delete the source. `shutil.move` does copytree-then-rmtree directly onto
+    the target, so a container stopped mid-copy — which on Unraid it will be —
+    leaves a half-written directory that looks like a real site and a source
+    that may already be partly deleted.
+
+    Staged, the same crash leaves an intact source and a `.moving-` directory
+    that the boot sweep can recognise and remove. The rename at the end is
+    within one directory, so it is atomic.
+    """
+    if not source.exists():
+        raise StoragePathError(f"{source} does not exist")
+    if target.exists():
+        raise StoragePathError(f"{target} already exists")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    staging = target.parent / f"{STAGING_PREFIX}{target.name}"
+    if staging.exists():
+        shutil.rmtree(staging)
+    try:
+        shutil.copytree(source, staging, symlinks=True)
+        os.replace(staging, target)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    shutil.rmtree(source, ignore_errors=True)
+
+
+def sweep_staging(root: Path) -> int:
+    """Remove `.moving-` leftovers from a move that died mid-copy."""
+    removed = 0
+    if not root.exists():
+        return 0
+    for path in root.rglob(f"{STAGING_PREFIX}*"):
+        if path.is_dir() and not path.is_symlink():
+            shutil.rmtree(path, ignore_errors=True)
+            removed += 1
+    return removed
 
 
 # ── the disk-side records ────────────────────────────────────────────────

@@ -10,25 +10,33 @@ from sqlalchemy import func, select
 from cairn.api.deps import AppSettings, ClientIp, Csrf, CurrentUser, DbSession
 from cairn.api.errors import ApiError
 from cairn.api.schemas import (
+    BulkSiteRequest,
+    BulkSiteResponse,
     CaptureRequest,
     CaptureSummary,
     HostRuleModel,
     JobAccepted,
+    MoveOutcome,
     Ok,
     Page,
     ScopeModel,
     ScopeResponse,
     SiteCreate,
     SiteDetail,
+    SiteMoveRequest,
     SiteSummary,
     SiteUpdate,
 )
 from cairn.db.models import Capture, Folder, Job, Site
 from cairn.db.types import utcnow
 from cairn.engines.registry import EngineConfigError, EngineError
-from cairn.services import audit
+from cairn.services import audit, moves, symlinks, trash
+from cairn.services import folders as folder_service
 from cairn.services import sites as site_service
+from cairn.services import tags as tag_service
+from cairn.services.filters import FilterError, SiteFilter
 from cairn.services.scope import HostRule, Scope, ScopeError, to_wget_args
+from cairn.services.storage import CrossDeviceMoveError
 
 router = APIRouter(tags=["sites"], dependencies=[Csrf])
 
@@ -80,7 +88,7 @@ def _scope_response(db: DbSession, site: Site) -> ScopeResponse:
     )
 
 
-def _summary(db: DbSession, site: Site) -> SiteSummary:
+def _summary(db: DbSession, site: Site, tags: list[str] | None = None) -> SiteSummary:
     folder = db.get(Folder, site.folder_id)
     return SiteSummary(
         id=site.id,
@@ -94,7 +102,7 @@ def _summary(db: DbSession, site: Site) -> SiteSummary:
         engine_id=site.engine_id,
         profile_id=site.profile_id,
         keep_mirror=site.keep_mirror,
-        tags=site_service.tags_for(db, site.id),
+        tags=site_service.tags_for(db, site.id) if tags is None else tags,
         size_bytes=site.size_bytes,
         url_count=site.url_count,
         archive_path=site.archive_path,
@@ -109,29 +117,40 @@ def _summary(db: DbSession, site: Site) -> SiteSummary:
 
 @router.get("/sites", response_model=Page[SiteSummary])
 def list_sites(
+    request: Request,
     db: DbSession,
     _user: CurrentUser,
-    folder_id: int | None = None,
-    tag: str | None = None,
-    status_filter: Annotated[str | None, Query(alias="status")] = None,
-    q: str | None = None,
-    sort: str = "-updated_at",
     page: int = Query(1, ge=1),
     per_page: int = Query(50, ge=1, le=200),
 ) -> Page[SiteSummary]:
-    rows, total = site_service.list_sites(
-        db,
-        folder_id=folder_id,
-        tag=tag,
-        status=status_filter,
-        q=q,
-        sort=sort,
+    """Filter, sort and page.
+
+    The filter is read straight off the query string rather than declared as
+    parameters, because `tag` repeats and because every one of these fields
+    also has to survive a round trip through a saved view. One reader for both
+    is the only way those two stay the same thing (docs/09).
+    """
+    try:
+        site_filter = _filter_from(request)
+    except FilterError as exc:
+        raise ApiError("invalid_filter", str(exc), status_code=400) from exc
+
+    rows, total = site_service.list_sites(db, site_filter, page=page, per_page=per_page)
+    tags = site_service.tag_map(db, [s.id for s in rows])
+    return Page[SiteSummary](
+        items=[_summary(db, s, tags.get(s.id, [])) for s in rows],
+        total=total,
         page=page,
         per_page=per_page,
     )
-    return Page[SiteSummary](
-        items=[_summary(db, s) for s in rows], total=total, page=page, per_page=per_page
-    )
+
+
+def _filter_from(request: Request) -> SiteFilter:
+    raw: dict[str, Any] = dict(request.query_params)
+    repeated = request.query_params.getlist("tag")
+    if repeated:
+        raw["tag"] = repeated
+    return SiteFilter.from_params(raw)
 
 
 @router.post("/sites", response_model=SiteDetail, status_code=status.HTTP_201_CREATED)
@@ -200,6 +219,7 @@ def update_site(
     user: CurrentUser,
     ip: ClientIp,
     registry: Annotated[Any, Depends(_registry)],
+    supervisor: Annotated[Any, Depends(_supervisor)],
 ) -> SiteDetail:
     site = _require_site(db, site_id)
 
@@ -225,14 +245,25 @@ def update_site(
             setattr(site, field, value)
     if body.profile_id is not None:
         site.profile_id = body.profile_id or None
-    if body.folder_id is not None and body.folder_id != site.folder_id:
-        raise ApiError(
-            "not_implemented",
-            "Moving a site between folders arrives with the folder tree in M4.",
-            status_code=501,
-        )
     if body.tags is not None:
-        site_service.set_tags(db, site, body.tags)
+        try:
+            site_service.set_tags(db, site, body.tags)
+        except site_service.SiteError as exc:
+            raise ApiError("invalid_tag", str(exc), status_code=400) from exc
+        symlinks.safe_rebuild(db, settings)
+
+    if body.folder_id is not None and body.folder_id != site.folder_id:
+        # A folder change is a directory move, so it goes through the same
+        # path as an explicit one — including the chance of being a copy.
+        outcome = _move(db, settings, site, body.folder_id, supervisor)
+        if outcome.status == "queued":
+            raise ApiError(
+                "cross_device",
+                "That folder is on a different filesystem, so the archive has to be "
+                "copied rather than moved. Use Move to run it as a job you can watch.",
+                status_code=409,
+                detail={"job_id": outcome.job_id},
+            )
 
     site.updated_at = utcnow()
     db.flush()
@@ -241,25 +272,165 @@ def update_site(
     return _detail(db, site)
 
 
+@router.post("/sites/{site_id}/move", response_model=MoveOutcome)
+def move_site(
+    site_id: int,
+    body: SiteMoveRequest,
+    db: DbSession,
+    settings: AppSettings,
+    user: CurrentUser,
+    ip: ClientIp,
+    supervisor: Annotated[Any, Depends(_supervisor)],
+) -> MoveOutcome:
+    site = _require_site(db, site_id)
+    outcome = _move(db, settings, site, body.folder_id, supervisor)
+    audit.record(
+        db,
+        "site.move",
+        actor=user.username,
+        target=site.slug,
+        ip=ip,
+        detail={"to": outcome.path, "status": outcome.status},
+    )
+    return outcome
+
+
+def _move(db: DbSession, settings: Any, site: Site, folder_id: int, supervisor: Any) -> MoveOutcome:
+    try:
+        target = folder_service.require_folder(db, folder_id)
+    except folder_service.FolderError as exc:
+        raise ApiError("not_found", str(exc), status_code=404) from exc
+
+    try:
+        result = moves.move_site(db, settings, site, target)
+    except CrossDeviceMoveError:
+        spec = {"op": "move-site", "site_id": site.id, "target_folder_id": folder_id}
+        job = supervisor.enqueue(db, job_type="move", site_id=site.id, spec=spec)
+        db.commit()
+        supervisor.notify()
+        return MoveOutcome(status="queued", method="copy", path=site.archive_path, job_id=job.id)
+    except moves.SiteBusyError as exc:
+        raise ApiError("site_busy", str(exc), status_code=409) from exc
+    except (moves.MoveError, OSError) as exc:
+        raise ApiError("move_failed", str(exc), status_code=409) from exc
+    return MoveOutcome(status="done", method=result.method, path=result.new_path)
+
+
 @router.delete("/sites/{site_id}", response_model=Ok)
 def delete_site(
-    site_id: int, db: DbSession, settings: AppSettings, user: CurrentUser, ip: ClientIp
+    site_id: int,
+    db: DbSession,
+    settings: AppSettings,
+    user: CurrentUser,
+    ip: ClientIp,
+    purge: bool = Query(default=False),
 ) -> Ok:
+    """Move to the trash, or — with `?purge=true` — delete for good."""
     site = _require_site(db, site_id)
-    running = db.scalar(
-        select(func.count(Job.id)).where(
-            Job.site_id == site.id, Job.status.in_(("queued", "running"))
-        )
+    slug = site.slug
+    try:
+        trash.trash_site(db, settings, site)
+        if purge:
+            trash.purge_site(db, settings, site)
+    except trash.TrashError as exc:
+        raise ApiError("site_busy", str(exc), status_code=409) from exc
+
+    audit.record(
+        db,
+        "site.purge" if purge else "site.delete",
+        actor=user.username,
+        target=slug,
+        ip=ip,
     )
-    if running:
-        raise ApiError(
-            "site_busy",
-            "A capture is still running for this site. Cancel it first.",
-            status_code=409,
-        )
-    site_service.soft_delete(db, settings, site)
-    audit.record(db, "site.delete", actor=user.username, target=site.slug, ip=ip)
     return Ok()
+
+
+@router.post("/sites/{site_id}/restore", response_model=SiteDetail)
+def restore_site(
+    site_id: int, db: DbSession, settings: AppSettings, user: CurrentUser, ip: ClientIp
+) -> SiteDetail:
+    site = db.get(Site, site_id)
+    if site is None:
+        raise ApiError("not_found", "That site does not exist.", status_code=404)
+    try:
+        trash.restore_site(db, settings, site)
+    except trash.TrashError as exc:
+        raise ApiError("restore_failed", str(exc), status_code=409) from exc
+    except OSError as exc:
+        raise ApiError(
+            "restore_failed", f"the archive could not be moved back: {exc}", status_code=500
+        ) from exc
+
+    audit.record(db, "site.restore", actor=user.username, target=site.slug, ip=ip)
+    return _detail(db, site)
+
+
+@router.post("/sites/bulk", response_model=BulkSiteResponse)
+def bulk_update(
+    body: BulkSiteRequest,
+    db: DbSession,
+    settings: AppSettings,
+    user: CurrentUser,
+    ip: ClientIp,
+    supervisor: Annotated[Any, Depends(_supervisor)],
+) -> BulkSiteResponse:
+    """Tag, untag and move many sites in one request.
+
+    Partial success is the honest outcome here. One site in a selection of
+    twenty being mid-capture should not stop the other nineteen from being
+    tagged, so what could not be done comes back named rather than as a failed
+    request that leaves the user guessing which one it was.
+    """
+    live = list(
+        db.scalars(select(Site).where(Site.id.in_(body.site_ids), Site.deleted_at.is_(None))).all()
+    )
+    ids = [s.id for s in live]
+
+    try:
+        tagged = tag_service.add_to_sites(db, ids, body.add_tags)
+        untagged = tag_service.remove_from_sites(db, ids, body.remove_tags)
+    except tag_service.TagError as exc:
+        raise ApiError("invalid_tag", str(exc), status_code=400) from exc
+
+    moved = 0
+    queued: list[int] = []
+    skipped: list[str] = []
+    if body.folder_id is not None:
+        try:
+            target = folder_service.require_folder(db, body.folder_id)
+        except folder_service.FolderError as exc:
+            raise ApiError("not_found", str(exc), status_code=404) from exc
+        for site in live:
+            try:
+                result = moves.move_site(db, settings, site, target)
+                moved += 1 if result.method != "noop" else 0
+            except CrossDeviceMoveError:
+                job = supervisor.enqueue(
+                    db,
+                    job_type="move",
+                    site_id=site.id,
+                    spec={"op": "move-site", "site_id": site.id, "target_folder_id": target.id},
+                )
+                queued.append(job.id)
+            except (moves.MoveError, OSError) as exc:
+                skipped.append(f"{site.title}: {exc}")
+
+    if body.add_tags or body.remove_tags:
+        symlinks.safe_rebuild(db, settings)
+    audit.record(
+        db,
+        "site.bulk",
+        actor=user.username,
+        target=f"{len(ids)} site(s)",
+        ip=ip,
+        detail={"tagged": tagged, "untagged": untagged, "moved": moved},
+    )
+    if queued:
+        db.commit()
+        supervisor.notify()
+    return BulkSiteResponse(
+        tagged=tagged, untagged=untagged, moved=moved, queued_job_ids=queued, skipped=skipped
+    )
 
 
 # ── scope ────────────────────────────────────────────────────────────────

@@ -24,6 +24,8 @@ from cairn.api.routers import discovery as discovery_router
 from cairn.api.routers import engines as engines_router
 from cairn.api.routers import health as health_router
 from cairn.api.routers import jobs as jobs_router
+from cairn.api.routers import maintenance as maintenance_router
+from cairn.api.routers import organization as organization_router
 from cairn.api.routers import profiles as profiles_router
 from cairn.api.routers import replay as replay_router
 from cairn.api.routers import setup as setup_router
@@ -36,6 +38,7 @@ from cairn.db.bootstrap import (
     EXIT_CONFIG_ERROR,
     KeyMismatchError,
     ensure_directories,
+    reconcile_organization,
     run_migrations,
     seed_defaults,
     sweep_tmp,
@@ -99,6 +102,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         registry.refresh(session)
         purged = purge_expired_sessions(session)
         session.commit()
+        # Organization repairs, after seeding so the default folder exists.
+        # Each is idempotent and each fixes a tree that a restore, a manual
+        # edit on the share, or a container killed mid-move could have left
+        # disagreeing with the database.
+        reconcile_organization(session, settings)
+        session.commit()
     if purged:
         log.info("purged expired sessions", extra={"count": purged})
 
@@ -152,6 +161,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(setup_router.router, prefix="/api")
     app.include_router(auth_router.router, prefix="/api")
     app.include_router(system_router.router, prefix="/api")
+    app.include_router(organization_router.router, prefix="/api")
+    app.include_router(maintenance_router.router, prefix="/api")
     app.include_router(sites_router.router, prefix="/api")
     app.include_router(captures_router.router, prefix="/api")
     app.include_router(discovery_router.router, prefix="/api")

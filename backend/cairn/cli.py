@@ -89,6 +89,46 @@ def _cmd_reindex(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_rebuild_symlinks(_args: argparse.Namespace) -> int:
+    """Regenerate `/data/by-tag` from the database.
+
+    The repair for a tag tree that no longer matches — after a restore, a
+    volume recreated empty, or somebody tidying up over the share.
+    """
+    from cairn.services import symlinks
+
+    settings = get_settings()
+    ensure_directories(settings)
+    engine = get_engine(settings.db_url)
+    with sessionmaker_for(engine)() as session:
+        linked, removed = symlinks.rebuild(session, settings)
+    print(f"Tag tree: {linked} link(s) written, {removed} removed.")
+    return 0
+
+
+def _cmd_purge_trash(args: argparse.Namespace) -> int:
+    """Purge deleted sites. Not reversible."""
+    from cairn.services import trash
+
+    settings = get_settings()
+    engine = get_engine(settings.db_url)
+    with sessionmaker_for(engine)() as session:
+        if args.all:
+            entries = trash.list_trash(session, settings)
+            freed = sum(trash.purge_site(session, settings, row.site) for row in entries)
+            purged = len(entries)
+        else:
+            purged, freed = trash.purge_expired(session, settings)
+        session.commit()
+        window = trash.retention_days(session)
+
+    if args.all:
+        print(f"Purged all {purged} trashed site(s), freeing {freed:,} bytes.")
+    else:
+        print(f"Purged {purged} site(s) older than {window} day(s), freeing {freed:,} bytes.")
+    return 0
+
+
 def _read_new_password(from_stdin: bool) -> str | None:
     """Prompt for a password, or read one line from stdin.
 
@@ -275,6 +315,16 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser(
         "replay-init", help="Write pywb's config and rebuild the collection tree"
     ).set_defaults(func=_cmd_replay_init)
+
+    sub.add_parser(
+        "rebuild-symlinks", help="Regenerate /data/by-tag from the database"
+    ).set_defaults(func=_cmd_rebuild_symlinks)
+
+    purge = sub.add_parser("purge-trash", help="Delete trashed sites past the retention window")
+    purge.add_argument(
+        "--all", action="store_true", help="Purge everything in the trash, whatever its age"
+    )
+    purge.set_defaults(func=_cmd_purge_trash)
 
     reindex = sub.add_parser("reindex", help="Rebuild the replay index for one site or all sites")
     reindex.add_argument("slug", nargs="?", help="Site slug; omit for every site")
