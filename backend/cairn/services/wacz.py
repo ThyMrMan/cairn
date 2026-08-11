@@ -10,8 +10,8 @@ that outlives this tool.
 `wacz` 0.5.0, and installing it requires `black`, `pytest-cov` and
 `frictionless` — the last of which pins `jsonschema==4.17.3` while the engine
 registry needs `>=4.23`. Trading a working engine validator for a zip writer
-is not a trade worth making, and the format is small: five entries, two of
-them one line long. It was written by reading what py-wacz produces, and the
+is not a trade worth making, and the format is small: six entries, one of
+them a single line. It was written by reading what py-wacz produces, and the
 tests hand the result to the pywb already in the image, which unpacks it,
 reads this index and serves a page back out of this archive member — an
 independent reader resolving our offsets, which is the only property that
