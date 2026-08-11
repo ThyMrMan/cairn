@@ -45,6 +45,12 @@ dev = [
     "mypy>=1.14",
     "types-pyyaml",
     "types-jsonschema",
+    # Drives Chromium for the mint and for interactive profiles. Not a core
+    # dependency for the same reason as pywb: the app imports it lazily and
+    # says so when it is absent, so a development checkout stays installable
+    # without a 650 MB browser. The image installs both the package and the
+    # browser — see the Dockerfile.
+    "playwright>=1.49",
 ]
 
 [project.scripts]
@@ -104,6 +110,13 @@ ignore_errors = true
 [[tool.mypy.overrides]]
 # These ship no py.typed marker.
 module = ["warcio.*", "defusedxml.*", "feedparser.*", "cdxj_indexer.*", "surt.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# Playwright is a dev extra, not a runtime dependency — the app imports it
+# lazily and reports its absence — so type-checking must not require it to be
+# installed. It does ship types; this only covers checkouts without it.
+module = ["playwright.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

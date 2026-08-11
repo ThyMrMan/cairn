@@ -30,6 +30,11 @@ RUN pip install --no-cache-dir .
 # absent, while everything else in the image works perfectly.
 RUN pip install --no-cache-dir "pywb>=2.9,<3" "setuptools<81"
 
+# Playwright drives Chromium for the userscript mint and for interactive
+# profiles (docs/06). The Python package goes in the venv here; the browser
+# itself lands in the runtime stage, where the apt libraries it needs are.
+RUN pip install --no-cache-dir "playwright>=1.49"
+
 
 # ── runtime ──────────────────────────────────────────────────────────────
 FROM python:3.12-slim AS runtime
@@ -44,6 +49,12 @@ ENV PATH="/opt/venv/bin:$PATH" \
     CAIRN_CONFIG_DIR=/config \
     CAIRN_PORT=8080 \
     CAIRN_REPLAY_PORT=8081 \
+    # Not optional, and the failure it prevents is a nasty one. Playwright
+    # otherwise installs the browser under the *building* user's home, while
+    # the container runs as `abc` with HOME=/config — a mounted volume. So
+    # without this the browser is not missing at build time, it appears to
+    # vanish on somebody's fresh install.
+    PLAYWRIGHT_BROWSERS_PATH=/opt/playwright \
     PUID=99 \
     PGID=100 \
     UMASK=022 \
@@ -93,6 +104,40 @@ RUN set -eux; \
       | tar -C / -Jxpf -
 
 COPY --from=deps /opt/venv /opt/venv
+
+# Chromium, for the userscript mint and interactive profiles.
+#
+# This is the single largest thing in the image — roughly 1.4 GB once the
+# browser and its libraries are in. docs/06 estimated ~500 MB; measured, the
+# browser is 389 MB, software GL (libllvm + mesa) is another 169 MB, and the
+# CJK and emoji fonts are ~85 MB. The fonts stay: without them a Japanese blog
+# renders as tofu boxes in both the mint screenshot and the interactive
+# browser, which for an archiving tool is a correctness problem rather than a
+# cosmetic one.
+#
+# `--no-shell` skips the headless shell, a second 262 MB copy of Chromium that
+# nothing here uses: the screencast behind interactive profiles runs on the
+# full browser, headless.
+RUN set -eux; \
+    playwright install --with-deps --no-shell chromium; \
+    rm -rf /var/lib/apt/lists/*; \
+    chmod -R a+rX /opt/playwright
+
+# Prove the browser actually launches, at build time, as a non-root user —
+# the same reasoning as the wget PCRE probe above. A browser that is present
+# but cannot start turns every mint into a runtime failure with a stack trace
+# instead of a build that never shipped.
+#
+# The sandbox stays on (docs/11). Containers often deny the user namespaces it
+# needs, so this is also the check that the requirement is actually met rather
+# than assumed; the runtime falls back with a loud warning if it ever is not.
+COPY docker/probe-browser.py /tmp/probe-browser.py
+RUN set -eux; \
+    useradd -u 12345 -m probe; \
+    su probe -s /bin/sh -c '/opt/venv/bin/python /tmp/probe-browser.py'; \
+    userdel -r probe; \
+    rm -f /tmp/probe-browser.py
+
 COPY backend/ /app/backend/
 COPY alembic.ini /app/alembic.ini
 COPY --from=frontend /backend/cairn/static /app/backend/cairn/static

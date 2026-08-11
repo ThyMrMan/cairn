@@ -157,3 +157,65 @@ def site_server() -> Iterator[str]:
     finally:
         server.shutdown()
         server.server_close()
+
+
+# ── a site behind a content warning, for the M5 mint ─────────────────────
+#
+# The same shape as Blogger's: everything is the interstitial until a cookie
+# is present, and the interstitial sets that cookie from a button. No real
+# site and no real account is involved in testing the bypass.
+
+GATE_COOKIE = "cairn_test_consent"
+
+INTERSTITIAL_PAGE = (
+    b"<html><body><h1>Content warning</h1>"
+    b"<p>This blog may contain content only suitable for adults.</p>"
+    b'<button id="continue" onclick="accept()">I understand and wish to continue</button>'
+    b"<script>function accept(){document.cookie='" + GATE_COOKIE.encode() + b"=1; path=/';"
+    b"location.href='/';}</script></body></html>"
+)
+
+GATED_PAGES: dict[str, bytes] = {
+    "/": b"<html><body><h1>Index</h1><a href='/post-1.html'>one</a>"
+    b"<p>UNIQUE-GATED-INDEX</p></body></html>",
+    "/post-1.html": b"<html><body><h1>Post One</h1><p>UNIQUE-GATED-CONTENT</p></body></html>",
+}
+
+
+class _GatedHandler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def do_GET(self) -> None:
+        path = self.path.split("?")[0]
+        if path == "/robots.txt":
+            self._send(b"User-agent: *\nAllow: /\n", "text/plain")
+            return
+        if GATE_COOKIE not in (self.headers.get("Cookie") or ""):
+            self._send(INTERSTITIAL_PAGE, "text/html")
+            return
+        body = GATED_PAGES.get(path)
+        if body is None:
+            self._send(b"<html><body>not found</body></html>", "text/html", status=404)
+            return
+        self._send(body, "text/html")
+
+    def _send(self, body: bytes, ctype: str, status: int = 200) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *_args: object) -> None:
+        pass
+
+
+@pytest.fixture
+def gated_server() -> Iterator[str]:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _GatedHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}/"
+    finally:
+        server.shutdown()
+        server.server_close()
