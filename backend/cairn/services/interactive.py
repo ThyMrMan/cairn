@@ -80,8 +80,7 @@ class InteractiveError(RuntimeError):
 class Session:
     id: str
     profile_id: int
-    playwright: Any
-    browser: Any
+    launch: Any
     context: Any
     page: Any
     cdp: Any
@@ -117,9 +116,9 @@ class SessionRegistry:
                 )
             await self._close_locked()
 
-            playwright, chromium = await browser.start()
+            launch = await browser.start()
             try:
-                context = await chromium.new_context(
+                context = await launch.browser.new_context(
                     user_agent=user_agent or None,
                     viewport=browser.DEFAULT_VIEWPORT,
                     accept_downloads=False,
@@ -130,8 +129,7 @@ class SessionRegistry:
                 session = Session(
                     id=secrets.token_urlsafe(18),
                     profile_id=profile_id,
-                    playwright=playwright,
-                    browser=chromium,
+                    launch=launch,
                     context=context,
                     page=page,
                     cdp=cdp,
@@ -145,7 +143,7 @@ class SessionRegistry:
                 with contextlib.suppress(Exception):
                     await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
             except BaseException:
-                await browser.shutdown(playwright, chromium)
+                await browser.shutdown(launch)
                 raise
 
             self._session = session
@@ -178,7 +176,7 @@ class SessionRegistry:
         session.closing = True
         with contextlib.suppress(Exception):
             await session.cdp.send("Page.stopScreencast")
-        await browser.shutdown(session.playwright, session.browser)
+        await browser.shutdown(session.launch)
         log.info("interactive session closed", extra={"profile": session.profile_id})
 
     def _ensure_reaper(self) -> None:

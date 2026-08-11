@@ -1,6 +1,17 @@
 #!/command/with-contenv sh
 umask "${UMASK:-022}"
 cd /app
+
+# s6-setuidgid changes uid and gid and deliberately leaves HOME alone, so
+# without this the app runs as uid 99 while HOME still says /root — a
+# directory it cannot write. Chromium is the thing that notices: it derives
+# its crash-dump database path from HOME, hands crashpad an empty --database,
+# and dies before it can speak the DevTools protocol. The browser sets its own
+# home per launch now, so this is no longer load-bearing for that; it is here
+# because a process whose HOME it cannot write is wrong on its own terms and
+# the next thing to depend on it will fail just as obscurely.
+export HOME=/config
+
 exec s6-setuidgid abc \
   /opt/venv/bin/python -m uvicorn cairn.app:app \
     --factory \

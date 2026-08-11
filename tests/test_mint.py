@@ -11,6 +11,10 @@ its own button sets.
 
 from __future__ import annotations
 
+import os
+import tempfile
+from pathlib import Path
+
 import pytest
 
 from cairn.services import browser, interstitial, userscripts
@@ -166,6 +170,58 @@ def test_a_session_cookie_becomes_netscape_zero_not_minus_one() -> None:
     line = next(row for row in jar.splitlines() if row.startswith(".example.com"))
     assert line.split("\t")[4] == "0"
     assert line.split("\t")[1] == "TRUE", "a leading dot means include subdomains"
+
+
+# ── launching ────────────────────────────────────────────────────────────
+
+
+def test_the_browser_gets_a_home_it_can_write_to() -> None:
+    """Chromium derives its crash-dump database path from HOME.
+
+    Given one it cannot write, it hands `chrome_crashpad_handler` an empty
+    `--database`, crashpad refuses, and the browser dies with SIGTRAP before
+    speaking the DevTools protocol — surfacing as "Target page, context or
+    browser has been closed", which points nowhere near the cause.
+
+    This shipped, because every way of launching a browser *except the real
+    one* supplies a writable home: the build probe, `docker exec`, a dev
+    shell. Only `s6-setuidgid`, which changes uid and leaves HOME at /root,
+    hits it.
+    """
+    home = Path(tempfile.gettempdir()) / "cairn-browser-example"
+    env = browser._environment(home)
+
+    assert env["HOME"] == str(home)
+    assert env["XDG_CONFIG_HOME"].startswith(str(home))
+    # Inherited rather than replaced: dropping the rest would take
+    # PLAYWRIGHT_BROWSERS_PATH with it, and the browser would not be found.
+    assert set(os.environ) <= set(env)
+
+
+@needs_browser
+async def test_a_launch_survives_an_unwritable_home() -> None:
+    """The regression, run for real against the environment that broke it."""
+    original = os.environ.get("HOME")
+    os.environ["HOME"] = "/proc/1"  # exists, and is not writable by anyone
+    try:
+        async with browser.launched() as chromium:
+            assert chromium.version
+    finally:
+        if original is None:
+            os.environ.pop("HOME", None)
+        else:
+            os.environ["HOME"] = original
+
+
+def test_only_a_sandbox_failure_disables_the_sandbox() -> None:
+    """A blanket retry drops a security control for unrelated reasons — and
+    did: an unwritable HOME was answered by disabling the sandbox and advising
+    the user to go and fix their user namespaces."""
+    sandbox = RuntimeError("Failed to move to new namespace: No usable sandbox!")
+    unrelated = RuntimeError("Target page, context or browser has been closed")
+
+    assert browser._looks_like_a_sandbox_failure(sandbox)
+    assert not browser._looks_like_a_sandbox_failure(unrelated)
 
 
 # ── the mint, against a real browser ─────────────────────────────────────

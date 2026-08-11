@@ -28,8 +28,13 @@ unavailable instead of raising ImportError from somewhere unhelpful.
 
 from __future__ import annotations
 
+import os
+import shutil
+import tempfile
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from cairn.logging import get_logger
@@ -86,6 +91,15 @@ def require_available() -> None:
         raise BrowserUnavailableError(reason)
 
 
+@dataclass(slots=True)
+class Launch:
+    """A running browser and everything that has to be cleaned up with it."""
+
+    playwright: Any
+    browser: Any
+    home: Path
+
+
 @asynccontextmanager
 async def launched() -> AsyncIterator[Any]:
     """A running browser, closed on the way out however that happens.
@@ -93,62 +107,120 @@ async def launched() -> AsyncIterator[Any]:
     For work that starts and finishes inside one call — the mint. An
     interactive session outlives its request and uses `start`/`shutdown`.
     """
-    require_available()
-    from playwright.async_api import async_playwright
-
-    async with async_playwright() as playwright:
-        browser = await _launch(playwright)
-        try:
-            yield browser
-        finally:
-            await browser.close()
+    launch = await start()
+    try:
+        yield launch.browser
+    finally:
+        await shutdown(launch)
 
 
-async def start() -> tuple[Any, Any]:
+async def start() -> Launch:
     """A browser that outlives the call, for interactive sessions.
 
-    Returns the Playwright handle as well, because stopping it is not
-    optional: it owns a Node subprocess, and dropping the reference without
-    stopping leaks that process for the life of the container.
+    Returns the Playwright handle too, because stopping it is not optional: it
+    owns a Node subprocess, and dropping the reference without stopping leaks
+    that process for the life of the container.
     """
     require_available()
     from playwright.async_api import async_playwright
 
+    home = Path(tempfile.mkdtemp(prefix="cairn-browser-"))
     playwright = await async_playwright().start()
     try:
-        browser = await _launch(playwright)
+        browser = await _launch(playwright, home)
     except BaseException:
         await playwright.stop()
+        shutil.rmtree(home, ignore_errors=True)
         raise
-    return playwright, browser
+    return Launch(playwright=playwright, browser=browser, home=home)
 
 
-async def shutdown(playwright: Any, browser: Any) -> None:
-    """Close both halves, letting neither failure hide the other."""
+async def shutdown(launch: Launch | None) -> None:
+    """Close every part, letting no one failure hide another."""
     from contextlib import suppress
 
-    if browser is not None:
+    if launch is None:
+        return
+    if launch.browser is not None:
         with suppress(Exception):
-            await browser.close()
-    if playwright is not None:
+            await launch.browser.close()
+    if launch.playwright is not None:
         with suppress(Exception):
-            await playwright.stop()
+            await launch.playwright.stop()
+    shutil.rmtree(launch.home, ignore_errors=True)
 
 
-async def _launch(playwright: Any) -> Any:
+def _environment(home: Path) -> dict[str, str]:
+    """The browser's environment, with a home it can definitely write to.
+
+    Chromium derives its crash-dump database path from the user's home. Given
+    one it cannot write, it hands `chrome_crashpad_handler` an empty
+    `--database`, crashpad refuses, and the browser dies with SIGTRAP before
+    ever speaking the DevTools protocol — reported as "Target page, context or
+    browser has been closed", which points nowhere near the cause.
+
+    That is not hypothetical: the app runs under `s6-setuidgid abc`, which
+    changes uid and gid and deliberately leaves HOME alone, so a process
+    running as uid 99 inherits `HOME=/root`. Every other way of starting the
+    browser — the build probe, `docker exec`, a development shell — supplies a
+    writable home and works, which is precisely why this reached a release.
+
+    Curiously, HOME *unset* is fine; Chromium falls back sensibly. It is HOME
+    pointing somewhere unwritable that breaks it. So rather than depend on how
+    the process was started, every launch gets its own directory.
+    """
+    return {
+        **os.environ,
+        "HOME": str(home),
+        "XDG_CONFIG_HOME": str(home / "config"),
+        "XDG_CACHE_HOME": str(home / "cache"),
+    }
+
+
+async def _launch(playwright: Any, home: Path) -> Any:
+    env = _environment(home)
     try:
-        return await playwright.chromium.launch(channel=CHANNEL, args=LAUNCH_ARGS)
+        return await playwright.chromium.launch(channel=CHANNEL, args=LAUNCH_ARGS, env=env)
     except Exception as exc:
+        # Only retry without the sandbox when the sandbox is what failed.
+        # Blanket-retrying drops a security control for unrelated reasons —
+        # and it did: an unwritable HOME was answered by disabling the sandbox
+        # and telling the user to go and fix their user namespaces.
+        if not _looks_like_a_sandbox_failure(exc):
+            raise BrowserUnavailableError(
+                f"Chromium would not start: {_first_line(exc)}. Interactive and userscript "
+                "profiles need a working browser; cookies-mode profiles do not."
+            ) from exc
         _warn_about_the_sandbox(exc)
         try:
             return await playwright.chromium.launch(
-                channel=CHANNEL, args=[*LAUNCH_ARGS, "--no-sandbox"]
+                channel=CHANNEL, args=[*LAUNCH_ARGS, "--no-sandbox"], env=env
             )
         except Exception as fallback:
             raise BrowserUnavailableError(
-                f"Chromium would not start: {fallback}. Interactive and userscript "
-                "profiles need a working browser; cookies-mode profiles do not."
+                f"Chromium would not start even without its sandbox: {_first_line(fallback)}."
             ) from fallback
+
+
+# What Chromium says when its sandbox is the problem. Anything else is a
+# different problem wearing the same exception type.
+_SANDBOX_MARKERS = (
+    "no usable sandbox",
+    "sandbox helper",
+    "suid sandbox",
+    "user namespace",
+    "clone_newuser",
+    "operation not permitted",
+)
+
+
+def _looks_like_a_sandbox_failure(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return any(marker in text for marker in _SANDBOX_MARKERS)
+
+
+def _first_line(exc: Exception) -> str:
+    return str(exc).strip().splitlines()[0][:300]
 
 
 def _warn_about_the_sandbox(exc: Exception) -> None:
@@ -161,7 +233,7 @@ def _warn_about_the_sandbox(exc: Exception) -> None:
         "without one. Userscripts are code supplied by whoever wrote them, and the "
         "sandbox is what contains them — prefer a host that allows unprivileged "
         "user namespaces. See docs/11.",
-        extra={"err": str(exc).splitlines()[0][:200]},
+        extra={"err": _first_line(exc)},
     )
 
 
