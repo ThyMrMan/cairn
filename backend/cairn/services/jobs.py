@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import os
 import signal
 import time
@@ -78,6 +79,12 @@ STDERR_LIMIT = 64 * 1024
 LINE_LIMIT = 1024 * 1024
 
 PER_HOST_SERIAL_SETTING = "jobs.per_host_serial"
+# Whether engines may start sibling containers. Defaults to *true*: mounting
+# the Docker socket is itself the deliberate act, and a second switch that
+# defaults to off would mean somebody mounts the socket, picks a container
+# engine, and is told it is unavailable with no hint why. It exists so an
+# operator who mounted the socket for something else can still forbid this.
+ALLOW_DOCKER_SETTING = "jobs.allow_docker"
 
 
 class JobError(RuntimeError):
@@ -88,6 +95,9 @@ class JobError(RuntimeError):
 class RunningJob:
     job_id: int
     process: asyncio.subprocess.Process | None = None
+    # Set instead of `process` when the engine runs as a sibling container.
+    # Cancellation has to reach whichever one is actually doing the work.
+    container: str | None = None
     cancelled: bool = False
     capture_id: int | None = None
     task: asyncio.Task[None] | None = None
@@ -117,6 +127,7 @@ class JobSupervisor:
 
     async def start(self) -> None:
         await asyncio.to_thread(self._recover_interrupted)
+        await self._sweep_containers()
         self._dispatcher = asyncio.create_task(self._dispatch_loop(), name="cairn-dispatch")
 
     async def stop(self) -> None:
@@ -140,6 +151,23 @@ class JobSupervisor:
             _done, pending = await asyncio.wait(tasks, timeout=TERM_GRACE_SECONDS)
             for task in pending:
                 task.cancel()
+
+    async def _sweep_containers(self) -> None:
+        """Remove engine containers a previous process left running.
+
+        The subprocess path gets this for free — a child dies with its parent.
+        A sibling container does not: our process can be killed mid-capture and
+        the crawler keeps going, holding the archive open and writing into a
+        capture that the database already calls interrupted.
+        """
+        from cairn.services import containers
+
+        ok, _reason = containers.available()
+        if not ok:
+            return
+        with contextlib.suppress(Exception):
+            async with containers.client() as http:
+                await containers.sweep(http)
 
     def _recover_interrupted(self) -> None:
         with self._sessions() as session:
@@ -199,6 +227,11 @@ class JobSupervisor:
             return await asyncio.to_thread(self._cancel_queued, job_id)
         running.cancelled = True
         self._signal(running, signal.SIGTERM)
+        if running.container is not None:
+            from cairn.services import containers
+
+            async with containers.client() as http:
+                await containers.stop(http, running.container)
         return True
 
     def _cancel_queued(self, job_id: int) -> bool:
@@ -764,6 +797,7 @@ class JobSupervisor:
                 seed_source=seed_source,
                 warnings=warnings,
                 site_title=site.title,
+                runtime=dict(engine.runtime),
                 feed_id=job.spec.get("feed_id"),
                 item_ids=[int(i) for i in (job.spec.get("item_ids") or [])],
             )
@@ -775,6 +809,10 @@ class JobSupervisor:
         )
         for warning in prepared.warnings:
             self._bus.publish(job_id, EV_LOG, {"level": "warning", "msg": warning})
+
+        if prepared.runtime.get("type") == "docker":
+            await self._execute_container(running, prepared)
+            return
 
         env = dict(os.environ)
         env.setdefault("PYTHONUNBUFFERED", "1")
@@ -830,6 +868,129 @@ class JobSupervisor:
             self._finalize, prepared, collector, status, returncode, stderr, running.cancelled
         )
         await self._announce(prepared, collector, status)
+
+    async def _execute_container(self, running: RunningJob, prepared: _Prepared) -> None:
+        """Run an engine image beside us and read its stdout as the protocol.
+
+        The container half of the same contract: the image is handed a job
+        spec and writes cairn NDJSON, exactly as a subprocess engine does. What
+        differs is that its filesystem is not ours, so the spec it receives
+        names the two directories it can actually see.
+        """
+        from cairn.services import containers
+
+        job_id = prepared.job_id
+        collector = _Collector(supervisor=self, prepared=prepared, bus=self._bus)
+
+        ok, reason = containers.available()
+        if not ok or not await asyncio.to_thread(self._docker_allowed):
+            await asyncio.to_thread(
+                self._fail,
+                job_id,
+                prepared.capture_id,
+                reason
+                or "Container engines are switched off for this instance (jobs.allow_docker).",
+            )
+            return
+
+        # The spec the container reads names *its* paths, not ours. Written
+        # over the one `_prepare` wrote, because a capture uses one runtime and
+        # two specs in one directory is an invitation to read the wrong one.
+        spec_path = prepared.temp_dir / JOB_SPEC_FILE
+        storage.write_json(
+            spec_path,
+            containers.rewrite_spec(json.loads(spec_path.read_text(encoding="utf-8"))),
+        )
+
+        image = str(prepared.runtime.get("image") or "")
+        argv = [str(a) for a in (prepared.runtime.get("args") or [])] or [
+            f"{containers.CONTAINER_JOB}/{JOB_SPEC_FILE}"
+        ]
+        run = containers.RunSpec(
+            image=image,
+            argv=argv,
+            mounts=[
+                (prepared.output_dir, containers.CONTAINER_OUT),
+                (prepared.temp_dir, containers.CONTAINER_JOB),
+            ],
+            env={str(k): str(v) for k, v in (prepared.runtime.get("env") or {}).items()},
+            # A protocol-speaking image is handed its job directory as the
+            # working directory unless it says otherwise, so a relative path in
+            # its own arguments means what the author expected.
+            workdir=str(prepared.runtime.get("workdir") or containers.CONTAINER_JOB),
+            job_id=job_id,
+            shm_size=str(prepared.runtime.get("shm_size") or "2g"),
+            memory=str(prepared.runtime.get("memory") or ""),
+        )
+
+        stderr = ""
+        returncode = -1
+        async with containers.client() as http:
+            try:
+                if not await containers.image_present(http, image):
+                    self._bus.publish(
+                        job_id, EV_LOG, {"level": "info", "msg": f"pulling {image}"}
+                    )
+                    async for status in containers.pull(http, image):
+                        self._bus.publish(job_id, EV_LOG, {"level": "debug", "msg": status})
+
+                running.container = await containers.create(http, run)
+                await containers.start(http, running.container)
+                stderr = await self._pump_container(http, running, collector)
+                returncode = await containers.wait(http, running.container)
+            except containers.ContainerError as exc:
+                await collector.flush()
+                await asyncio.to_thread(self._fail, job_id, prepared.capture_id, str(exc))
+                return
+            finally:
+                await collector.flush()
+                if running.container is not None:
+                    await containers.remove(http, running.container)
+
+        status = _final_status(collector.result, returncode, running.cancelled)
+        await asyncio.to_thread(
+            self._finalize, prepared, collector, status, returncode, stderr, running.cancelled
+        )
+        await self._announce(prepared, collector, status)
+
+    async def _pump_container(
+        self, http: Any, running: RunningJob, collector: _Collector
+    ) -> str:
+        """Reassemble the container's framed log stream into protocol lines.
+
+        Docker frames each chunk with an eight-byte header and the frames do
+        not align with lines, so both streams are buffered separately —
+        stdout is the protocol, stderr is diagnostics for the failure message.
+        """
+        from cairn.services import containers
+
+        assert running.container is not None
+        stdout = b""
+        errors: list[bytes] = []
+        error_bytes = 0
+
+        async for stream, chunk in containers.stream_logs(http, running.container):
+            if stream == 2:
+                if error_bytes < STDERR_LIMIT:
+                    errors.append(chunk)
+                    error_bytes += len(chunk)
+                continue
+            stdout += chunk
+            while b"\n" in stdout:
+                line, stdout = stdout.split(b"\n", 1)
+                await collector.handle(line.decode("utf-8", errors="replace"))
+            cap = collector._prepared.max_pages
+            if cap and collector.url_count >= cap and not running.cancelled:
+                collector.note(f"page cap of {cap} reached; stopping")
+                running.cancelled = True
+                await containers.stop(http, running.container)
+        if stdout.strip():
+            await collector.handle(stdout.decode("utf-8", errors="replace"))
+        return b"".join(errors).decode("utf-8", errors="replace")
+
+    def _docker_allowed(self) -> bool:
+        with self._sessions() as session:
+            return bool(settings_store.get(session, ALLOW_DOCKER_SETTING, True))
 
     async def _announce(self, prepared: _Prepared, collector: _Collector, status: str) -> None:
         """Push what a person would want to hear about, after the fact.
@@ -997,6 +1158,9 @@ class _Prepared:
     seeds: list[str] = field(default_factory=list)
     seed_source: dict[str, int] = field(default_factory=dict)
     site_title: str = ""
+    # The engine's `runtime` block, which decides whether the work happens in
+    # a subprocess of ours or in a container beside us.
+    runtime: dict[str, Any] = field(default_factory=dict)
     # Set when a feed poll asked for this capture, so its items can be marked
     # once the capture has actually finished rather than optimistically when
     # it was queued.

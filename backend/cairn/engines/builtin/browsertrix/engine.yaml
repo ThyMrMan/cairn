@@ -1,0 +1,107 @@
+apiVersion: cairn.engine/v1
+id: browsertrix
+name: "browsertrix (browser)"
+version: "1.0.0"
+description: >-
+  Chromium-based crawl to WARC via browsertrix-crawler. Runs page JavaScript,
+  so it captures galleries, lazy-loaded images and links that only exist after
+  a script runs. Needs the Docker socket, and cannot use a cookie jar.
+author: "built-in"
+homepage: https://github.com/webrecorder/browsertrix-crawler
+
+runtime:
+  # A subprocess of ours that drives a sibling container, not `type: docker`.
+  # The docker runtime hands an image's stdout straight to core as cairn
+  # NDJSON; browsertrix speaks its own JSON log format, so the translation has
+  # to live somewhere, and putting it in the runtime would give the runtime a
+  # log-format field. See the module docstring in cairn/engines/browsertrix.py.
+  type: subprocess
+  command: ["python", "-m", "cairn.engines.browsertrix"]
+
+capabilities:
+  outputs: [warc, cdx, log]
+  javascript: true
+  scope: [host, path, regex]
+  # No cookies, and this is measured rather than conservative: browsertrix has
+  # no cookie option, and a browser profile built with our Chromium is
+  # accepted but ignored because it runs Brave — a different browser, so a
+  # different cookie-encryption key. A gated site archives as the gate.
+  auth: [user_agent]
+  # It has its own dedup, driven by Redis across a crawl cluster, which does
+  # not read wget's CDX. `incremental.dedup_cdx` is ignored.
+  incremental: false
+  resumable: false
+  max_concurrency: 4
+  requires_browser: true
+  requires_docker: true
+
+config_schema:
+  type: object
+  additionalProperties: false
+  properties:
+    image:
+      type: string
+      title: "Crawler image"
+      description: "Pinned deliberately: a crawler that changes under you changes your archive."
+      default: "webrecorder/browsertrix-crawler:1.14.1"
+    workers:
+      type: integer
+      title: "Parallel pages"
+      description: "Each worker is a browser tab and roughly 500 MB."
+      minimum: 1
+      maximum: 8
+      default: 1
+    post_load_delay_s:
+      type: integer
+      title: "Settle time after load (seconds)"
+      description: "Time for lazy content to appear before behaviors run. The main knob for galleries."
+      minimum: 0
+      maximum: 60
+      default: 2
+    page_extra_delay_s:
+      type: integer
+      title: "Extra delay per page (seconds)"
+      description: "Politeness, applied after everything else on a page has finished."
+      minimum: 0
+      maximum: 60
+      default: 0
+    page_timeout_s:
+      type: integer
+      title: "Per-page timeout"
+      minimum: 10
+      maximum: 900
+      default: 90
+    behaviors:
+      type: string
+      title: "Behaviors"
+      description: >-
+        Leave empty for the crawler's own default
+        (autoplay, autofetch, autoscroll, siteSpecific). Dropping autofetch
+        loses most lazily-referenced images.
+      default: ""
+    extract_text:
+      type: boolean
+      title: "Store extracted page text in the WARC"
+      description: "Costs little and is what a future full-text search would read."
+      default: true
+    docker_network:
+      type: string
+      title: "Docker network"
+      description: >-
+        Empty for the default bridge, which is what a public site needs. Name a
+        network to archive something only reachable inside it — an internal
+        wiki in another container, for instance.
+      maxLength: 128
+      default: ""
+    shm_size:
+      type: string
+      title: "Shared memory"
+      description: "Chromium crashes at Docker's 64 MB default."
+      pattern: "^[0-9]+[kmgKMG]?$"
+      default: "2g"
+    memory_limit:
+      type: string
+      title: "Memory limit"
+      description: "Empty for no limit. A runaway crawl on a NAS is worth capping."
+      pattern: "^([0-9]+[kmgKMG]?)?$"
+      default: ""
