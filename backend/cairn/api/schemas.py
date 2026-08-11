@@ -665,3 +665,47 @@ class EngineSummary(BaseModel):
     available: bool = True
     unavailable_reason: str | None = None
     error: str | None = None
+
+
+# ── search ───────────────────────────────────────────────────────────────
+
+
+class SearchHit(BaseModel):
+    site_id: int
+    site_title: str
+    site_slug: str
+    folder_path: str
+    url: str
+    title: str
+    snippets: list[str]
+    score: float
+    capture_id: int | None
+    #: 14-digit CDXJ timestamp, so the UI can open replay at this version.
+    timestamp: str
+    words: int
+
+
+class SearchResults(BaseModel):
+    query: str
+    terms: list[str]
+    total: int
+    hits: list[SearchHit]
+    #: The candidate window filled up, so `total` is a floor rather than a count.
+    truncated: bool = False
+
+
+class SearchStatus(BaseModel):
+    pages: int
+    words: int
+    sites: int
+    #: Sites with captures and nothing indexed — the prompt to reindex.
+    unindexed_sites: list[int]
+
+
+# ── exports ──────────────────────────────────────────────────────────────
+
+
+class ExportEntry(BaseModel):
+    name: str
+    size_bytes: int
+    created_at: str

@@ -10,6 +10,7 @@ import Folders from "./pages/Folders";
 import Jobs from "./pages/Jobs";
 import Login from "./pages/Login";
 import Profiles from "./pages/Profiles";
+import Search from "./pages/Search";
 import Settings from "./pages/Settings";
 import Setup from "./pages/Setup";
 import SiteDetail from "./pages/SiteDetail";
@@ -45,6 +46,7 @@ export default function App() {
     <Routes>
       <Route element={<Layout />}>
         <Route index element={<Dashboard />} />
+        <Route path="search" element={<Search />} />
         <Route path="sites" element={<Sites />} />
         <Route path="sites/:id" element={<SiteDetail />} />
         <Route path="folders" element={<Folders />} />

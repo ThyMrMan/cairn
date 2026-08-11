@@ -39,3 +39,16 @@ export function relative(iso: string | null | undefined): string {
   if (hours < 24) return phrase(hours, "h");
   return phrase(Math.round(hours / 24), "d");
 }
+
+/** A CDXJ timestamp as something readable: `20260810120000` → `2026-08-10 12:00`. */
+export function readableTimestamp(ts: string): string {
+  if (ts.length < 12) return ts;
+  const [y, mo, d, h, mi] = [
+    ts.slice(0, 4),
+    ts.slice(4, 6),
+    ts.slice(6, 8),
+    ts.slice(8, 10),
+    ts.slice(10, 12),
+  ];
+  return `${y}-${mo}-${d} ${h}:${mi}`;
+}

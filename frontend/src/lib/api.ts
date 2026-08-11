@@ -662,6 +662,76 @@ export type ScopePreview = {
   notes: string[];
 };
 
+export type JobAccepted = { job_id: number };
+
+// ── search, exports, integrity ───────────────────────────────────────────
+
+export type SearchHit = {
+  site_id: number;
+  site_title: string;
+  site_slug: string;
+  folder_path: string;
+  url: string;
+  title: string;
+  snippets: string[];
+  score: number;
+  capture_id: number | null;
+  /** 14-digit CDXJ timestamp — what replay wants to open this version. */
+  timestamp: string;
+  words: number;
+};
+
+export type SearchResults = {
+  query: string;
+  terms: string[];
+  total: number;
+  hits: SearchHit[];
+  truncated: boolean;
+};
+
+export type SearchStatus = {
+  pages: number;
+  words: number;
+  sites: number;
+  unindexed_sites: number[];
+};
+
+export type ExportEntry = { name: string; size_bytes: number; created_at: string };
+
+export type IntegrityFinding = {
+  kind: string;
+  site_id: number;
+  site_title: string;
+  capture_id: number | null;
+  capture_dir: string;
+  file: string;
+  detail: string;
+  severity: number;
+};
+
+export type IntegrityHealth = {
+  captures: number;
+  verified: number;
+  oldest_unverified: {
+    capture_id: number;
+    site_id: number;
+    site_title: string;
+    dir_name: string;
+    started_at: string;
+  } | null;
+  last_run: {
+    started_at: string;
+    finished_at: string | null;
+    sites: number;
+    captures: number;
+    files: number;
+    bytes_read: number;
+    ok: boolean;
+    findings: IntegrityFinding[];
+  } | null;
+  due: boolean;
+};
+
 // ── endpoints ────────────────────────────────────────────────────────────
 
 export const endpoints = {
@@ -720,6 +790,36 @@ export const endpoints = {
     api.post<{ linked: number; removed: number }>("/maintenance/rebuild-symlinks"),
   rebuildCollections: () =>
     api.post<{ linked: number; removed: number }>("/maintenance/rebuild-collections"),
+  verifyArchive: (params: { site_id?: number; deep?: boolean } = {}) =>
+    api.post<JobAccepted>(`/maintenance/verify${query(params as never)}`),
+  integrity: () => api.get<IntegrityHealth>("/maintenance/integrity"),
+
+  // ── search ─────────────────────────────────────────────────────────────
+  search: (params: {
+    q: string;
+    site_id?: number;
+    folder?: string;
+    tag?: string;
+    limit?: number;
+    offset?: number;
+  }) => api.get<SearchResults>(`/search${query(params as never)}`),
+  searchStatus: () => api.get<SearchStatus>("/search/status"),
+  reindexSearch: (params: { site_id?: number; extract?: boolean } = {}) =>
+    api.post<JobAccepted>(`/maintenance/reindex-search${query(params as never)}`),
+
+  // ── exports ────────────────────────────────────────────────────────────
+  exports: (siteId: number) => api.get<ExportEntry[]>(`/sites/${siteId}/exports`),
+  exportSite: (siteId: number) => api.post<JobAccepted>(`/sites/${siteId}/export/wacz`),
+  exportCapture: (captureId: number) =>
+    api.post<JobAccepted>(`/captures/${captureId}/export/wacz`),
+  deleteExport: (siteId: number, name: string) =>
+    api.del<{ ok: boolean }>(`/sites/${siteId}/exports/${encodeURIComponent(name)}`),
+  verifyExport: (siteId: number, name: string) =>
+    api.get<{ ok: boolean; problems: string[]; records: number; resources: number }>(
+      `/sites/${siteId}/exports/${encodeURIComponent(name)}/verify`,
+    ),
+  exportUrl: (siteId: number, name: string) =>
+    `/api/sites/${siteId}/exports/${encodeURIComponent(name)}`,
 
   // ── sites ──────────────────────────────────────────────────────────────
   sites: (params: Record<string, string | number | undefined> = {}) =>

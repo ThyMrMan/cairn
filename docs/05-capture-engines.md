@@ -422,12 +422,16 @@ Built-in chain (✅ = shipped):
 | 40 | `pywb-collection` | Regenerate pywb config, reload the collection | ✓ | M3 |
 | 50 | `symlink-tree` | Refresh `/data/by-tag` (debounced) | | M4 |
 | 60 | `asset-audit` | Report referenced-but-uncaptured assets and lazy-load hints | | ✅ |
-| 60 | `text-extract` | Extract readable text into `derived/text/` for search (M8) | | M8 |
+| 50 | `text-extract` | Extract readable text into `derived/text/` and index it for search | | ✅ |
 | 70 | `screenshot` | Homepage thumbnail for the site card (needs browser) | | M8 |
-| 80 | `wacz-export` | Package as `.wacz` if the site opts in | | M8 |
+| 80 | `wacz-export` | ~~Package as `.wacz` if the site opts in~~ — an export job, not a step. See below | | ✗ |
 | 90 | `notify` | ntfy / Apprise / webhook on completion or failure | | M6 |
 
 **The shipped chain runs in-process, not as subprocesses.** The manifest, the ordering and the required/optional distinction are all real; the isolation is not, because the built-ins need none and a subprocess contract nobody has written a second implementation of is a contract that will turn out to be wrong. It becomes a real addon boundary in M7, alongside the engine SDK, for the same reason engines got the seam first ([D3](00-decisions.md#d3--wget-for-v1-behind-an-engine-interface-from-day-one)).
+
+**`wacz-export` is not a post-processor and should not be.** A WACZ is a whole-site package, so running it per capture would repackage every WARC the site has after every incremental capture of a few hundred kilobytes — the cost grows with the archive while the new content does not. It is an on-demand job instead (`POST /api/sites/{id}/export/wacz`).
+
+`text-extract` runs at 50, after the index and before the asset audit, and does its own indexing rather than handing pages to a later step: the pages are in memory at that point and writing them out only to read them back would double the work for nothing. It is not required — a capture whose text could not be extracted is still a complete archive, and `Rebuild search index` regenerates it in seconds.
 
 `checksum` computes the hash itself rather than recording what the engine claimed — otherwise the weekly integrity job verifies the engine's memory instead of the archive. Artifact paths are resolved against the capture directory with symlinks followed, and anything escaping it is refused: engine output is data, not instruction.
 

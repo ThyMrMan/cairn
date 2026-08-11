@@ -17,6 +17,7 @@ export default function Settings() {
       <AboutSection />
       <ScheduleSection />
       <NotificationsSection />
+      <IntegritySection />
       <StorageSection />
       <TagsSection />
       <TrashSection />
@@ -25,6 +26,126 @@ export default function Settings() {
       <SessionsSection />
       <AuditSection />
     </div>
+  );
+}
+
+/**
+ * Archive health.
+ *
+ * The number to watch is the oldest capture nothing has checked. A pass that
+ * has quietly stopped reaching half the archive still reports success on the
+ * half it reaches, and only that figure makes the gap visible.
+ */
+function IntegritySection() {
+  const client = useQueryClient();
+  const health = useQuery({ queryKey: ["integrity"], queryFn: endpoints.integrity });
+  const [queued, setQueued] = useState<string | null>(null);
+
+  const run = useMutation({
+    mutationFn: (deep: boolean) => endpoints.verifyArchive({ deep }),
+    onSuccess: (result, deep) => {
+      setQueued(
+        `Queued as job #${result.job_id}. It reads every archived byte${
+          deep ? ", twice — once to checksum and once to parse" : ""
+        }, so watch it on the Jobs page.`,
+      );
+      void client.invalidateQueries({ queryKey: ["jobs"] });
+    },
+  });
+
+  const data = health.data;
+  const last = data?.last_run;
+  const findings = last?.findings ?? [];
+
+  return (
+    <Section
+      title="Archive health"
+      description="Re-reads every archived file and compares it to the checksum taken when it was written. It never repairs anything: a WARC cannot be corrected, only restored or captured again."
+    >
+      {health.isLoading && <Spinner className="h-4 w-4 text-muted" />}
+      {data && (
+        <>
+          <dl className="grid gap-x-8 gap-y-2 text-sm sm:grid-cols-2">
+            <div className="flex justify-between gap-4">
+              <dt className="text-muted">Captures verified</dt>
+              <dd className="tabular-nums">
+                {data.verified.toLocaleString()} of {data.captures.toLocaleString()}
+              </dd>
+            </div>
+            <div className="flex justify-between gap-4">
+              <dt className="text-muted">Last run</dt>
+              <dd>{last?.finished_at ? relative(last.finished_at) : "never"}</dd>
+            </div>
+            {last && (
+              <>
+                <div className="flex justify-between gap-4">
+                  <dt className="text-muted">Read</dt>
+                  <dd className="tabular-nums">
+                    {bytes(last.bytes_read)} across {last.files.toLocaleString()} file(s)
+                  </dd>
+                </div>
+                <div className="flex justify-between gap-4">
+                  <dt className="text-muted">Findings</dt>
+                  <dd className={findings.length ? "text-danger tabular-nums" : "tabular-nums"}>
+                    {findings.length}
+                  </dd>
+                </div>
+              </>
+            )}
+          </dl>
+
+          {data.oldest_unverified && (
+            <p className="mt-3 text-sm text-muted">
+              Oldest capture nothing has checked:{" "}
+              <a className="text-accent hover:underline" href={`/sites/${data.oldest_unverified.site_id}`}>
+                {data.oldest_unverified.site_title}
+              </a>{" "}
+              <span className="font-mono text-xs">{data.oldest_unverified.dir_name}</span>, from{" "}
+              {dateTime(data.oldest_unverified.started_at)}.
+            </p>
+          )}
+
+          {findings.length > 0 && (
+            <Alert kind="error" title={`${findings.length} finding(s)`}>
+              <ul className="space-y-2">
+                {findings.slice(0, 10).map((finding, i) => (
+                  <li key={i}>
+                    <span className="font-mono text-xs">{finding.kind}</span>{" "}
+                    <strong>{finding.site_title}</strong>
+                    {finding.file ? ` — ${finding.file}` : ""}
+                    <br />
+                    <span className="text-muted">{finding.detail}</span>
+                  </li>
+                ))}
+              </ul>
+              {findings.length > 10 && <p className="mt-2">…and {findings.length - 10} more.</p>}
+            </Alert>
+          )}
+
+          <div className="mt-4 flex flex-wrap gap-2">
+            <button
+              className="btn-ghost text-xs"
+              onClick={() => run.mutate(false)}
+              disabled={run.isPending}
+            >
+              {run.isPending && <Spinner />}
+              Verify now
+            </button>
+            <button
+              className="btn-ghost text-xs"
+              onClick={() => run.mutate(true)}
+              disabled={run.isPending}
+            >
+              Verify and parse every WARC
+            </button>
+          </div>
+          {queued && <p className="mt-2 text-xs text-muted">{queued}</p>}
+          {run.error && (
+            <p className="mt-2 text-xs text-danger">{(run.error as ApiError).message}</p>
+          )}
+        </>
+      )}
+    </Section>
   );
 }
 

@@ -327,6 +327,9 @@ class JobSupervisor:
             if job_type == "move":
                 await self._run_move(running)
                 return
+            if job_type in ("export", "verify", "index"):
+                await self._run_maintenance(running, job_type)
+                return
             # Before the capture, never during it: see _refresh_stale_profile.
             await self._refresh_stale_profile(job_id)
             prepared = await asyncio.to_thread(self._prepare, job_id, temp_dir)
@@ -657,6 +660,218 @@ class JobSupervisor:
                 "from": outcome.old_path,
                 "to": outcome.new_path,
             }
+
+    # ── export, verify, reindex ──────────────────────────────────────────
+    #
+    # In-process like discovery and move, and for the same reason: none of
+    # them runs a crawler, all of them need the database, and putting them
+    # through the queue is what makes them cancellable, restart-recoverable
+    # and visible in the same job list as everything else.
+
+    async def _run_maintenance(self, running: RunningJob, job_type: str) -> None:
+        job_id = running.job_id
+        self._bus.publish(job_id, EV_STATUS, {"status": "running"})
+
+        def say(message: str) -> None:
+            self._bus.publish(job_id, EV_LOG, {"level": "info", "msg": message})
+
+        def step(done: int, total: int, label: str) -> None:
+            self._bus.publish(job_id, EV_PROGRESS, {"done": done, "total": total, "url": label})
+
+        runner = {
+            "export": self._execute_export,
+            "verify": self._execute_verify,
+            "index": self._execute_reindex,
+        }[job_type]
+        result = await asyncio.to_thread(runner, job_id, say, step)
+
+        findings = int(result.get("findings") or 0)
+        if job_type == "verify" and findings:
+            from cairn.services import notify
+
+            await notify.send(
+                self._sessions,
+                notify.INTEGRITY_MISMATCH,
+                title="Archive integrity check found a problem",
+                body=f"{findings} finding(s) across {result.get('captures', 0)} capture(s). "
+                "Nothing was changed — open Archive health to see what.",
+                priority="high",
+            )
+        self._bus.publish(job_id, EV_STATUS, result)
+
+    def _execute_export(self, job_id: int, say: Any, step: Any) -> dict[str, Any]:
+        from cairn.services import wacz
+
+        with self._sessions() as session:
+            job = session.get(Job, job_id)
+            if job is None or job.site_id is None:  # pragma: no cover
+                return {"status": "failed", "error": "the job has no site"}
+            site = session.get(Site, job.site_id)
+            if site is None or site.deleted_at is not None:
+                return self._finish_job(session, job, "failed", "the site was deleted")
+
+            spec = job.spec or {}
+            capture_dirs = [str(d) for d in (spec.get("capture_dirs") or [])] or None
+            target = wacz.exports_dir(self._settings, site.archive_path) / (
+                str(spec.get("filename") or wacz.export_name(site.slug))
+            )
+            say(
+                f"Packaging {'this capture' if capture_dirs else 'every capture'} of "
+                f"{site.title} into {target.name}."
+            )
+            done = [0]
+
+            def progress(name: str) -> None:
+                done[0] += 1
+                step(done[0], 0, name)
+
+            try:
+                result = wacz.build(
+                    self._settings,
+                    archive_path=site.archive_path,
+                    target=target,
+                    capture_dirs=capture_dirs,
+                    title=site.title,
+                    description=f"Archived from {site.seed_url} by cairn.",
+                    main_page_url=site.seed_url,
+                    progress=progress,
+                )
+            except (wacz.WaczError, OSError, storage.StoragePathError) as exc:
+                return self._finish_job(session, job, "failed", str(exc))
+
+            say(
+                f"Wrote {result.path.name}: {result.warcs} WARC(s), {result.records} records, "
+                f"{result.pages} page(s), {result.size_bytes / 1024 / 1024:.1f} MB."
+            )
+            return self._finish_job(
+                session,
+                job,
+                "ok",
+                None,
+                progress={
+                    "file": result.path.name,
+                    "bytes": result.size_bytes,
+                    "records": result.records,
+                    "pages": result.pages,
+                    "warcs": result.warcs,
+                },
+            )
+
+    def _execute_verify(self, job_id: int, say: Any, step: Any) -> dict[str, Any]:
+        from cairn.services import integrity
+
+        with self._sessions() as session:
+            job = session.get(Job, job_id)
+            if job is None:  # pragma: no cover
+                return {"status": "failed", "error": "the job vanished"}
+            spec = job.spec or {}
+            deep = bool(spec.get("deep"))
+            say(
+                "Re-reading every archived file and comparing it to the checksum taken when "
+                "it was written." + (" Parsing each WARC as well." if deep else "")
+            )
+            report = integrity.verify(
+                session,
+                self._settings,
+                site_id=job.site_id,
+                deep=deep,
+                progress=lambda done, total, label: step(done, total, label),
+            )
+            # Only a whole-archive pass may claim to be the archive's state.
+            if job.site_id is None:
+                integrity.save(self._settings, report)
+
+            if report.ok:
+                say(
+                    f"{report.files} file(s) across {report.captures} capture(s) verified, "
+                    f"{report.bytes_read / 1024 / 1024:.0f} MB read. Nothing has changed."
+                )
+            else:
+                for finding in report.findings[:20]:
+                    self._bus.publish(
+                        job_id,
+                        EV_LOG,
+                        {
+                            "level": "error",
+                            "msg": f"{finding.kind}: {finding.file or ''} "
+                            f"({finding.site_title}) — {finding.detail}",
+                        },
+                    )
+
+            return self._finish_job(
+                session,
+                job,
+                "ok",
+                None,
+                progress={
+                    "files": report.files,
+                    "captures": report.captures,
+                    "findings": len(report.findings),
+                    "bytes_read": report.bytes_read,
+                    "ok": report.ok,
+                },
+            )
+
+    def _execute_reindex(self, job_id: int, say: Any, step: Any) -> dict[str, Any]:
+        from cairn.services import search, textextract
+
+        with self._sessions() as session:
+            job = session.get(Job, job_id)
+            if job is None:  # pragma: no cover
+                return {"status": "failed", "error": "the job vanished"}
+            spec = job.spec or {}
+            extract = bool(spec.get("extract"))
+
+            targets = list(
+                session.scalars(
+                    select(Site).where(
+                        Site.deleted_at.is_(None),
+                        *([Site.id == job.site_id] if job.site_id else []),
+                    )
+                ).all()
+            )
+            say(
+                f"Rebuilding the search index for {len(targets)} site(s)"
+                + (
+                    ", re-reading the WARCs to extract text again."
+                    if extract
+                    else " from the text already extracted."
+                )
+            )
+
+            total = 0
+            for n, site in enumerate(targets, start=1):
+                step(n, len(targets), site.title)
+                if extract:
+                    for capture in session.scalars(
+                        select(Capture).where(Capture.site_id == site.id)
+                    ).all():
+                        textextract.extract_capture(
+                            self._settings, site.archive_path, capture.dir_name
+                        )
+                total += search.reindex_site(session, self._settings, site)
+                session.commit()
+
+            say(f"{total} page(s) indexed.")
+            return self._finish_job(
+                session, job, "ok", None, progress={"pages": total, "sites": len(targets)}
+            )
+
+    def _finish_job(
+        self,
+        session: Session,
+        job: Job,
+        status: str,
+        error: str | None,
+        progress: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        job.status = status
+        job.error = error
+        job.finished_at = utcnow()
+        if progress is not None:
+            job.progress = progress
+        session.commit()
+        return {"status": status, **({"error": error} if error else {}), **(progress or {})}
 
     def _prepare(self, job_id: int, temp_dir: Path) -> _Prepared:
         """Create the capture row and job directory, and write the job spec."""

@@ -73,6 +73,7 @@ RECAPTURE_SETTING = "schedule.full_recapture_days"
 TRASH_PURGE_SETTING = "schedule.last_trash_purge"
 ROLLUP_SETTING = "schedule.last_stats_rollup"
 DISK_WARNED_SETTING = "schedule.last_disk_warning"
+VERIFY_SETTING = "schedule.last_integrity_verify"
 
 TRASH_PURGE_INTERVAL = timedelta(days=1)
 ROLLUP_INTERVAL = timedelta(hours=1)
@@ -444,8 +445,37 @@ class Scheduler:
                 session.commit()
 
             done += self._due_recaptures(session, now)
+            done += self._due_verification(session, now)
             session.commit()
         return done
+
+    def _due_verification(self, session: Session, now: datetime) -> list[str]:
+        """Queue the integrity pass when the interval has elapsed.
+
+        Enqueued rather than run here: it reads every archived byte, so it
+        belongs in the same queue as the captures it competes with for the
+        array, and it has to be cancellable.
+
+        The stamp is written when the job is *queued*, not when it finishes,
+        for the same reason the other maintenance stamps are: a pass that dies
+        halfway must not be re-queued on the next tick, sixty seconds later,
+        forever.
+        """
+        days = settings_store.get_int(session, "integrity.verify_days", 7)
+        if days <= 0:
+            return []
+        if not _elapsed(session, VERIFY_SETTING, timedelta(days=days), now):
+            return []
+        pending = session.scalar(
+            select(Job.id).where(Job.type == "verify", Job.status.in_(("queued", "running")))
+        )
+        settings_store.put(session, VERIFY_SETTING, now.isoformat())
+        if pending:
+            return []
+        job = self._supervisor.enqueue(
+            session, job_type="verify", site_id=None, spec={"deep": False}, priority=250
+        )
+        return [f"queued integrity verification as job {job.id}"]
 
     def _roll_up_sizes(self, session: Session) -> int:
         """Recompute what each site occupies on disk.

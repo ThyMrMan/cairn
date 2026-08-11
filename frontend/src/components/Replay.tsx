@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState, type FormEvent } from "react";
 
 import { endpoints, type CdxVersion } from "../lib/api";
-import { dateTime } from "../lib/format";
+import { dateTime, readableTimestamp } from "../lib/format";
 import { Alert, EmptyState, Spinner } from "./ui";
 
 /**
@@ -17,16 +17,25 @@ import { Alert, EmptyState, Spinner } from "./ui";
  * run their own JavaScript in your browser, and on a shared origin that code
  * could read the session cookie and call the API as you (docs/07, docs/11).
  */
-export function Replay({ siteId }: { siteId: number }) {
+export function Replay({
+  siteId,
+  initialUrl = "",
+  initialTimestamp = null,
+}: {
+  siteId: number;
+  /** Open here instead of at the seed — a search result arriving at its page. */
+  initialUrl?: string;
+  initialTimestamp?: string | null;
+}) {
   const client = useQueryClient();
   const status = useQuery({
     queryKey: ["replay", siteId],
     queryFn: () => endpoints.replayStatus(siteId),
   });
 
-  const [url, setUrl] = useState("");
-  const [draft, setDraft] = useState("");
-  const [timestamp, setTimestamp] = useState<string | null>(null);
+  const [url, setUrl] = useState(initialUrl);
+  const [draft, setDraft] = useState(initialUrl);
+  const [timestamp, setTimestamp] = useState<string | null>(initialTimestamp);
 
   // The seed is the way in; everything else is reached by clicking.
   useEffect(() => {
@@ -178,19 +187,6 @@ export function Replay({ siteId }: { siteId: number }) {
       </div>
     </div>
   );
-}
-
-/** `20260810120000` → `2026-08-10 12:00`. */
-function readableTimestamp(ts: string): string {
-  if (ts.length < 12) return ts;
-  const [y, mo, d, h, mi] = [
-    ts.slice(0, 4),
-    ts.slice(4, 6),
-    ts.slice(6, 8),
-    ts.slice(8, 10),
-    ts.slice(10, 12),
-  ];
-  return `${y}-${mo}-${d} ${h}:${mi}`;
 }
 
 export type { CdxVersion };

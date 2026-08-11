@@ -38,7 +38,7 @@
           index/
             site.cdxj                 # merged across all captures — what pywb reads
           derived/
-            text/                     # extracted text for search (M8)
+            text/                     # <capture>.jsonl — extracted text for search
             screenshots/
             media/
           exports/
@@ -503,6 +503,10 @@ Everything below is regenerable and safe to delete:
 | `derived/text/**` | Text extraction post-processor | After capture (M8) |
 | `sites.size_bytes`, `url_count` | Stats rollup | After capture; nightly |
 | Checksum verification | Integrity job | Weekly; reports mismatches, never auto-repairs |
+| Extracted text | `derived/text/<capture>.jsonl` | Written after each capture; regenerable from the WARCs |
+| Search index | `page_text` + `page_text_fts` | Contentless FTS5 — terms only. Rebuilt from `derived/text/` |
+
+**The search index holds no copy of the archive.** `page_text` records where each page's text is — the JSONL file, the byte offset, the length — and the FTS5 table beside it is `content=''`, so it stores the terms and nothing else. Measured over the same corpus, an ordinary FTS5 table costs 1.29x the raw text and a contentless one 0.21x; this database is copied whole before every migration with ten backups kept, so the ordinary form would have multiplied a gigabyte of extracted text into nearly thirteen on the cache pool. The cost is that `snippet()` returns NULL on a contentless table, so result snippets are built by seeking into the JSONL — which turns out to read better anyway, because that text is the de-boilerplated version.
 
 The integrity job matters more than it sounds. Bit rot on a NAS array is real, WARCs are cold data nobody reads for years, and a weekly pass comparing `sha256` against `manifest.json` is the difference between noticing in a week and noticing never.
 

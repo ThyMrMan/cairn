@@ -8,17 +8,21 @@ are safe to run at any time, and neither can lose an archive.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, Query, Request, status
 
 from cairn.api.deps import AppSettings, ClientIp, Csrf, CurrentUser, DbSession
 from cairn.api.errors import ApiError
-from cairn.api.schemas import Ok, TrashEntry
+from cairn.api.schemas import JobAccepted, Ok, TrashEntry
 from cairn.db.models import Folder
 from cairn.services import audit, replay, symlinks, trash
 
 router = APIRouter(tags=["maintenance"], dependencies=[Csrf])
+
+
+def _supervisor(request: Request) -> Any:
+    return request.app.state.supervisor
 
 
 @router.get("/trash", response_model=list[TrashEntry])
@@ -86,6 +90,47 @@ def rebuild_collections(
     linked, removed = replay.sync_collections(db, settings)
     audit.record(db, "maintenance.collections", actor=user.username, ip=ip)
     return {"linked": linked, "removed": removed}
+
+
+@router.post(
+    "/maintenance/verify", response_model=JobAccepted, status_code=status.HTTP_202_ACCEPTED
+)
+def verify_archive(
+    db: DbSession,
+    user: CurrentUser,
+    ip: ClientIp,
+    supervisor: Annotated[Any, Depends(_supervisor)],
+    site_id: Annotated[int | None, Query()] = None,
+    deep: Annotated[bool, Query()] = False,
+) -> JobAccepted:
+    """Re-checksum the archive against what each capture recorded.
+
+    A job rather than a request: it reads every archived byte, which on a NAS
+    array is minutes to hours and spins up disks. `deep` additionally parses
+    each WARC end to end, which reads everything twice.
+    """
+    job = supervisor.enqueue(
+        db, job_type="verify", site_id=site_id, spec={"deep": deep}, priority=200
+    )
+    audit.record(
+        db,
+        "maintenance.verify",
+        actor=user.username,
+        target=str(site_id) if site_id else "all sites",
+        ip=ip,
+        detail={"job_id": job.id, "deep": deep},
+    )
+    db.commit()
+    supervisor.notify()
+    return JobAccepted(job_id=job.id)
+
+
+@router.get("/maintenance/integrity")
+def integrity_report(db: DbSession, settings: AppSettings, _user: CurrentUser) -> dict[str, Any]:
+    """Archive health: what was verified, when, and what is still unchecked."""
+    from cairn.services import integrity
+
+    return integrity.health(db, settings)
 
 
 @router.get("/storage")

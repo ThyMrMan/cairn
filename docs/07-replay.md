@@ -175,15 +175,24 @@ Served by the app (not pywb) via `warcio`, reading the byte range directly. Raw 
 
 **Serverless replay.** The `<replay-web-page>` custom element replays a WACZ entirely client-side via a service worker. Worth considering as a *second* replay path: it needs no pywb process, and it runs archived content inside the service worker's scope rather than a server origin.
 
-```bash
-wacz create -o exports/example-blog-2026-08.wacz \
-  -t --detect-pages \
-  captures/*/warc/*.warc.gz
+**As built (M8).** `POST /api/sites/{id}/export/wacz` writes one into the site's `exports/`, as a job; `POST /api/captures/{id}/export/wacz` does a single capture. The list is a directory read, so an export copied in over the share appears in the UI and one deleted there disappears from it — there is no table of exports to fall out of step with the disk.
+
+**The packager is ours, not py-wacz.** `wacz` 0.5.0 requires `black`, `pytest-cov` and `frictionless`, and frictionless pins `jsonschema==4.17.3` while the engine registry needs `>=4.23` — so installing it would trade a working engine validator for a zip writer. The format is six entries:
+
+```
+archive/<capture>-part-00000.warc.gz   stored, not deflated
+indexes/index.cdx.gz                   CDXJ, one gzip member per 3,000 lines
+indexes/index.idx                      offset and digest of each member
+pages/pages.jsonl                      the page list, titled from derived/text/
+datapackage.json                       sha256 and size of every resource
+datapackage-digest.json                sha256 of datapackage.json
 ```
 
-pywb also serves WACZ directly, so an exported file stays replayable in place.
+**Every WARC in the zip must have a unique basename.** The index names a file by basename alone and a reader resolves it against `archive/`, but every capture this tool makes writes `part-00000.warc.gz` — so a site-level export packaged as-is resolves half its index to the other capture's file. Both files exist and both parse, so nothing says so; only reading a record back at the offset the index gives does. That is the same finding as `dir_root` above, one layer out, and `GET /api/sites/{id}/exports/{name}/verify` is the check for it — confirmed by reintroducing the collision and watching it report *"that offset holds … instead"*.
 
-**Recommendation:** ship pywb as the primary replay path (better for large, incrementally-growing archives — no repackaging on every capture) and WACZ export as an on-demand feature for sharing, offsite backup, and long-term portability. Revisit client-side replay as the primary path if pywb's operational cost turns out to be higher than expected.
+**pywb does not serve a `.wacz` in place**, contrary to what this document said before. Verified against the pinned 2.9.1 in three configurations: a wacz in a collection's `archive/`, an explicit `index_paths`, and `archive_paths` alone all 404, and `wb-manager` says so outright — *"Adding waczs without unpacking is not yet implemented. Use '--unpack-wacz'"*. It will **import** one, which is how the export is tested: pywb unpacks it, reads our index, and serves a page back out of our archive member.
+
+**Recommendation, unchanged:** pywb as the primary replay path (no repackaging as an archive grows), WACZ export on demand for sharing, offsite backup and long-term portability.
 
 ---
 

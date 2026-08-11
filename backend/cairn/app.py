@@ -22,6 +22,7 @@ from cairn.api.routers import auth as auth_router
 from cairn.api.routers import captures as captures_router
 from cairn.api.routers import discovery as discovery_router
 from cairn.api.routers import engines as engines_router
+from cairn.api.routers import exports as exports_router
 from cairn.api.routers import feeds as feeds_router
 from cairn.api.routers import health as health_router
 from cairn.api.routers import interactive as interactive_router
@@ -30,6 +31,7 @@ from cairn.api.routers import maintenance as maintenance_router
 from cairn.api.routers import organization as organization_router
 from cairn.api.routers import profiles as profiles_router
 from cairn.api.routers import replay as replay_router
+from cairn.api.routers import search as search_router
 from cairn.api.routers import setup as setup_router
 from cairn.api.routers import sites as sites_router
 from cairn.api.routers import system as system_router
@@ -189,6 +191,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(interactive_router.router, prefix="/api")
     app.include_router(engines_router.router, prefix="/api")
     app.include_router(replay_router.router, prefix="/api")
+    app.include_router(search_router.router, prefix="/api")
+    app.include_router(exports_router.router, prefix="/api")
 
     _mount_frontend(app)
     return app

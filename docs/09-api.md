@@ -131,7 +131,7 @@ Anything a filter can express must survive a round trip through both serializati
 | `GET` | `/api/captures/{id}/urls` | With `?errors_only=true` |
 | `POST` | `/api/captures/{id}/retry-failed` | New capture seeded from this one's failures |
 | `POST` | `/api/captures/{id}/reindex` | Rebuild the site index |
-| `POST` | `/api/captures/{id}/export/wacz` | `202 {job_id}` |
+| `POST` | `/api/captures/{id}/export/wacz` | `202 {job_id}` — this capture alone |
 
 ---
 
@@ -253,11 +253,24 @@ The interactive session is a **CDP screencast over a WebSocket**, not the `vnc_u
 | `GET` | `/api/storage` | Per-folder and per-site usage, free space, trash size |
 | `GET` | `/api/trash` | Deleted sites, their size, and days until purge |
 | `DELETE` | `/api/trash` | Purge everything in the trash now |
-| `POST` | `/api/maintenance/verify` | Checksum verification → `202` |
+| `POST` | `/api/maintenance/verify` | `?site_id=&deep=` → `202 {job_id}`. `deep` also parses every WARC |
+| `GET` | `/api/maintenance/integrity` | Archive health: verified count, oldest unverified capture, last report |
+| `POST` | `/api/maintenance/reindex-search` | `?site_id=&extract=` → `202 {job_id}` |
+| `GET` | `/api/search` | `?q=&site_id=&folder=&tag=&limit=&offset=` → ranked hits with snippets |
+| `GET` | `/api/search/status` | `{pages, words, sites, unindexed_sites}` |
+| `GET` | `/api/sites/{id}/exports` | The site's `.wacz` files, from the directory |
+| `POST` | `/api/sites/{id}/export/wacz` | `202 {job_id}` — every capture in one file |
+| `GET` | `/api/sites/{id}/exports/{name}` | Download. Always an attachment |
+| `GET` | `/api/sites/{id}/exports/{name}/verify` | Checksums, and every index entry resolving |
+| `DELETE` | `/api/sites/{id}/exports/{name}` | Remove an export. The archive is untouched |
 | `POST` | `/api/maintenance/rebuild-symlinks` | Regenerate `/data/by-tag` |
 | `POST` | `/api/maintenance/rebuild-collections` | Re-point every pywb collection |
 | `POST` | `/api/maintenance/rebuild-db` | Reconstruct DB rows from on-disk manifests |
 | `POST` | `/api/maintenance/purge-trash` | Purge only what is past the retention window |
+
+`/api/search` never receives FTS5 syntax. What somebody types is translated: every bare term becomes a quoted string literal, and only `"a phrase"`, a trailing `*` and a leading `-` are read as operators. Typing `c++` or a stray quote is a MATCH syntax error otherwise, and `AND` is an operator rather than the word somebody meant — a search box that answers with *fts5: syntax error near* is a search box people stop using.
+
+`/api/sites/{id}/exports/{name}` is always `Content-Disposition: attachment` with `X-Content-Type-Options: nosniff`. A WACZ is a zip of untrusted archived bytes and the app origin is the last place it should ever be rendered ([11](11-security.md)).
 
 `/api/storage` reports per-site totals from `sites.size_bytes`, measured by the `stats` post-processor at the end of each capture — not by walking the tree on request. On a NAS array that walk is thousands of cold `stat` calls and the page would take seconds while spinning up disks nobody asked to wake. Free space and trash size are measured live, being one `statvfs` and one directory that is normally small.
 | `GET` | `/api/audit` | Auth and admin events |

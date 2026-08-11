@@ -112,7 +112,7 @@ def build_index(settings: Settings, archive_path: str) -> IndexResult:
         storage.write_atomic(target, b"")
         return IndexResult(path=target, records=0, warcs=0)
 
-    lines = _index_lines(site_root, warcs)
+    lines = cdxj_lines(site_root, warcs)
     # A CDXJ line is `<surt> <timestamp> <json>`, and the timestamp is a
     # fixed-width 14 digits, so ordinary string sort is SURT-then-time order —
     # which is what makes "every capture of this URL" a range scan.
@@ -125,7 +125,13 @@ def build_index(settings: Settings, archive_path: str) -> IndexResult:
     return IndexResult(path=target, records=len(lines), warcs=len(warcs))
 
 
-def _index_lines(site_root: Path, warcs: list[Path]) -> list[str]:
+def cdxj_lines(site_root: Path, warcs: list[Path]) -> list[str]:
+    """CDXJ for these WARCs, with site-relative filenames.
+
+    Public because the WACZ packager needs exactly this and must not grow a
+    second indexer: two implementations of "what is in these WARCs" is how an
+    export ends up disagreeing with the replay it was made from.
+    """
     try:
         from cdxj_indexer.main import write_cdx_index
     except ImportError as exc:  # pragma: no cover — declared in pyproject

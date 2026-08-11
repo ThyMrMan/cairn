@@ -176,7 +176,7 @@ Recording these so they don't creep in:
 
 - Multi-user, roles, sharing, or public archive publishing
 - Distributed or multi-node crawling
-- Full-text search (M8 candidate — see [13](13-feature-backlog.md))
+- ~~Full-text search~~ — built in M8: SQLite FTS5 over text extracted from every captured page
 - Deduplication across *different* sites (within-site is in v1)
 - Automatic paywall/CAPTCHA circumvention
 - Mobile app (the UI should be responsive; that's it)

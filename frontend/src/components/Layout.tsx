@@ -9,6 +9,7 @@ import { Logo } from "./ui";
 // list used to carry is gone with the last of them.
 const NAV = [
   { to: "/", label: "Dashboard", end: true },
+  { to: "/search", label: "Search" },
   { to: "/sites", label: "Sites" },
   { to: "/folders", label: "Folders" },
   { to: "/profiles", label: "Access profiles" },

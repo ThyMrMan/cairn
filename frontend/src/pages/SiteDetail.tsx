@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 
 import { DomainPicker } from "../components/DomainPicker";
 import { EnginePicker } from "../components/EnginePicker";
@@ -18,6 +18,10 @@ export default function SiteDetail() {
   const client = useQueryClient();
   const navigate = useNavigate();
   const [watching, setWatching] = useState<number | null>(null);
+  // Set by a search result linking to the page it matched.
+  const [params] = useSearchParams();
+  const replayUrl = params.get("replay") ?? undefined;
+  const replayTimestamp = params.get("ts");
 
   const site = useQuery({
     queryKey: ["site", siteId],
@@ -138,7 +142,14 @@ export default function SiteDetail() {
 
       <Feeds siteId={siteId} />
 
-      <ReplaySection siteId={siteId} captureCount={data.capture_count} />
+      <ReplaySection
+        siteId={siteId}
+        captureCount={data.capture_count}
+        initialUrl={replayUrl}
+        initialTimestamp={replayTimestamp}
+      />
+
+      <Exports siteId={siteId} captures={captures.data ?? []} />
 
       <section className="space-y-3">
         <h2 className="text-sm font-medium">Captures</h2>
@@ -183,10 +194,22 @@ export default function SiteDetail() {
   );
 }
 
-function ReplaySection({ siteId, captureCount }: { siteId: number; captureCount: number }) {
+function ReplaySection({
+  siteId,
+  captureCount,
+  initialUrl,
+  initialTimestamp,
+}: {
+  siteId: number;
+  captureCount: number;
+  initialUrl?: string;
+  initialTimestamp?: string | null;
+}) {
   // Collapsed until there is something to see: an iframe that loads pywb on
-  // every visit to a site nobody has captured yet is pure noise.
-  const [open, setOpen] = useState(captureCount > 0);
+  // every visit to a site nobody has captured yet is pure noise. Open anyway
+  // when a search result asked for a particular page — arriving at a link and
+  // having to hunt for the panel it opens is not arriving at a link.
+  const [open, setOpen] = useState(captureCount > 0 || Boolean(initialUrl));
 
   return (
     <section className="card p-5">
@@ -202,7 +225,132 @@ function ReplaySection({ siteId, captureCount }: { siteId: number; captureCount:
       </button>
       {open && (
         <div className="mt-4">
-          <Replay siteId={siteId} />
+          <Replay
+            siteId={siteId}
+            initialUrl={initialUrl}
+            initialTimestamp={initialTimestamp ?? null}
+          />
+        </div>
+      )}
+    </section>
+  );
+}
+
+/**
+ * WACZ exports.
+ *
+ * The list is a directory read, so a file copied in over the share shows up
+ * here and one deleted over the share disappears — there is no table of
+ * exports to fall out of step with the disk.
+ */
+function Exports({ siteId, captures }: { siteId: number; captures: { id: number }[] }) {
+  const client = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const [checked, setChecked] = useState<Record<string, string>>({});
+
+  const list = useQuery({
+    queryKey: ["exports", siteId],
+    queryFn: () => endpoints.exports(siteId),
+    enabled: open,
+  });
+  const refresh = () => client.invalidateQueries({ queryKey: ["exports", siteId] });
+
+  const build = useMutation({
+    mutationFn: () => endpoints.exportSite(siteId),
+    onSuccess: () => setTimeout(refresh, 1500),
+  });
+  const remove = useMutation({
+    mutationFn: (name: string) => endpoints.deleteExport(siteId, name),
+    onSuccess: refresh,
+  });
+  const verify = useMutation({
+    mutationFn: (name: string) => endpoints.verifyExport(siteId, name),
+    onSuccess: (result, name) =>
+      setChecked((prev) => ({
+        ...prev,
+        [name]: result.ok
+          ? `${result.records} record(s), every one resolving`
+          : result.problems.slice(0, 3).join("; "),
+      })),
+  });
+
+  return (
+    <section className="card p-5">
+      <button
+        className="flex w-full items-center justify-between text-left"
+        onClick={() => setOpen((v) => !v)}
+      >
+        <div>
+          <h2 className="text-sm font-medium">Export</h2>
+          <p className="hint mt-0.5">
+            One <code>.wacz</code> file holding the whole archive. It opens in replayweb.page
+            with no server, and it is the format to keep an offsite copy in.
+          </p>
+        </div>
+        <span className="text-xs text-muted">{open ? "Hide" : "Show"}</span>
+      </button>
+
+      {open && (
+        <div className="mt-4 space-y-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              className="btn-ghost"
+              onClick={() => build.mutate()}
+              disabled={build.isPending || captures.length === 0}
+            >
+              {build.isPending && <Spinner />}
+              Export every capture
+            </button>
+            {captures.length === 0 && (
+              <span className="hint">Nothing to export until this site has a capture.</span>
+            )}
+            {build.data && <span className="hint">Queued as job #{build.data.job_id}.</span>}
+            {build.error && (
+              <span className="text-sm text-danger">{(build.error as ApiError).message}</span>
+            )}
+          </div>
+
+          {list.data && list.data.length > 0 ? (
+            <ul className="divide-y divide-border text-sm">
+              {list.data.map((entry) => (
+                <li key={entry.name} className="flex flex-wrap items-center gap-3 py-2">
+                  <a
+                    className="flex-1 break-all font-mono text-xs text-accent hover:underline"
+                    href={endpoints.exportUrl(siteId, entry.name)}
+                    download
+                  >
+                    {entry.name}
+                  </a>
+                  <span className="shrink-0 text-xs text-muted tabular-nums">
+                    {bytes(entry.size_bytes)}
+                  </span>
+                  <span className="shrink-0 text-xs text-muted">{relative(entry.created_at)}</span>
+                  <button
+                    className="btn-ghost shrink-0 text-xs"
+                    onClick={() => verify.mutate(entry.name)}
+                    disabled={verify.isPending}
+                  >
+                    Verify
+                  </button>
+                  <button
+                    className="btn-ghost shrink-0 text-xs text-danger"
+                    onClick={() => {
+                      if (confirm(`Delete ${entry.name}? The archive itself is untouched.`)) {
+                        remove.mutate(entry.name);
+                      }
+                    }}
+                  >
+                    Delete
+                  </button>
+                  {checked[entry.name] && (
+                    <span className="w-full text-xs text-muted">{checked[entry.name]}</span>
+                  )}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="hint">No exports yet.</p>
+          )}
         </div>
       )}
     </section>

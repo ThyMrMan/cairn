@@ -86,7 +86,15 @@ Both engines write into the same site folder and the same replay collection, so 
 
 Writing your own is two files: copy [`examples/engine-template/`](examples/engine-template/), then `cairn engines test ./my-engine` runs it against a fixture site and checks it honours the protocol. Cairn never imports engine code — it spawns a command and reads NDJSON — so an engine can be written in anything.
 
-What is not there yet: full-text search, WACZ export and the rest of M8.
+Once there are more archives than you can browse, **Search** is how you use the tool. It reads the text extracted from every captured page, so "which of my archives mentioned this?" is one query — and results open the archived page at the version that matched, not the live web.
+
+The hard part of that is not the search engine. A blog's sidebar lists every post title on every page, so indexing what was served makes one post title match the whole blog. Cairn drops the furniture two ways: by recognising what templates call their nav, sidebar and footer, and — for a template that names nothing usefully — by noticing which blocks of text appear on most of a capture's pages. Nothing but the standard library does the parsing.
+
+**Export** packages a site into a single `.wacz`: WARCs, index, page list and checksums in one file that [ReplayWeb.page](https://replayweb.page/) opens with no server at all. It is the format for sending an archive to somebody and for an offsite copy that outlives this tool.
+
+**Archive health** re-reads every archived byte and compares it to the checksum taken when it was written, weekly by default. Bit rot on an array is real and WARCs are cold data nobody opens for years; the difference between noticing in a week and noticing never is a job that actually reads them. It never repairs anything — a WARC cannot be corrected, only restored or captured again — so it names the file, the capture and the site, and leaves the decision to you.
+
+What is not there yet, from M8's menu: `yt-dlp` media capture, retention policies, capture diffing, a page-change watcher for feedless sites, ArchiveBox import, Prometheus metrics and public share links.
 
 The image carries Chromium for the userscript and interactive modes, which puts it at roughly **1.7 GB**. Everything except those two modes works without it.
 
