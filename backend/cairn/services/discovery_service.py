@@ -80,13 +80,46 @@ def persist(session: Session, site: Site, result: DiscoveryResult, job_id: int |
 
 
 def record_feeds(session: Session, site: Site, result: DiscoveryResult) -> int:
-    """Attach discovered feeds to the site, without duplicating existing ones."""
+    """Attach discovered feeds to the site, without duplicating existing ones.
+
+    A comment feed arrives switched off. docs/08 asks for every discovered feed
+    to be a checklist rather than added silently, and that is right about
+    comment feeds — hundreds of entries pointing at fragments of pages the
+    posts feed already covers, which after M6 means real requests and real
+    captures. It is wrong about the posts feed: it is the reason the site is
+    being archived, and making somebody tick a box to get the obvious thing is
+    friction, not consent. So both are recorded and the noisy one is off, which
+    is the same list either way — the difference is only what happens if
+    nobody looks at it.
+    """
+    from cairn.services import feeds as feed_service
+
     known = set(session.scalars(select(Feed.url).where(Feed.site_id == site.id)).all())
     added = 0
     for url in result.feeds:
         if url in known:
             continue
-        session.add(Feed(site_id=site.id, url=url, kind="auto", enabled=True))
+        comments = feed_service.is_comment_feed(url)
+        session.add(
+            Feed(
+                site_id=site.id,
+                url=url,
+                kind="auto",
+                enabled=not comments,
+                auto_capture=not comments,
+                interval_min=feed_service.DEFAULT_INTERVAL_MIN,
+                # Due now rather than one interval from now: discovery has just
+                # proved the feed answers, and the first poll is what turns its
+                # existing entries into a baseline instead of a backlog.
+                next_poll_at=utcnow(),
+                disabled_reason=(
+                    "Comment feeds are off by default: they are mostly noise, and their "
+                    "entries point at pages the posts feed already covers."
+                    if comments
+                    else None
+                ),
+            )
+        )
         added += 1
     if added:
         session.flush()

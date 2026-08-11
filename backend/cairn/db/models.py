@@ -37,7 +37,17 @@ from cairn.db.types import JsonText, UtcDateTime, utcnow
 
 SITE_STATUSES = ("new", "indexed", "ready", "capturing", "error", "archived")
 JOB_STATUSES = ("queued", "running", "ok", "failed", "cancelled", "interrupted")
-JOB_TYPES = ("discovery", "capture", "mint", "index", "export", "move", "verify", "purge")
+JOB_TYPES = (
+    "discovery",
+    "capture",
+    "mint",
+    "index",
+    "export",
+    "move",
+    "verify",
+    "purge",
+    "feed-poll",
+)
 CAPTURE_STATUSES = ("running", "ok", "partial", "failed", "cancelled", "interrupted")
 CAPTURE_KINDS = ("full", "incremental", "feed", "manual", "resume")
 PROFILE_MODES = ("none", "cookies", "userscript", "interactive")
@@ -377,6 +387,15 @@ class CaptureUrl(Base):
 
 
 class Feed(Base):
+    """A watched URL: a feed, or a sitemap being diffed (docs/08).
+
+    `next_poll_at` is the schedule, not a derivation of it. Storing the answer
+    rather than recomputing `last_polled_at + interval` is what gives jitter
+    somewhere to live, and it makes "what is due" one indexed comparison that
+    a restart cannot get wrong — a container down for a week comes back with
+    everything overdue exactly once.
+    """
+
     __tablename__ = "feeds"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -386,39 +405,110 @@ class Feed(Base):
     title: Mapped[str | None] = mapped_column(String(255), default=None)
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     interval_min: Mapped[int] = mapped_column(Integer, nullable=False, default=360)
+    # New items are captured without being asked about. Off for a comment feed,
+    # which is usually noise, and off is also what the add dialog defaults to
+    # when the entries fall outside the site's scope.
+    auto_capture: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # Re-capture a post whose `updated` moved after we first saw it. Default
+    # off: most feeds touch `updated` for trivial reasons and it becomes churn.
+    recapture_on_update: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    next_poll_at: Mapped[datetime | None] = mapped_column(UtcDateTime, default=None)
     last_polled_at: Mapped[datetime | None] = mapped_column(UtcDateTime, default=None)
     last_success_at: Mapped[datetime | None] = mapped_column(UtcDateTime, default=None)
+    last_status: Mapped[int | None] = mapped_column(Integer, default=None)
     etag: Mapped[str | None] = mapped_column(String(255), default=None)
     last_modified: Mapped[str | None] = mapped_column(String(64), default=None)
     consecutive_failures: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_error: Mapped[str | None] = mapped_column(Text, default=None)
+    # Why the tool turned it off, as opposed to the user doing so. Absent when
+    # `enabled` is false because somebody unticked it.
+    disabled_reason: Mapped[str | None] = mapped_column(Text, default=None)
 
     site: Mapped[Site] = relationship(back_populates="feeds")
     items: Mapped[list[FeedItem]] = relationship(
         back_populates="feed", cascade="all, delete-orphan"
     )
+    polls: Mapped[list[FeedPoll]] = relationship(
+        back_populates="feed", cascade="all, delete-orphan"
+    )
 
-    __table_args__ = (UniqueConstraint("site_id", "url", name="uq_feeds_site_url"),)
+    __table_args__ = (
+        UniqueConstraint("site_id", "url", name="uq_feeds_site_url"),
+        Index("ix_feeds_due", "enabled", "next_poll_at"),
+    )
 
 
 class FeedItem(Base):
+    """One entry seen in a feed, or one URL seen in a watched sitemap.
+
+    `guid` is the dedup key and is whatever the source gives that is stable:
+    the entry's own id, or the canonical URL when there is none. `canonical_url`
+    is kept separately so a feed that regenerates its guids on every edit can
+    still be recognised — without it, one editorial pass re-captures the
+    entire archive (docs/08).
+    """
+
     __tablename__ = "feed_items"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     feed_id: Mapped[int] = mapped_column(ForeignKey("feeds.id", ondelete="CASCADE"), nullable=False)
     guid: Mapped[str] = mapped_column(Text, nullable=False)
     url: Mapped[str] = mapped_column(Text, nullable=False)
+    canonical_url: Mapped[str] = mapped_column(Text, nullable=False, default="")
     title: Mapped[str | None] = mapped_column(Text, default=None)
     published_at: Mapped[datetime | None] = mapped_column(UtcDateTime, default=None)
+    updated_at: Mapped[datetime | None] = mapped_column(UtcDateTime, default=None)
     first_seen_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False, default=utcnow)
+    # Bumped on every poll that still lists it. A sitemap entry whose last_seen
+    # falls behind the feed's last successful poll has disappeared upstream,
+    # which is the notification worth having (docs/08).
+    last_seen_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False, default=utcnow)
+    gone_at: Mapped[datetime | None] = mapped_column(UtcDateTime, default=None)
     capture_id: Mapped[int | None] = mapped_column(
         ForeignKey("captures.id", ondelete="SET NULL"), default=None
     )
+    # pending | captured | failed | skipped
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
 
     feed: Mapped[Feed] = relationship(back_populates="items")
 
-    __table_args__ = (UniqueConstraint("feed_id", "guid", name="uq_feed_items_feed_guid"),)
+    __table_args__ = (
+        UniqueConstraint("feed_id", "guid", name="uq_feed_items_feed_guid"),
+        Index("ix_feed_items_canonical", "feed_id", "canonical_url"),
+        Index("ix_feed_items_pending", "feed_id", "status"),
+    )
+
+
+class FeedPoll(Base):
+    """One poll, recorded whatever happened.
+
+    This table is the milestone's answer to the ArchiveBox note that a
+    `curl | grep` cron was more dependable than the tool's own scheduler — a
+    judgement about observability rather than correctness. A scheduler you
+    cannot inspect is a scheduler you will not trust, so every poll says what
+    it fetched, what it parsed, what was new and what it did about it.
+    """
+
+    __tablename__ = "feed_polls"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    feed_id: Mapped[int] = mapped_column(ForeignKey("feeds.id", ondelete="CASCADE"), nullable=False)
+    ts: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False, default=utcnow)
+    # 0 when the request never got a response at all.
+    status: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    duration_ms: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    entries_seen: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    new_items: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    gone_items: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    action: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+    job_id: Mapped[int | None] = mapped_column(
+        ForeignKey("jobs.id", ondelete="SET NULL"), default=None
+    )
+    error: Mapped[str | None] = mapped_column(Text, default=None)
+
+    feed: Mapped[Feed] = relationship(back_populates="polls")
+
+    __table_args__ = (Index("ix_feed_polls_feed_ts", "feed_id", text("ts DESC")),)
 
 
 # ── access profiles ──────────────────────────────────────────────────────
@@ -528,6 +618,7 @@ __all__ = [
     "EngineRecord",
     "Feed",
     "FeedItem",
+    "FeedPoll",
     "Folder",
     "Job",
     "LoginAttempt",

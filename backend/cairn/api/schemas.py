@@ -502,6 +502,147 @@ class InteractiveSession(BaseModel):
     height: int
 
 
+# ── feeds ────────────────────────────────────────────────────────────────
+
+
+class FeedCreate(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    url: str = Field(min_length=1, max_length=2048)
+    kind: str = Field(default="auto", pattern="^(auto|rss|atom|json|sitemap)$")
+    title: str | None = Field(default=None, max_length=255)
+    interval_min: int | None = Field(default=None, ge=5, le=60 * 24 * 30)
+    enabled: bool = True
+    auto_capture: bool = True
+
+
+class FeedUpdate(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    title: str | None = Field(default=None, max_length=255)
+    interval_min: int | None = Field(default=None, ge=5, le=60 * 24 * 30)
+    enabled: bool | None = None
+    auto_capture: bool | None = None
+    recapture_on_update: bool | None = None
+
+
+class FeedSummary(BaseModel):
+    id: int
+    site_id: int
+    url: str
+    kind: str
+    title: str | None
+    enabled: bool
+    auto_capture: bool
+    recapture_on_update: bool
+    interval_min: int
+    next_poll_at: datetime | None
+    last_polled_at: datetime | None
+    last_success_at: datetime | None
+    last_status: int | None
+    consecutive_failures: int
+    last_error: str | None
+    disabled_reason: str | None
+    counts: dict[str, int]
+
+
+class FeedPollEntry(BaseModel):
+    id: int
+    ts: datetime
+    status: int
+    duration_ms: int
+    entries_seen: int
+    new_items: int
+    gone_items: int
+    action: str
+    error: str | None
+
+
+class FeedItemEntry(BaseModel):
+    id: int
+    url: str
+    title: str | None
+    status: str
+    published_at: datetime | None
+    first_seen_at: datetime
+    gone_at: datetime | None
+    capture_id: int | None
+
+
+class FeedCandidateModel(BaseModel):
+    """What the add-feed dialog shows before anything is saved.
+
+    `in_scope` and `out_of_scope` are the point of testing first: a feed whose
+    entries fall outside the site's scope polls happily forever and archives
+    nothing, which is a confusing failure to diagnose after the fact.
+    """
+
+    url: str
+    kind: str
+    title: str | None
+    entry_count: int
+    recent_titles: list[str]
+    is_comments: bool
+    in_scope: int
+    out_of_scope: list[str]
+    error: str | None
+    ok: bool
+
+
+class FeedTestRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    url: str = Field(min_length=1, max_length=2048)
+    kind: str = Field(default="auto", pattern="^(auto|rss|atom|json|sitemap)$")
+
+
+class FeedPollResult(BaseModel):
+    status: int
+    action: str
+    entries_seen: int
+    new_items: int
+    gone_items: int
+    baseline: bool
+    error: str | None
+    job_ids: list[int] = Field(default_factory=list)
+
+
+# ── scheduling & notifications ───────────────────────────────────────────
+
+
+class QuietHours(BaseModel):
+    enabled: bool = False
+    start: str = Field(default="01:00", pattern=r"^\d{1,2}:\d{2}$")
+    end: str = Field(default="07:00", pattern=r"^\d{1,2}:\d{2}$")
+
+
+class ScheduleSettings(BaseModel):
+    quiet_hours: QuietHours
+    per_host_serial: bool
+    full_recapture_days: int = Field(ge=0, le=3650)
+    in_quiet_hours_now: bool
+
+
+class NotifyTarget(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    url: str = Field(min_length=1, max_length=2048)
+    enabled: bool = True
+    label: str = Field(default="", max_length=80)
+
+
+class NotifySettings(BaseModel):
+    targets: list[NotifyTarget]
+    events: dict[str, bool]
+    labels: dict[str, str]
+    apprise_available: bool
+
+
+class NotifyUpdate(BaseModel):
+    targets: list[NotifyTarget] | None = Field(default=None, max_length=20)
+    events: dict[str, bool] | None = None
+
+
 # ── engines ──────────────────────────────────────────────────────────────
 
 

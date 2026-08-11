@@ -35,6 +35,13 @@ RUN pip install --no-cache-dir "pywb>=2.9,<3" "setuptools<81"
 # itself lands in the runtime stage, where the apt libraries it needs are.
 RUN pip install --no-cache-dir "playwright>=1.49"
 
+# Apprise fans notifications out to whatever somebody already runs (docs/08).
+# ntfy and generic webhooks are implemented natively with httpx and need
+# nothing; this is what makes every other target work. Image-only for the same
+# reason as pywb — the app imports it lazily and reports its absence — so a
+# source checkout stays installable without it.
+RUN pip install --no-cache-dir "apprise>=1.9"
+
 
 # ── runtime ──────────────────────────────────────────────────────────────
 FROM python:3.12-slim AS runtime

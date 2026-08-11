@@ -22,6 +22,7 @@ from cairn.api.routers import auth as auth_router
 from cairn.api.routers import captures as captures_router
 from cairn.api.routers import discovery as discovery_router
 from cairn.api.routers import engines as engines_router
+from cairn.api.routers import feeds as feeds_router
 from cairn.api.routers import health as health_router
 from cairn.api.routers import interactive as interactive_router
 from cairn.api.routers import jobs as jobs_router
@@ -52,6 +53,7 @@ from cairn.services.auth import purge_expired_sessions
 from cairn.services.events import EventBus
 from cairn.services.interactive import SessionRegistry as InteractiveRegistry
 from cairn.services.jobs import JobSupervisor
+from cairn.services.scheduler import Scheduler
 
 log = get_logger(__name__)
 
@@ -118,6 +120,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     bus = EventBus()
     supervisor = JobSupervisor(settings, factory, bus, registry, sealer)
     sessions = InteractiveRegistry()
+    scheduler = Scheduler(settings, factory, supervisor, sealer)
 
     app.state.engine = engine
     app.state.sessionmaker = factory
@@ -126,10 +129,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.bus = bus
     app.state.supervisor = supervisor
     app.state.interactive = sessions
+    app.state.scheduler = scheduler
 
     # Started last: it reconciles jobs left running by a previous process and
     # begins dispatching, so nothing may be half-initialised behind it.
     await supervisor.start()
+    # And the scheduler after that, because its first tick enqueues work the
+    # supervisor has to already be able to claim.
+    await scheduler.start()
 
     log.info(
         "cairn started",
@@ -138,6 +145,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        # Stop making work before stopping the thing that does it.
+        await scheduler.stop()
         await supervisor.stop()
         # Before disposing the engine: a live session owns a Chromium and a
         # Node process, and dropping the reference would leave both running
@@ -174,6 +183,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(sites_router.router, prefix="/api")
     app.include_router(captures_router.router, prefix="/api")
     app.include_router(discovery_router.router, prefix="/api")
+    app.include_router(feeds_router.router, prefix="/api")
     app.include_router(jobs_router.router, prefix="/api")
     app.include_router(profiles_router.router, prefix="/api")
     app.include_router(interactive_router.router, prefix="/api")

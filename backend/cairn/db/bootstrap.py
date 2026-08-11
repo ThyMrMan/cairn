@@ -43,11 +43,26 @@ DEFAULT_SETTINGS: dict[str, object] = {
     # that still holds the thing that does the minting (docs/06).
     "profiles.mint_ttl_days": 7,
     "storage.free_space_floor_bytes": 10 * 1024**3,
+    # Never two simultaneous jobs against one host, whatever the concurrency
+    # setting says. Politeness rather than scheduling, so it also constrains a
+    # capture somebody started by hand (docs/08).
     "jobs.per_host_serial": True,
+    # The window in which *unattended* capture work may run, off by default —
+    # see `services.scheduler.in_quiet_hours` for why the hours are preloaded
+    # but the switch is not.
     "jobs.quiet_hours": {"enabled": False, "start": "01:00", "end": "07:00"},
-    "notify.on_capture_failed": True,
-    "notify.on_profile_expiring": True,
+    # Days between automatic full recaptures, 0 for never. Off deliberately:
+    # it is the setting most likely to be enabled thoughtlessly and then
+    # quietly consume terabytes, so the UI shows the estimate first (docs/08).
+    "schedule.full_recapture_days": 0,
+    "notify.targets": [],
 }
+
+
+def _notification_defaults() -> dict[str, object]:
+    from cairn.services.notify import defaults
+
+    return defaults()
 
 
 class KeyMismatchError(RuntimeError):
@@ -208,7 +223,7 @@ def seed_defaults(session: Session, settings: Settings | None = None) -> None:
         log.info("created default folder", extra={"folder": DEFAULT_FOLDER_NAME})
 
     known = set(session.scalars(select(Setting.key)).all())
-    for key, value in DEFAULT_SETTINGS.items():
+    for key, value in {**DEFAULT_SETTINGS, **_notification_defaults()}.items():
         if key not in known:
             session.add(Setting(key=key, value=value))
 

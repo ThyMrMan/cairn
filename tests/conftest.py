@@ -228,3 +228,158 @@ def gated_server() -> Iterator[str]:
     finally:
         server.shutdown()
         server.server_close()
+
+
+# ── a blog that can publish, for the M6 feed watch ───────────────────────
+#
+# The one thing the fixtures above cannot do: change while the test is
+# running. Watching for new content is untestable against a static site, and
+# the whole milestone is about what happens when something appears.
+
+
+class Blog:
+    """A small blog with an Atom feed, which can gain a post mid-test."""
+
+    def __init__(self) -> None:
+        self.base = ""
+        self.posts: list[tuple[str, str]] = []  # (slug, marker)
+        self.feed_requests = 0
+        self.conditional_requests = 0
+        # Bumped on publish, so a conditional GET can be answered honestly.
+        self.etag = "v1"
+        self.publish("post-1", "MARKER-ONE")
+        self.publish("post-2", "MARKER-TWO")
+
+    def publish(self, slug: str, marker: str) -> None:
+        self.posts.append((slug, marker))
+        self.etag = f"v{len(self.posts)}"
+
+    # ── what it serves ───────────────────────────────────────────────────
+
+    def index(self) -> bytes:
+        links = "".join(f"<a href='/{slug}.html'>{slug}</a>" for slug, _ in self.posts)
+        return f"<html><body><h1>Index</h1>{links}</body></html>".encode()
+
+    def post(self, slug: str) -> bytes | None:
+        for known, marker in self.posts:
+            if known == slug:
+                # Links only to the index, so a depth-1 capture provably stops
+                # there instead of reaching the other posts through it.
+                return (
+                    f"<html><body><h1>{known}</h1><p>{marker}</p>"
+                    f"<a href='/'>home</a><img src='/logo.png'></body></html>"
+                ).encode()
+        return None
+
+    def feed(self) -> bytes:
+        entries = "".join(
+            f"<entry><id>urn:post:{slug}</id><title>{slug}</title>"
+            f"<link rel='alternate' type='text/html' href='{self.base}{slug}.html'/>"
+            f"<published>2026-08-0{i + 1}T00:00:00Z</published></entry>"
+            for i, (slug, _) in enumerate(self.posts)
+        )
+        return (
+            "<?xml version='1.0' encoding='utf-8'?>"
+            "<feed xmlns='http://www.w3.org/2005/Atom'><title>Test Blog</title>"
+            f"{entries}</feed>"
+        ).encode()
+
+    def sitemap(self) -> bytes:
+        urls = "".join(f"<url><loc>{self.base}{slug}.html</loc></url>" for slug, _ in self.posts)
+        return (
+            "<?xml version='1.0' encoding='utf-8'?>"
+            "<urlset xmlns='http://www.sitemaps.org/schemas/sitemap/0.9'>"
+            f"{urls}</urlset>"
+        ).encode()
+
+
+class _BlogHandler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+    blog: Blog
+
+    def do_GET(self) -> None:
+        path = self.path.split("?")[0]
+        if path == "/robots.txt":
+            self._send(b"User-agent: *\nAllow: /\n", "text/plain")
+        elif path in ("/feed.xml", "/sitemap.xml"):
+            self.blog.feed_requests += 1
+            if self.headers.get("If-None-Match") == self.blog.etag:
+                self.blog.conditional_requests += 1
+                self.send_response(304)
+                self.send_header("ETag", self.blog.etag)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            body = self.blog.feed() if path == "/feed.xml" else self.blog.sitemap()
+            self._send(body, "application/xml", etag=self.blog.etag)
+        elif path == "/":
+            self._send(self.blog.index(), "text/html")
+        elif path == "/logo.png":
+            self._send(b"\x89PNG\r\n\x1a\n" + b"LOGO" * 32, "image/png")
+        elif path.endswith(".html") and (body := self.blog.post(path[1:-5])) is not None:
+            self._send(body, "text/html")
+        else:
+            self._send(b"<html><body>not found</body></html>", "text/html", status=404)
+
+    def _send(self, body: bytes, ctype: str, status: int = 200, etag: str = "") -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        if etag:
+            self.send_header("ETag", etag)
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *_args: object) -> None:
+        pass
+
+
+@pytest.fixture
+def blog() -> Iterator[Blog]:
+    """A running blog. `blog.publish(...)` makes new content appear."""
+    state = Blog()
+    handler = type("_Bound", (_BlogHandler,), {"blog": state})
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    state.base = f"http://127.0.0.1:{server.server_address[1]}/"
+    try:
+        yield state
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+class _WebhookHandler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+    received: list[dict[str, object]]
+
+    def do_POST(self) -> None:
+        import json
+
+        length = int(self.headers.get("Content-Length") or 0)
+        raw = self.rfile.read(length)
+        try:
+            payload = json.loads(raw or b"{}")
+        except ValueError:
+            payload = {"raw": raw.decode("utf-8", errors="replace")}
+        self.received.append({"path": self.path, "payload": payload})
+        self.send_response(200)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def log_message(self, *_args: object) -> None:
+        pass
+
+
+@pytest.fixture
+def webhook() -> Iterator[tuple[str, list[dict[str, object]]]]:
+    """A URL to notify, and the list it appends to. (url, received)"""
+    received: list[dict[str, object]] = []
+    handler = type("_Bound", (_WebhookHandler,), {"received": received})
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}/hook", received
+    finally:
+        server.shutdown()
+        server.server_close()

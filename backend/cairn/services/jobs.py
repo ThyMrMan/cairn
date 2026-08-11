@@ -53,7 +53,7 @@ from cairn.engines.protocol import (
 )
 from cairn.engines.registry import EngineRegistry
 from cairn.logging import get_logger
-from cairn.services import postprocess, profiles, sites, storage
+from cairn.services import postprocess, profiles, settings_store, sites, storage
 from cairn.services.events import (
     EV_ARTIFACT,
     EV_LOG,
@@ -76,6 +76,8 @@ STDERR_LIMIT = 64 * 1024
 # stdout lines from an engine are bounded so a runaway engine printing one
 # enormous line cannot exhaust memory.
 LINE_LIMIT = 1024 * 1024
+
+PER_HOST_SERIAL_SETTING = "jobs.per_host_serial"
 
 
 class JobError(RuntimeError):
@@ -241,16 +243,33 @@ class JobSupervisor:
             running.task = asyncio.create_task(self._run(running), name=f"cairn-job-{job_id}")
 
     def _claim(self, capacity: int) -> list[int]:
-        """Move up to `capacity` queued jobs to running, in priority order."""
+        """Move up to `capacity` queued jobs to running, in priority order.
+
+        Skipping rather than blocking: a job held back by the per-host rule
+        leaves its place in the queue and the next candidate is considered, so
+        one busy host cannot stall work on every other site.
+        """
         with self._sessions() as session:
+            serial = settings_store.get(session, PER_HOST_SERIAL_SETTING, True)
+            busy = _busy_hosts(session) if serial else set()
+
+            # More candidates than capacity, because some will be skipped.
             rows = session.scalars(
                 select(Job)
                 .where(Job.status == "queued")
                 .order_by(Job.priority.asc(), Job.queued_at.asc())
-                .limit(capacity)
+                .limit(max(capacity * 8, 16))
             ).all()
-            claimed = []
+
+            claimed: list[int] = []
             for job in rows:
+                if len(claimed) >= capacity:
+                    break
+                host = _host_for_job(session, job) if serial else None
+                if host is not None and host in busy:
+                    continue
+                if host is not None:
+                    busy.add(host)
                 job.status = "running"
                 job.started_at = utcnow()
                 job.attempts += 1
@@ -621,7 +640,21 @@ class JobSupervisor:
             engine = self._registry.get(site.engine_id)
             config = engine.validate_config(dict(site.engine_config or {}))
 
+            kind = str(job.spec.get("kind") or "full")
             scope = sites.resolved_scope(session, site)
+            # A feed capture is about the posts it was given, not about the
+            # site. Left at the site's depth it would follow the new post's
+            # link to the archive index and re-crawl everything, which is
+            # exactly the cost this is meant to avoid (docs/08).
+            #
+            # `--level=1` reads ambiguously, so it was measured against wget
+            # 1.25.0: a seed linking to an index which links to an old post
+            # fetches the seed, its requisites and the index — and stops. Not
+            # the seed alone, and not the archive behind the index. That is
+            # what docs/08's prose asks for, so the number matches the intent.
+            if job.spec.get("max_depth") is not None:
+                scope.max_depth = int(job.spec["max_depth"])
+
             warnings: list[str] = []
             if sites.scope_is_unindexed(session, site):
                 warnings.append(
@@ -638,7 +671,6 @@ class JobSupervisor:
                     config[key] = scope.politeness[key]
             config["keep_mirror"] = site.keep_mirror
 
-            kind = str(job.spec.get("kind") or "full")
             started = utcnow()
             dir_name = storage.capture_dir_name(started, kind, site.engine_id)
 
@@ -667,9 +699,18 @@ class JobSupervisor:
             # reach the way it was under a depth limit (docs/04, docs/05).
             from cairn.services import discovery_service
 
-            discovered, seed_source = discovery_service.seeds_for_capture(session, site, scope)
-            seeds = list(dict.fromkeys([*discovered, *(job.spec.get("extra_seeds") or [])]))
-            seed_source["manual"] = len(job.spec.get("extra_seeds") or []) + 1
+            extra = list(job.spec.get("extra_seeds") or [])
+            if job.spec.get("only_extra_seeds"):
+                # The whole discovered URL set is what makes a *full* capture
+                # complete; handing it to an incremental one turns "archive
+                # this new post" back into "archive the site". The seed URL is
+                # not added either — the point is these URLs and nothing else.
+                seeds = list(dict.fromkeys(extra))
+                seed_source = {"feed": len(seeds)}
+            else:
+                discovered, seed_source = discovery_service.seeds_for_capture(session, site, scope)
+                seeds = list(dict.fromkeys([*discovered, *extra]))
+                seed_source["manual"] = len(extra) + 1
             seed_path = temp_dir / SEED_FILE
             storage.write_atomic(seed_path, "\n".join(seeds) + "\n")
 
@@ -693,7 +734,9 @@ class JobSupervisor:
                 "seed_file": SEED_FILE,
                 "scope": scope.to_dict(),
                 "auth": auth,
-                "incremental": {"dedup_cdx": _dedup_cdx(self._settings, session, site, kind)},
+                "incremental": {
+                    "dedup_cdx": _dedup_cdx(self._settings, session, site, kind, temp_dir)
+                },
                 "config": config,
                 "limits": {
                     "max_bytes": scope.max_bytes,
@@ -720,6 +763,9 @@ class JobSupervisor:
                 seeds=seeds,
                 seed_source=seed_source,
                 warnings=warnings,
+                site_title=site.title,
+                feed_id=job.spec.get("feed_id"),
+                item_ids=[int(i) for i in (job.spec.get("item_ids") or [])],
             )
 
     async def _execute(self, running: RunningJob, prepared: _Prepared) -> None:
@@ -783,6 +829,44 @@ class JobSupervisor:
         await asyncio.to_thread(
             self._finalize, prepared, collector, status, returncode, stderr, running.cancelled
         )
+        await self._announce(prepared, collector, status)
+
+    async def _announce(self, prepared: _Prepared, collector: _Collector, status: str) -> None:
+        """Push what a person would want to hear about, after the fact.
+
+        Deliberately outside `_finalize`: that runs in a worker thread with a
+        session open, and a webhook timing out there would hold both for ten
+        seconds after the work was already done. Nothing here can change the
+        capture's outcome.
+        """
+        from cairn.services import notify
+
+        if status == "failed":
+            await notify.send(
+                self._sessions,
+                notify.CAPTURE_FAILED,
+                title=f"Capture failed: {prepared.site_title}",
+                body=(collector.error or "the engine did not say why")[:500],
+                priority="high",
+            )
+        elif status == "partial":
+            await notify.send(
+                self._sessions,
+                notify.INTERSTITIAL_DETECTED,
+                title=f"Capture incomplete: {prepared.site_title}",
+                body=(
+                    f"{collector.url_count} URLs, {collector.error_count} errors. "
+                    "Check the capture's gap report — a content warning or an expired "
+                    "access profile is the usual cause."
+                ),
+            )
+        elif status == "ok" and prepared.item_ids:
+            await notify.send(
+                self._sessions,
+                notify.ITEMS_CAPTURED,
+                title=f"{len(prepared.item_ids)} new item(s) archived: {prepared.site_title}",
+                body="\n".join(prepared.seeds[:10]),
+            )
 
     # ── terminal states ──────────────────────────────────────────────────
 
@@ -861,6 +945,9 @@ class JobSupervisor:
             except Exception:
                 log.exception("post-processing failed", extra={"capture": capture.id})
 
+            if prepared.item_ids:
+                _settle_feed_items(session, prepared.item_ids, capture, status)
+
             sites.write_site_yaml(session, self._settings, site)
             session.commit()
 
@@ -909,6 +996,12 @@ class _Prepared:
     max_pages: int | None
     seeds: list[str] = field(default_factory=list)
     seed_source: dict[str, int] = field(default_factory=dict)
+    site_title: str = ""
+    # Set when a feed poll asked for this capture, so its items can be marked
+    # once the capture has actually finished rather than optimistically when
+    # it was queued.
+    feed_id: int | None = None
+    item_ids: list[int] = field(default_factory=list)
     # Problems known before the engine starts. Shown in the live log as the
     # crawl begins, and repeated in the capture's gap report so they survive
     # past the moment the log scrolls away.
@@ -1156,6 +1249,27 @@ def _credential_warnings(session: Session, profile_id: int) -> list[str]:
     ]
 
 
+def _settle_feed_items(
+    session: Session, item_ids: list[int], capture: Capture, status: str
+) -> None:
+    """Mark a feed poll's items with what the capture actually did.
+
+    Only on success. An item left pending after a failed capture is retried on
+    the next scheduled pass, which is what should happen — marking it captured
+    because a job ran would leave a post permanently missing from the archive
+    with nothing recording that it was ever meant to be there.
+    """
+    from cairn.db.models import FeedItem
+
+    if status not in ("ok", "partial"):
+        for item in session.scalars(select(FeedItem).where(FeedItem.id.in_(item_ids))).all():
+            item.status = "pending"
+        return
+    for item in session.scalars(select(FeedItem).where(FeedItem.id.in_(item_ids))).all():
+        item.status = "captured"
+        item.capture_id = capture.id
+
+
 def _scope_was_edited(session: Session, site: Site) -> bool:
     """Whether the user has picked domains themselves.
 
@@ -1181,31 +1295,105 @@ def _host_of(url: str) -> str:
     return (urlsplit(url).hostname or "")[:255]
 
 
-def _dedup_cdx(settings: Settings, session: Session, site: Site, kind: str) -> str | None:
-    """The previous capture's CDX, for `--warc-dedup`.
+# Job types that make requests to somebody else's server. A move copies bytes
+# between two local directories and has no business waiting for a crawl.
+NETWORKED_JOB_TYPES = frozenset({"capture", "discovery"})
+
+
+def _host_for_job(session: Session, job: Job) -> str | None:
+    """The host this job will hammer, or None if it will not hammer one.
+
+    Per-host serialization is enforced here rather than in the scheduler
+    because it is not a scheduling preference — it is politeness, and a manual
+    capture started from the UI owes the same politeness as a scheduled one.
+    Two simultaneous crawls of one blog is the thing that gets an archiver
+    rate-limited or blocked, and no concurrency setting should be able to
+    permit it (docs/08).
+    """
+    if job.type not in NETWORKED_JOB_TYPES or job.site_id is None:
+        return None
+    site = session.get(Site, job.site_id)
+    return site.primary_host.lower() if site and site.primary_host else None
+
+
+def _busy_hosts(session: Session) -> set[str]:
+    rows = session.execute(
+        select(Site.primary_host)
+        .join(Job, Job.site_id == Site.id)
+        .where(Job.status == "running", Job.type.in_(NETWORKED_JOB_TYPES))
+    ).all()
+    return {str(host).lower() for (host,) in rows if host}
+
+
+# A CDX line is ~200 bytes; a site with a hundred thousand archived URLs makes
+# a 20 MB file wget reads once. Capped anyway, newest first, so a pathological
+# archive degrades to deduplicating against its recent history rather than
+# building an unbounded file on every capture.
+MAX_DEDUP_LINES = 400_000
+CDX_HEADER = " CDX a b a m s k r M V g u"
+
+
+def _dedup_cdx(
+    settings: Settings, session: Session, site: Site, kind: str, temp_dir: Path
+) -> str | None:
+    """Everything this site has already archived, for `--warc-dedup`.
 
     Only for incremental runs: a full capture is meant to stand alone, and
     deduping it against an older one produces revisit records pointing at an
     archive the user may later delete.
+
+    **Every prior capture, not the previous one.** wget writes no CDX line for
+    a URL it deduplicated, so a capture whose payloads were all unchanged
+    leaves an empty `part.cdx` — measured against wget 1.25.0. Handing only
+    that file to the next run means it deduplicates against nothing and
+    re-stores every byte of the theme, so the saving would hold for exactly
+    one capture and then silently stop, alternating full-size runs forever.
+    The union of every capture's CDX is the complete set of payloads this site
+    already has, which is what the flag actually wants.
     """
     if kind == "full":
         return None
-    previous = session.scalars(
+
+    captures = session.scalars(
         select(Capture)
         .where(Capture.site_id == site.id, Capture.status.in_(("ok", "partial")))
         .order_by(Capture.started_at.desc())
-        .limit(1)
-    ).first()
-    if previous is None:
+    ).all()
+    if not captures:
         return None
-    candidate = (
-        storage.site_dir(settings, site.archive_path)
-        / storage.CAPTURES_DIR
-        / previous.dir_name
-        / storage.WARC_DIR
-        / "part.cdx"
-    )
-    return str(candidate) if candidate.exists() else None
+
+    root = storage.site_dir(settings, site.archive_path) / storage.CAPTURES_DIR
+    lines: list[str] = []
+    seen: set[str] = set()
+    for capture in captures:
+        source = root / capture.dir_name / storage.WARC_DIR / "part.cdx"
+        if not source.exists():
+            continue
+        try:
+            text = source.read_text(encoding="utf-8", errors="replace")
+        except OSError:  # pragma: no cover — a capture directory going away mid-job
+            continue
+        for line in text.splitlines():
+            if not line or line.startswith(" CDX"):
+                continue
+            # Keyed on url+digest: the same URL with a different payload is a
+            # different record and both are worth having.
+            fields = line.split(" ")
+            key = f"{fields[0]}\t{fields[5] if len(fields) > 5 else ''}"
+            if key in seen:
+                continue
+            seen.add(key)
+            lines.append(line)
+            if len(lines) >= MAX_DEDUP_LINES:
+                break
+        if len(lines) >= MAX_DEDUP_LINES:
+            break
+
+    if not lines:
+        return None
+    merged = temp_dir / "dedup.cdx"
+    storage.write_atomic(merged, "\n".join([CDX_HEADER, *lines]) + "\n")
+    return str(merged)
 
 
 async def _read_stderr(proc: asyncio.subprocess.Process) -> str:

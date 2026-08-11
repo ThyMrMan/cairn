@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import re
 import shlex
 import signal
 import subprocess
@@ -114,6 +115,21 @@ def parse_cdx_line(line: str) -> dict[str, Any] | None:
         "redirect": clean(parts[6]),
         "offset": clean(parts[8]),
     }
+
+
+_LOG_URL = re.compile(r"^(?:\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} )?URL:(\S+) ")
+
+
+def parse_log_url(line: str) -> str | None:
+    """The URL from a successful `--no-verbose` fetch line.
+
+    Reads: `2026-08-11 16:58:27 URL:http://host/p [99/99] -> "…/p" [1]`
+
+    This is the only record that a deduplicated URL was fetched at all — see
+    `Runner._report_revisits`.
+    """
+    match = _LOG_URL.match(line.strip())
+    return match.group(1) if match else None
 
 
 def parse_log_error(line: str) -> tuple[str, str] | None:
@@ -275,6 +291,14 @@ class Runner:
         self.bytes = 0
         self._last_progress = 0.0
         self._pending_url: str | None = None
+        # A deduplicated URL is written to the WARC as a revisit record and
+        # does *not* appear in --warc-cdx at all — measured against wget
+        # 1.25.0: a second crawl of a four-page site wrote four revisit
+        # records and a CDX containing nothing but its header. So the CDX
+        # alone under-reports every incremental capture, and the two sets are
+        # reconciled at the end of the crawl. See `_report_revisits`.
+        self._cdx_urls: set[str] = set()
+        self._log_urls: dict[str, None] = {}
 
     # ── lifecycle ────────────────────────────────────────────────────────
 
@@ -345,6 +369,7 @@ class Runner:
 
         # Drain whatever landed between the last poll and exit.
         self._drain(cdx, crawl_log, started, force_progress=True)
+        self._report_revisits()
 
         if stderr:
             sys.stderr.write(stderr.decode("utf-8", errors="replace"))
@@ -409,6 +434,7 @@ class Runner:
             if record is None:
                 continue
             self.urls += 1
+            self._cdx_urls.add(record["url"])
             status = record["status"]
             if status is not None and status >= 400:
                 self.errors += 1
@@ -423,6 +449,12 @@ class Runner:
         for line in crawl_log.lines():
             stripped = line.strip()
             if not stripped:
+                continue
+            fetched = parse_log_url(stripped)
+            if fetched is not None:
+                # Recorded, not emitted: the CDX is written incrementally too,
+                # so a URL seen here may simply not have reached it yet.
+                self._log_urls.setdefault(fetched, None)
                 continue
             if stripped.endswith(":") and "://" in stripped:
                 # The URL line that precedes an error line.
@@ -451,6 +483,31 @@ class Runner:
                 self.urls,
                 bytes=self.bytes,
                 rate_bps=round(self.bytes / elapsed, 1),
+            )
+
+    def _report_revisits(self) -> None:
+        """Emit the URLs that were fetched but deduplicated.
+
+        `--warc-dedup` turns an unchanged payload into a revisit record, and
+        wget writes **nothing** to `--warc-cdx` for one. Left at that, an
+        incremental capture that deduplicated perfectly reports zero URLs and
+        shows an empty URL list — which reads as "the capture did nothing"
+        precisely when it did the best possible thing.
+
+        Reconciled at the end rather than inline because both files are
+        written incrementally: a URL appearing in the log before its CDX line
+        is flushed is normal, and is not a revisit.
+        """
+        missing = [url for url in self._log_urls if url not in self._cdx_urls]
+        for url in missing:
+            self.urls += 1
+            self.revisits += 1
+            self.events.url(url, status=200, revisit=True)
+        if missing:
+            self.events.log(
+                f"{len(missing)} URL(s) were already archived and stored as revisit "
+                "records rather than fetched again",
+                level="info",
             )
 
     def _register_artifacts(self) -> None:

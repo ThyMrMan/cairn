@@ -33,10 +33,22 @@ class Fetched:
     content_type: str
     error: str | None = None
     truncated: bool = False
+    # Response headers, lowercased. Feed polling needs ETag and Last-Modified
+    # back out so the next poll can ask conditionally (docs/08).
+    headers: dict[str, str] = field(default_factory=dict)
 
     @property
     def ok(self) -> bool:
         return self.error is None and 200 <= self.status < 300
+
+    @property
+    def not_modified(self) -> bool:
+        """A conditional GET that the server answered "nothing changed".
+
+        Distinct from `ok`, and distinct from a failure. A 304 is the good
+        outcome of a poll and the reason a short interval is affordable at all.
+        """
+        return self.error is None and self.status == 304
 
     @property
     def is_html(self) -> bool:
@@ -75,12 +87,12 @@ class Fetcher:
             await self._client.aclose()
             self._client = None
 
-    async def get(self, url: str) -> Fetched:
+    async def get(self, url: str, headers: dict[str, str] | None = None) -> Fetched:
         assert self._client is not None, "use Fetcher as an async context manager"
         if self.wait_s:
             await asyncio.sleep(self.wait_s)
         try:
-            async with self._client.stream("GET", url) as response:
+            async with self._client.stream("GET", url, headers=headers) as response:
                 chunks: list[bytes] = []
                 size = 0
                 truncated = False
@@ -96,6 +108,7 @@ class Fetcher:
                     body=b"".join(chunks)[:MAX_BODY_BYTES],
                     content_type=response.headers.get("content-type", ""),
                     truncated=truncated,
+                    headers={k.lower(): v for k, v in response.headers.items()},
                 )
         except (httpx.HTTPError, ssl_error_types()) as exc:
             return Fetched(url=url, status=0, body=b"", content_type="", error=str(exc)[:300])
