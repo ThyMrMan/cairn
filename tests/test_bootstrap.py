@@ -56,13 +56,16 @@ def test_the_migrated_schema_matches_the_models(settings: Settings) -> None:
     from alembic.autogenerate import compare_metadata
     from alembic.migration import MigrationContext
 
-    from cairn.db.base import Base
+    from cairn.db.base import Base, include_object
 
     ensure_directories(settings)
     run_migrations(settings)
 
+    # The same filter the migration environment uses. The FTS5 search index is
+    # a virtual table plus four shadow tables, and none of the five can be
+    # described in Base.metadata — unfiltered, every one reads as drift.
     with get_engine(settings.db_url).connect() as conn:
-        context = MigrationContext.configure(conn)
+        context = MigrationContext.configure(conn, opts={"include_object": include_object})
         drift = compare_metadata(context, Base.metadata)
 
     real = [entry for entry in drift if not _is_expression_index(entry)]

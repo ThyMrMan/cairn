@@ -36,6 +36,21 @@ class Base(DeclarativeBase):
     metadata = MetaData(naming_convention=NAMING_CONVENTION)
 
 
+# The FTS5 search index is a virtual table with four shadow tables, and
+# SQLAlchemy has no way to describe one — so none of the five is in
+# Base.metadata and autogenerate reads every one of them as a table to drop.
+# Lives here rather than in the migration environment because that module runs
+# migrations on import: anything that needs the filter (the schema-drift test)
+# could not import it from there.
+FTS_TABLES = ("page_text_fts",)
+
+
+def include_object(obj: Any, name: str, type_: str, reflected: bool, compare_to: Any) -> bool:
+    """Alembic's autogenerate filter: hide the FTS tables from comparison."""
+    hidden = any(name == fts or name.startswith(f"{fts}_") for fts in FTS_TABLES)
+    return not (type_ == "table" and hidden)
+
+
 def _apply_pragmas(dbapi_connection: Any, _record: Any) -> None:
     if not isinstance(dbapi_connection, sqlite3.Connection):  # pragma: no cover
         return

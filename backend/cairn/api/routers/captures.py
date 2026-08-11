@@ -12,7 +12,7 @@ from cairn.api.deps import AppSettings, ClientIp, Csrf, CurrentUser, DbSession
 from cairn.api.errors import ApiError
 from cairn.api.schemas import CaptureDetail, CaptureUrlEntry, Ok, Page
 from cairn.db.models import Capture, CaptureUrl, Site
-from cairn.services import audit, storage
+from cairn.services import audit, search, storage, textextract
 
 router = APIRouter(tags=["captures"], dependencies=[Csrf])
 
@@ -179,6 +179,13 @@ def delete_capture(
 
     directory = _capture_dir(settings, db, capture)
     site = db.get(Site, capture.site_id)
+    # Explicitly, before the row goes: the FTS index has no foreign key to
+    # cascade through, so its rows would outlive the capture that put them
+    # there. Harmless in results — the join drops them — and a leak that grows
+    # with every deleted capture.
+    search.drop_capture(db, capture.id)
+    if site is not None:
+        textextract.remove_capture_text(settings, site.archive_path, capture.dir_name)
     db.delete(capture)
     db.flush()
 

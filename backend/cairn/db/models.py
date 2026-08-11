@@ -590,6 +590,52 @@ class EngineRecord(Base):
     last_error: Mapped[str | None] = mapped_column(Text, default=None)
 
 
+# ── search ───────────────────────────────────────────────────────────────
+
+
+class PageText(Base):
+    """One archived page's place in the search index.
+
+    The text itself is not here. It lives in `derived/text/<capture>.jsonl`
+    beside the archive, and this row records the byte range of its line, so a
+    result snippet is a seek and a read. The FTS5 table alongside is
+    contentless — it stores the terms and no copy of the document — which is
+    what keeps a searchable archive from multiplying the size of a database
+    that gets backed up before every migration.
+
+    One row per (site, url), not per capture: the question search answers is
+    "which of my archives mentioned this", and the answer wants the latest
+    version of a page rather than every version of it. `capture_id` records
+    which capture that text came from so a result can open the right one.
+    """
+
+    __tablename__ = "page_text"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    site_id: Mapped[int] = mapped_column(ForeignKey("sites.id", ondelete="CASCADE"), nullable=False)
+    capture_id: Mapped[int | None] = mapped_column(
+        ForeignKey("captures.id", ondelete="CASCADE"), default=None
+    )
+    # Kept alongside the id because it names the JSONL file, and a rebuild
+    # from disk has the directory before it has any capture row.
+    capture_dir: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    url: Mapped[str] = mapped_column(Text, nullable=False)
+    title: Mapped[str | None] = mapped_column(Text, default=None)
+    # 14-digit CDXJ timestamp, so a result links straight into replay at the
+    # version it actually read.
+    timestamp: Mapped[str] = mapped_column(String(16), nullable=False, default="")
+    offset: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    length: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    words: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    indexed_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False, default=utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("site_id", "url", name="uq_page_text_site_url"),
+        Index("ix_page_text_site", "site_id"),
+        Index("ix_page_text_capture", "capture_id"),
+    )
+
+
 class Setting(Base):
     """Runtime settings — anything changeable without a container restart."""
 
@@ -622,6 +668,7 @@ __all__ = [
     "Folder",
     "Job",
     "LoginAttempt",
+    "PageText",
     "SavedView",
     "ScopePattern",
     "ScopeRule",

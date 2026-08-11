@@ -16,7 +16,7 @@ from pathlib import Path
 from alembic import context
 
 from cairn.config import get_settings
-from cairn.db.base import Base, get_engine
+from cairn.db.base import Base, get_engine, include_object
 from cairn.db.models import *  # populate Base.metadata
 
 config = context.config
@@ -47,6 +47,7 @@ def run_migrations_offline() -> None:
         dialect_opts={"paramstyle": "named"},
         render_as_batch=True,
         compare_type=True,
+        include_object=include_object,
     )
     with context.begin_transaction():
         context.run_migrations()
@@ -68,6 +69,7 @@ def run_migrations_online() -> None:
             target_metadata=target_metadata,
             render_as_batch=True,
             compare_type=True,
+            include_object=include_object,
         )
         with context.begin_transaction():
             context.run_migrations()

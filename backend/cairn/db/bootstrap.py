@@ -56,6 +56,14 @@ DEFAULT_SETTINGS: dict[str, object] = {
     # quietly consume terabytes, so the UI shows the estimate first (docs/08).
     "schedule.full_recapture_days": 0,
     "notify.targets": [],
+    # Extract text and index it after every capture. On by default because a
+    # search index nobody switched on is a search box that returns nothing,
+    # and the cost is a pass over pages the asset audit already reads.
+    "search.index_captures": True,
+    # Days between automatic integrity passes, 0 for never. Weekly: WARCs are
+    # cold data nobody opens for years, so the alternative to a schedule is
+    # finding out during a restore (docs/03).
+    "integrity.verify_days": 7,
 }
 
 

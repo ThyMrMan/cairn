@@ -29,7 +29,7 @@ from cairn.config import Settings
 from cairn.db.models import Folder, Job, Site
 from cairn.db.types import utcnow
 from cairn.logging import get_logger
-from cairn.services import replay, settings_store, storage, symlinks
+from cairn.services import replay, search, settings_store, storage, symlinks
 from cairn.services import sites as site_service
 
 log = get_logger(__name__)
@@ -181,6 +181,8 @@ def purge_site(session: Session, settings: Settings, site: Site) -> int:
 
     replay.unlink_collection(settings, site.id)
     site_id = site.id
+    # The FTS index has no foreign key, so nothing cascades into it.
+    search.drop_site(session, site.id)
     session.delete(site)
     session.flush()
     symlinks.safe_rebuild(session, settings)

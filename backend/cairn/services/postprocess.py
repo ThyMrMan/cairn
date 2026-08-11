@@ -191,6 +191,30 @@ def step_cdxj_index(ctx: Context) -> None:
         ctx.warnings.append(f"the archive is complete, but replay could not be set up: {exc}")
 
 
+def step_text_extract(ctx: Context) -> None:
+    """Extract readable text and put this capture's pages in the search index.
+
+    Not required, and deliberately: an archive whose text could not be
+    extracted is still a complete archive, and failing a three-hour capture
+    over a search index that `Rebuild search index` regenerates in seconds
+    would be the wrong trade every time.
+    """
+    from cairn.services import search, settings_store, textextract
+
+    if not settings_store.get(ctx.session, search.INDEX_SETTING, True):
+        return
+
+    result = textextract.extract_capture(ctx.settings, ctx.site.archive_path, ctx.capture.dir_name)
+    if not result.pages:
+        return
+    indexed = search.index_capture(
+        ctx.session, ctx.settings, site=ctx.site, capture=ctx.capture, pages=result.pages
+    )
+    ctx.stats["text_pages"] = indexed
+    ctx.stats["text_words"] = sum(len(p.text.split()) for p in result.pages)
+    ctx.stats["text_boilerplate_blocks"] = result.dropped_blocks
+
+
 def step_asset_audit(ctx: Context) -> None:
     """Report assets a page referenced that the capture does not contain.
 
@@ -416,6 +440,7 @@ CHAIN: list[Step] = [
     Step("stats", 30, True, step_stats),
     Step("manifest", 35, True, step_manifest),
     Step("cdxj-index", 40, False, step_cdxj_index),
+    Step("text-extract", 50, False, step_text_extract),
     Step("asset-audit", 60, False, step_asset_audit),
 ]
 
