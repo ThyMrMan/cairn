@@ -237,6 +237,14 @@ Both readings cost something. Rejecting extension-less URLs loses images with no
 
   `themes.googleusercontent.com` was missing from that list until a live capture exposed it, and it is the instructive case: **every** URL on that host is `image?id=…`, so the flag is not an edge case there, it is the whole host. Listing a host under `assets_on` without also listing it under `extensionless_ok` puts it inside `--domains` and then rejects every URL it serves — in scope, and reachable by nothing. When adding a host to a preset, check what its URLs actually look like before assuming the default is safe.
 
+### Assets the crawler cannot reach at all
+
+Some references never become a URL the crawler can see. A Blogger skin writes its theme images as `url(https\:\/\/themes.googleusercontent.com\/image?id=…)`; wget does not decode CSS escapes, so it requests the escaped text against the blog itself, 404s, and never learns the real URL exists. No scope setting reaches these — the host can be perfectly in scope and the asset is still lost.
+
+Discovery already decodes them, because its extractor has to agree with the audit's. So it records that subset separately (`escaped_assets`) and the capture injects them into the seed file alongside the sitemap and feed URLs, filtered by `fetch_assets` rather than `crawl_pages` — they are images on hosts nobody wants crawled as websites.
+
+This is the general shape for a whole class of problem: **where discovery can see something the crawler cannot, hand it over as a seed rather than hoping the crawler finds it.** Lazy-loaded images are the same shape and are not solved this way, because a `data-src` attribute is not necessarily a URL the server will serve — that one needs a browser engine.
+
 Because neither setting is reliably correct, the `asset-audit` post-processor closes the loop from the other end: after a capture it reads the archived HTML back out of the WARC and reports assets a page referenced but the crawl never fetched. That catches a dropped image regardless of which way the flag was set, and catches lazy-loaded images too — which no scope setting can reach, since wget does not execute JavaScript.
 
 If you ever hit a wget that genuinely lacks PCRE, the fallback is to invert the logic into an `--accept-regex` that positively lists asset extensions on those hosts. Encode whichever you use in the engine, because getting it wrong means either crawling image CDNs as websites or dropping images entirely.

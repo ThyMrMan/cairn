@@ -32,6 +32,10 @@ DEFAULT_MAX_PAGES = 100
 DEFAULT_MAX_DEPTH = 3
 DEFAULT_CONCURRENCY = 2
 
+# A skin's escaped URLs repeat on every page, so this de-duplicates to a
+# handful in practice. The cap is for the site that generates them per-post.
+MAX_ESCAPED_ASSETS = 2_000
+
 ProgressFn = Callable[[str, dict[str, Any]], None]
 
 
@@ -59,6 +63,9 @@ class DiscoveryResult:
     feed_urls: list[str] = field(default_factory=list)
     pages_fetched: int = 0
     hosts: list[host_classify.HostStat] = field(default_factory=list)
+    # Assets a crawler that cannot decode CSS escapes will never request.
+    # Carried through to the capture as seeds; see `_add_asset` in htmlrefs.
+    escaped_assets: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     title: str | None = None
@@ -82,6 +89,7 @@ class DiscoveryResult:
             "feeds": self.feeds,
             "urls_from_sitemaps": len(self.sitemap_urls),
             "urls_from_feeds": len(self.feed_urls),
+            "escaped_assets": list(self.escaped_assets),
             "pages_fetched": self.pages_fetched,
             "errors": self.errors[:50],
             "warnings": self.warnings,
@@ -175,7 +183,14 @@ async def discover(
         mime_by_host=counts.mime_by_host,
     )
     host_classify.apply_defaults(result.hosts, preset)
+    result.escaped_assets = sorted(counts.escaped_assets)[:MAX_ESCAPED_ASSETS]
 
+    if result.escaped_assets:
+        result.warnings.append(
+            f"{len(result.escaped_assets)} asset(s) are referenced only through "
+            "CSS escape sequences, which wget cannot decode. The capture will be "
+            "given the decoded URLs directly so they are archived anyway."
+        )
     if counts.lazy_hints:
         result.warnings.append(
             f"{counts.lazy_hints} lazy-loaded image reference(s) seen while sampling. "
@@ -206,6 +221,7 @@ class _Counts:
     mime_by_host: dict[str, dict[str, int]] = field(
         default_factory=lambda: defaultdict(lambda: defaultdict(int))
     )
+    escaped_assets: set[str] = field(default_factory=set)
     lazy_hints: int = 0
 
 
@@ -232,6 +248,7 @@ async def _sample(
 
     def absorb(page: Any) -> None:
         counts.lazy_hints += page.lazy_hints
+        counts.escaped_assets |= page.escaped_assets
         for link in page.links:
             host = host_classify.host_of(link)
             # A link straight to an image is not a link to a page. Blogger wraps

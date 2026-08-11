@@ -302,7 +302,19 @@ Failed requests are the one exception: a 404 writes no file, so it leaves no ded
 
   Confirmed on 1.25.0, in both `<style>` blocks and `src` attributes; an unescaped `url()` on the same page resolves correctly. Page content is unaffected — it costs a theme background. The `asset-audit` post-processor decodes the escapes, recovers the intended host, and reports it, because two 404s against your own domain with a percent-encoded backslash in them explain nothing on their own.
 
-  Every generated reject regex therefore also carries `%5[Cc]`, unconditionally. A percent-encoded backslash is never part of a real URL, so nothing legitimate is lost, and the requests are pure waste: one per page per variant. A live Blogger capture spent twelve requests and twelve WARC records on six theme-image URLs it could not have fetched by that path anyway — and the twelve archived 404 bodies then got counted as pages by the audit, which is how a capture of four pages reported "16 page(s)".
+  Two things follow, and both were got wrong on the first attempt.
+
+  **Reject the shape, in both spellings.** Every generated reject regex carries `\\|%5[Cc]` unconditionally. A backslash is never part of a real URL, so nothing legitimate is lost, and the requests are pure waste: one per referencing page per variant. The subtlety is that **wget prints and stores `%5C` but tests `--reject-regex` while the backslash is still literal**, so a pattern written from `crawl.log` alone never fires. Measured on 1.21.4 with `--debug`:
+
+  | `--reject-regex` | requests | mangled GET | rule fires |
+  |---|--:|:-:|:-:|
+  | none | 3 | yes | — |
+  | `%5[Cc]` | 3 | yes | no |
+  | `\\` | 2 | no | yes |
+
+  A live Blogger capture made 36 of these requests for six theme-image URLs, and the archived 404 bodies then got counted as pages by the audit — which is how a capture of four pages reported "16 page(s)".
+
+  **Hand over the decoded URL.** Rejecting the mangled request stops the waste but does not archive the image; nothing wget can see ever names the real URL. Discovery decodes the escapes correctly, so it records those assets separately and the capture injects them into the seed file (docs/04). On the same blog that turned five missing skin images into five captured ones.
 
 - **Memory grows with crawl size.** wget keeps the visited-URL set and WARC dedup index in memory. A 100k-URL crawl can reach several GB. Cap `max_pages` for very large sites, or split into path-scoped captures.
 - **No JavaScript.** Lazy-loaded images (`data-src`) are missed. The engine should scan captured HTML for lazy-load attributes and emit a `warning` with a count — "312 images may be lazy-loaded and were not captured; consider the browser engine" — rather than leaving the user to discover the gaps during replay.

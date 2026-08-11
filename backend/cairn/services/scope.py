@@ -250,16 +250,24 @@ def asset_only_reject_pattern(rule: HostRule) -> str:
     return rf"^https?://{host}/{tail}"
 
 
-# A percent-encoded backslash is never part of a real URL. It is what a
-# crawler produces from a CSS escape it cannot decode: a Blogger skin writing
+# A backslash is never part of a real URL. It is what a crawler produces from
+# a CSS escape it cannot decode: a Blogger skin writing
 # `url(https\:\/\/host\/x.png)` turns into a request for
-# `https://theblog/https%5C:%5C/%5C/host%5C/x.png` against the blog itself.
+# `https://theblog/https\:\/\/host\/x.png` against the blog itself.
 #
-# Measured on one blog: twelve such requests, twelve 404s, twelve junk records
-# in the WARC, and twelve error pages the asset audit then counted as pages.
-# Rejecting the shape loses nothing — the asset is unreachable by that URL no
-# matter what — and the audit still reports the host that was really meant.
-CSS_ESCAPE_REJECT = r"%5[Cc]"
+# **Both forms are listed, and the order they were learned in matters.** wget
+# prints and stores the percent-encoded `%5C`, so that is the form visible in
+# `crawl.log` and in the CDX — but it tests `--reject-regex` against the URL
+# while the backslash is still literal. A pattern written from the log alone
+# therefore never fires. Measured on wget 1.21.4 with `--debug`:
+#
+#     --reject-regex=%5[Cc]      3 requests, mangled GET made, rule silent
+#     --reject-regex=\\          2 requests, mangled GET skipped, rule fires
+#
+# Matching either form costs nothing and survives a crawler that normalises
+# the other way. The asset is unreachable by this URL regardless; what the
+# capture actually fetches instead is the decoded URL, injected as a seed.
+CSS_ESCAPE_REJECT = r"\\|%5[Cc]"
 
 
 def build_reject_patterns(scope: Scope) -> list[str]:

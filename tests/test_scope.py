@@ -191,15 +191,25 @@ def test_the_only_reject_for_a_single_crawlable_host_is_the_css_escape_guard() -
     assert reject == f"--reject-regex=(?:{CSS_ESCAPE_REJECT})"
 
 
-def test_the_css_escape_reject_matches_what_wget_actually_requests() -> None:
-    """The literal URL from a real Blogger capture: twelve of these 404'd."""
-    mangled = (
+def test_the_css_escape_reject_matches_both_forms_of_the_same_url() -> None:
+    r"""wget prints and stores `%5C` but tests --reject-regex while the
+    backslash is still literal, so a pattern written from the log alone never
+    fires. Measured on 1.21.4 with --debug: `%5[Cc]` left the mangled GET in
+    place and the rule silent; `\\` skipped it and logged the exclusion. Both
+    forms are matched so neither normalisation can slip through."""
+    percent_encoded = (
         "https://jsrandomtest29.blogspot.com/2026/08/https%5C:%5C/%5C/"
         "themes.googleusercontent.com%5C/image?id=L1lcAxxz&options=w640"
     )
+    literal_backslash = (
+        r"https://jsrandomtest29.blogspot.com/2026/08/https\:\/\/"
+        r"themes.googleusercontent.com\/image?id=L1lcAxxz&options=w640"
+    )
     intended = "https://themes.googleusercontent.com/image?id=L1lcAxxz&options=w640"
-    assert re.search(CSS_ESCAPE_REJECT, mangled)
-    assert not re.search(CSS_ESCAPE_REJECT, intended)
+
+    assert re.search(CSS_ESCAPE_REJECT, percent_encoded)
+    assert re.search(CSS_ESCAPE_REJECT, literal_backslash)
+    assert not re.search(CSS_ESCAPE_REJECT, intended), "the real URL must stay fetchable"
 
 
 def test_user_reject_patterns_are_merged_with_generated_ones() -> None:

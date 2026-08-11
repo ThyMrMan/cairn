@@ -101,6 +101,10 @@ class PageRefs:
     base: str
     links: set[str] = field(default_factory=set)
     assets: set[str] = field(default_factory=set)
+    # The subset of `assets` whose reference only became a URL after a CSS
+    # escape was decoded. A crawler that cannot decode them never requests
+    # these at all, so they are the ones that have to be handed over directly.
+    escaped_assets: set[str] = field(default_factory=set)
     feeds: list[str] = field(default_factory=list)
     lazy_hints: int = 0
     generator: str | None = None
@@ -132,9 +136,9 @@ def parse_page(body: bytes | str, url: str, *, want_links: bool = True) -> PageR
     # <style> blocks are raw text: CSS escapes apply, HTML entities do not.
     for _open_tag, block in _STYLE_BLOCK.findall(text):
         for match in _CSS_URL.finditer(block):
-            _add(refs.assets, base, unescape_css(match.group(1)))
+            _add_asset(refs, base, match.group(1))
         for match in _CSS_IMPORT.finditer(block):
-            _add(refs.assets, base, unescape_css(match.group(1)))
+            _add_asset(refs, base, match.group(1))
 
     # Drop the *contents* of script and style elements while keeping their
     # opening tags. Removing the whole element takes `<script src=…>` with it,
@@ -148,16 +152,16 @@ def parse_page(body: bytes | str, url: str, *, want_links: bool = True) -> PageR
 
     for pattern in (_ASSET_TAGS, _OBJECT_DATA, _IFRAME):
         for match in pattern.finditer(outside):
-            _add(refs.assets, base, clean_attr_url(match.group(1)))
+            _add_asset(refs, base, unescape(match.group(1)).strip())
 
     for match in _SRCSET.finditer(outside):
         for candidate in match.group(1).split(","):
             # "url 2x" / "url 640w" — the descriptor is not part of the URL.
-            _add(refs.assets, base, clean_attr_url(candidate.strip().split(" ")[0]))
+            _add_asset(refs, base, unescape(candidate.strip().split(" ")[0]).strip())
 
     # Inline style="" IS an attribute, so entities are decoded there.
     for match in _CSS_URL.finditer(outside):
-        _add(refs.assets, base, clean_attr_url(match.group(1)))
+        _add_asset(refs, base, unescape(match.group(1)).strip())
 
     refs.lazy_hints = sum(text.count(attr) for attr in LAZY_ATTRIBUTES)
 
@@ -191,6 +195,27 @@ def _add(into: set[str], base: str, raw: str) -> None:
     resolved = absolutize(base, raw)
     if resolved:
         into.add(resolved)
+
+
+def _add_asset(refs: PageRefs, base: str, raw: str) -> None:
+    """Record a subresource, remembering whether a CSS escape had to be decoded.
+
+    `raw` must already be entity-decoded where entities apply — inside
+    `<style>` they do not, in attributes they do — because the two decodings
+    are not interchangeable and doing them in the wrong order invents URLs.
+
+    The flag is what makes the difference between reporting a missing image
+    and actually having it: wget requests the escaped text against the page's
+    own host, gets a 404, and never learns the real URL exists, so the capture
+    has to hand it over as a seed instead.
+    """
+    decoded = unescape_css(raw)
+    resolved = absolutize(base, decoded)
+    if resolved is None:
+        return
+    refs.assets.add(resolved)
+    if decoded != raw:
+        refs.escaped_assets.add(resolved)
 
 
 def referenced_assets(body: bytes, base_url: str) -> set[str]:

@@ -171,7 +171,7 @@ def seeds_for_capture(
     a supplement rather than the way content is found (docs/05).
     """
     seeds = [site.seed_url]
-    counts = {"manual": 1, "sitemap": 0, "feed": 0}
+    counts = {"manual": 1, "sitemap": 0, "feed": 0, "css_escaped": 0}
 
     latest = session.scalars(
         select(Discovery)
@@ -198,6 +198,22 @@ def seeds_for_capture(
             continue
         seeds.append(url)
         counts["sitemap"] += 1
+
+    # Assets the crawler provably cannot reach on its own. wget requests the
+    # still-escaped text against the page's own host, 404s, and never learns
+    # the real URL exists — so unless it is handed over here, the asset is
+    # lost no matter how the scope is set. Filtered by `fetch_assets` rather
+    # than `crawl_pages`: these are images and stylesheets on hosts nobody
+    # wants crawled as websites.
+    asset_hosts = {rule.host for rule in scope.hosts if rule.fetch_assets}
+    for url in list((latest.summary or {}).get("escaped_assets") or []):
+        if len(seeds) >= MAX_SEEDS:
+            break
+        host = (urlsplit(url).hostname or "").lower()
+        if host not in asset_hosts or url in seeds:
+            continue
+        seeds.append(url)
+        counts["css_escaped"] += 1
 
     return seeds, counts
 

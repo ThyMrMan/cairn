@@ -16,6 +16,7 @@ from cairn.config import Settings
 from cairn.db.models import Capture, Site
 from cairn.db.types import utcnow
 from cairn.services import sites, storage
+from cairn.services.htmlrefs import parse_page
 from cairn.services.postprocess import (
     Context,
     _escaped_target_host,
@@ -294,3 +295,36 @@ def test_pre_crawl_warnings_reach_the_gap_report(
     )
 
     assert any("never been indexed" in w for w in ctx.warnings)
+
+
+# ── assets only a CSS escape reveals ─────────────────────────────────────
+
+
+def test_a_css_escaped_reference_is_flagged_as_well_as_recorded() -> None:
+    """Recording it is what makes the audit honest; flagging it is what makes
+    the capture complete. wget requests the escaped text against the page's
+    own host, 404s, and never learns the real URL exists — so unless these are
+    handed over as seeds the asset is lost whatever the scope says."""
+    body = (
+        rb"<html><head><style>"
+        rb"#h{background:url(https\:\/\/themes.googleusercontent.com\/image?id=abc&options=w480)}"
+        rb"</style></head><body><img src='/plain.png'></body></html>"
+    )
+    page = parse_page(body, "https://blog.example.com/2026/08/post.html")
+    skin = "https://themes.googleusercontent.com/image?id=abc&options=w480"
+
+    assert skin in page.assets
+    assert page.escaped_assets == {skin}
+    # An ordinary reference is not flagged; it needs no help.
+    assert "https://blog.example.com/plain.png" in page.assets
+
+
+def test_an_unescaped_reference_to_the_same_host_is_not_flagged() -> None:
+    body = (
+        b"<html><head><style>"
+        b"#h{background:url(https://themes.googleusercontent.com/image?id=abc)}"
+        b"</style></head></html>"
+    )
+    page = parse_page(body, "https://blog.example.com/")
+    assert "https://themes.googleusercontent.com/image?id=abc" in page.assets
+    assert page.escaped_assets == set()
