@@ -8,7 +8,7 @@ Nothing here is required. The point is to have the good ideas written down befor
 
 ## Tier 1 — High value, clearly worth building
 
-### Full-text search across all archives
+### Full-text search across all archives ✅ *built in M8*
 
 SQLite FTS5 over text extracted from captured HTML (`trafilatura` or `readability-lxml` to strip navigation and boilerplate), with results linking straight into replay at the right capture.
 
@@ -16,13 +16,13 @@ SQLite FTS5 over text extracted from captured HTML (`trafilatura` or `readabilit
 
 **Effort:** medium. Text extraction is a post-processor; FTS5 is built into SQLite; the UI is one search page. Budget ~10–15% additional storage for the text index.
 
-### WACZ export + shareable replay
+### WACZ export + shareable replay ✅ *built in M8*
 
 Package a site as a single `.wacz` and hand it to anyone — it opens in [ReplayWeb.page](https://replayweb.page/) with no server. Also the best offsite backup format, since it's self-describing and tool-independent.
 
 **Effort:** low. `wacz create` over existing WARCs, plus a download button.
 
-### Archive integrity verification
+### Archive integrity verification ✅ *built in M8*
 
 Weekly job re-checksumming every WARC against `manifest.json`, reporting mismatches and missing files.
 
@@ -30,13 +30,15 @@ Weekly job re-checksumming every WARC against `manifest.json`, reporting mismatc
 
 **Effort:** low. A scheduled job and a status page. Pair with an "archive health" dashboard: total size, growth trend, oldest unverified capture, last successful backup.
 
-### Capture diffing
+### Capture diffing ✅ *built in M8*
 
 Show what changed between two captures of a page — rendered text diff plus a list of added/removed/changed resources.
 
 **Why.** It's the answer to "should I keep running full recaptures?" and it turns the archive into a record of change rather than just a copy. `changedetection.io` built a following on this alone.
 
 **Effort:** medium. Both versions are already in the index; the work is UI.
+
+> **As built.** The work was not UI, it was deciding what to diff. Markup changes on every fetch of a page with a visit counter or a rotating advert, so the diff reads the extracted text that search already produces — measured: three fetches of one unchanged post, three body hashes, one text hash.
 
 ### `yt-dlp` media capture
 
@@ -46,7 +48,7 @@ Post-processor scanning captured HTML for YouTube/Vimeo/etc. embeds, with per-si
 
 **Effort:** low. Opt-in per site, with a clear storage warning.
 
-### Notification integration
+### Notification integration ✅ *built in M6*
 
 ntfy, Apprise, and generic webhooks. Detailed in [08](08-feeds-and-scheduling.md#notifications).
 
@@ -56,13 +58,15 @@ ntfy, Apprise, and generic webhooks. Detailed in [08](08-feeds-and-scheduling.md
 
 ## Tier 2 — Strong ideas, more work
 
-### Retention policies
+### Retention policies ✅ *built in M8*
 
 Per-site rules: keep N full captures, keep one per month beyond that, never prune a capture containing URLs that no longer exist upstream, never prune the first capture.
 
 **Why the exception clauses matter.** Naive retention deletes exactly the captures that justify the archive — the ones holding content that's gone from the live web. Any retention feature must be able to identify and protect those, or it's a liability.
 
 **Effort:** medium. Requires cross-capture URL analysis and a very careful dry-run mode.
+
+> **As built.** The exception clauses are the feature; the counts are the leftovers. One protection was not on this list and is the one that bites: a capture that a later incremental capture deduplicated against cannot be pruned either, because a revisit record is a pointer with no payload — verified by pruning one and watching a real pywb answer 503 for a page whose own capture was entirely intact.
 
 ### Import from ArchiveBox
 

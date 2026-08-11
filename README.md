@@ -94,7 +94,13 @@ The hard part of that is not the search engine. A blog's sidebar lists every pos
 
 **Archive health** re-reads every archived byte and compares it to the checksum taken when it was written, weekly by default. Bit rot on an array is real and WARCs are cold data nobody opens for years; the difference between noticing in a week and noticing never is a job that actually reads them. It never repairs anything — a WARC cannot be corrected, only restored or captured again — so it names the file, the capture and the site, and leaves the decision to you.
 
-What is not there yet, from M8's menu: `yt-dlp` media capture, retention policies, capture diffing, a page-change watcher for feedless sites, ArchiveBox import, Prometheus metrics and public share links.
+**Changes and retention** answers the question that decides how much disk this costs: was the last full recapture worth it? The diff names the pages that changed and, inside them, the sentences — from the extracted text, so a visit counter or a rotating advert in the page furniture does not report the whole site as changed every month.
+
+For a site with no feed at all, watch a **page** instead. It is fetched on a schedule and captured when its readable text changes, on the same machinery as the feeds, with the same poll history.
+
+**Retention** is off by default and its dry run works before you switch it on, because that is how you decide whether to. It never deletes the first capture, the newest ones, the last capture holding a page that is gone from the live site, or a capture that a later one deduplicates against — the last of which matters more than it sounds: prune it and the newer capture replays 503 for a page whose own files are perfectly intact.
+
+What is not there yet, from M8's menu: `yt-dlp` media capture, `single-file-cli`, ArchiveBox import, Prometheus metrics and public share links.
 
 The image carries Chromium for the userscript and interactive modes, which puts it at roughly **1.7 GB**. Everything except those two modes works without it.
 

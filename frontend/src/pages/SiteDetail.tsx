@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 
 import { DomainPicker } from "../components/DomainPicker";
+import { Changes } from "../components/Changes";
 import { EnginePicker } from "../components/EnginePicker";
 import { Feeds } from "../components/Feeds";
 import { LiveLog } from "../components/LiveLog";
@@ -148,6 +149,8 @@ export default function SiteDetail() {
         initialUrl={replayUrl}
         initialTimestamp={replayTimestamp}
       />
+
+      <Changes siteId={siteId} captureCount={data.capture_count} />
 
       <Exports siteId={siteId} captures={captures.data ?? []} />
 

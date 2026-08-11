@@ -327,7 +327,7 @@ class JobSupervisor:
             if job_type == "move":
                 await self._run_move(running)
                 return
-            if job_type in ("export", "verify", "index"):
+            if job_type in ("export", "verify", "index", "purge"):
                 await self._run_maintenance(running, job_type)
                 return
             # Before the capture, never during it: see _refresh_stale_profile.
@@ -682,6 +682,7 @@ class JobSupervisor:
             "export": self._execute_export,
             "verify": self._execute_verify,
             "index": self._execute_reindex,
+            "purge": self._execute_retention,
         }[job_type]
         result = await asyncio.to_thread(runner, job_id, say, step)
 
@@ -855,6 +856,59 @@ class JobSupervisor:
             say(f"{total} page(s) indexed.")
             return self._finish_job(
                 session, job, "ok", None, progress={"pages": total, "sites": len(targets)}
+            )
+
+    def _execute_retention(self, job_id: int, say: Any, step: Any) -> dict[str, Any]:
+        from cairn.services import retention
+
+        with self._sessions() as session:
+            job = session.get(Job, job_id)
+            if job is None:  # pragma: no cover
+                return {"status": "failed", "error": "the job vanished"}
+
+            targets = [job.site_id] if job.site_id else retention.due_sites(session, self._settings)
+            pruned: list[str] = []
+            freed = 0
+            problems: list[str] = []
+
+            for n, site_id in enumerate(targets, start=1):
+                site = session.get(Site, site_id)
+                if site is None or site.deleted_at is not None:
+                    continue
+                step(n, len(targets), site.title)
+                # Recomputed here, never taken from the request: a plan made in
+                # a browser tab minutes ago may since have become wrong.
+                plan = retention.plan(session, self._settings, site)
+                if not plan.prunable:
+                    say(f"{site.title}: nothing prunable — every capture is protected.")
+                    continue
+                for decision in plan.prunable:
+                    say(f"{site.title}: pruning {decision.dir_name}.")
+                result = retention.apply_plan(session, self._settings, site, plan)
+                pruned += result.pruned
+                freed += result.freed_bytes
+                problems += result.errors
+                session.commit()
+
+            say(
+                f"{len(pruned)} capture(s) pruned, {freed / 1024 / 1024:.1f} MB freed."
+                if pruned
+                else "Nothing was pruned."
+            )
+            for problem in problems:
+                self._bus.publish(job_id, EV_LOG, {"level": "warn", "msg": problem})
+
+            return self._finish_job(
+                session,
+                job,
+                "ok",
+                None,
+                progress={
+                    "pruned": len(pruned),
+                    "freed_bytes": freed,
+                    "sites": len(targets),
+                    "problems": problems,
+                },
             )
 
     def _finish_job(

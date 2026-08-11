@@ -51,7 +51,7 @@ JOB_TYPES = (
 CAPTURE_STATUSES = ("running", "ok", "partial", "failed", "cancelled", "interrupted")
 CAPTURE_KINDS = ("full", "incremental", "feed", "manual", "resume")
 PROFILE_MODES = ("none", "cookies", "userscript", "interactive")
-FEED_KINDS = ("auto", "rss", "atom", "sitemap", "json")
+FEED_KINDS = ("auto", "rss", "atom", "sitemap", "json", "page")
 
 
 # ── identity & auth ──────────────────────────────────────────────────────
@@ -458,6 +458,9 @@ class FeedItem(Base):
     title: Mapped[str | None] = mapped_column(Text, default=None)
     published_at: Mapped[datetime | None] = mapped_column(UtcDateTime, default=None)
     updated_at: Mapped[datetime | None] = mapped_column(UtcDateTime, default=None)
+    # A watched page's readable text, hashed. Feeds announce a change by moving
+    # `updated`; a page announces nothing, so the content is the announcement.
+    content_hash: Mapped[str | None] = mapped_column(String(64), default=None)
     first_seen_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False, default=utcnow)
     # Bumped on every poll that still lists it. A sitemap entry whose last_seen
     # falls behind the feed's last successful poll has disappeared upstream,

@@ -183,6 +183,7 @@ Polls are sequential and capped at 20 per tick. Twenty a minute is far more than
 | Symlink tree refresh | on change | global | already on change and at boot since M4 — a timer would add nothing |
 | Discovery refresh | monthly | per site | **not built.** Re-running discovery can change a site's scope, and doing that unattended is a decision, not maintenance |
 | Integrity verification | weekly | global | ✅ M8. `integrity.verify_days`, 0 for never. The tick enqueues a `verify` job rather than running it: it reads every archived byte, so it belongs in the same queue as the captures it competes with for the array |
+| Retention | daily | global | ✅ M8. Enqueues a `purge` job for sites whose policy is on; the plan is recomputed inside the job, never taken from the request |
 | Log rotation | daily | global | not built, and should not be: logs go to stdout for s6 and Docker to handle |
 
 **Full recapture is global rather than per site**, which is a simplification of what this table asked for. Per-site would need a column on `sites` and a control on every site page for something almost nobody turns on; when somebody wants exactly one site refreshed, the Capture button already does it.

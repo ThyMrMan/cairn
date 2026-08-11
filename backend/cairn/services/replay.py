@@ -37,6 +37,7 @@ import io
 import json
 import os
 import shutil
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -220,6 +221,23 @@ def surt_key(url: str) -> str:
     import surt
 
     return str(surt.surt(url))
+
+
+def index_records(settings: Settings, archive_path: str) -> Iterator[CdxRecord]:
+    """Every record in a site's index, in key order.
+
+    Streamed rather than returned as a list: a large site's index is tens of
+    megabytes and both callers — the capture diff and the retention planner —
+    read it once and keep only what they need from each line.
+    """
+    path = index_path(settings, archive_path)
+    if not path.is_file():
+        return
+    with open(path, "rb") as fh:
+        for raw in fh:
+            record = _parse_line(raw.decode("utf-8", "replace"))
+            if record is not None:
+                yield record
 
 
 def lookup(settings: Settings, archive_path: str, url: str) -> list[CdxRecord]:

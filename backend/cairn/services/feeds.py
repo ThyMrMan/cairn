@@ -38,6 +38,7 @@ concurrently without a session crossing a thread.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import random
 import time
 from dataclasses import dataclass, field
@@ -58,6 +59,9 @@ log = get_logger(__name__)
 MIN_INTERVAL_MIN = 5
 DEFAULT_INTERVAL_MIN = 360
 DEFAULT_SITEMAP_INTERVAL_MIN = 1440
+# A page watcher fetches the page itself rather than a cheap index of it,
+# so it is gentler by default than a feed poll.
+DEFAULT_PAGE_INTERVAL_MIN = 720
 # A dead feed must not poll every ten minutes forever, and a feed that is
 # merely being rate-limited must not be given up on.
 MAX_BACKOFF_MIN = 24 * 60
@@ -74,7 +78,7 @@ POLL_HISTORY_LIMIT = 200
 # archive of itself — the capture is.
 MAX_TITLE_CHARS = 500
 
-FEED_KINDS = ("auto", "rss", "atom", "json", "sitemap")
+FEED_KINDS = ("auto", "rss", "atom", "json", "sitemap", "page")
 
 # Dropped before comparing two URLs. Deliberately short: every one of these is
 # provably not part of a document's identity, and a parameter wrongly dropped
@@ -151,6 +155,10 @@ class Entry:
     title: str | None = None
     published: datetime | None = None
     updated: datetime | None = None
+    #: For a watched page: a hash of its readable text. A feed entry says it
+    #: changed by moving `updated`; a page says nothing at all, so the only
+    #: honest signal is that its content is no longer the same bytes.
+    content_hash: str = ""
 
 
 @dataclass(slots=True)
@@ -302,6 +310,8 @@ async def fetch(state: FeedState, *, fetcher: Fetcher) -> FetchResult:
 
     if state.kind == "sitemap":
         result = await _fetch_sitemap(state, fetcher, headers)
+    elif state.kind == "page":
+        result = await _fetch_page(state, fetcher, headers)
     else:
         result = await _fetch_feed(state, fetcher, headers)
     result.duration_ms = int((time.monotonic() - started) * 1000)
@@ -355,6 +365,61 @@ async def _fetch_sitemap(
         # the URL set is not the site's full set and must not drive removals.
         complete=not source.errors,
     )
+
+
+async def _fetch_page(state: FeedState, fetcher: Fetcher, headers: dict[str, str]) -> FetchResult:
+    """Watch one page for a change in what it *says*.
+
+    The signal is a hash of the extracted text, not of the response body.
+    Measured on a page carrying a visit counter, a rotating ad slot, a comment
+    count and a "generated at" stamp: three consecutive fetches produced three
+    different body hashes and one identical text hash, and editing the post
+    changed it. Hashing the body would report a change every poll forever,
+    which is indistinguishable from reporting none.
+
+    That places the whole burden on the extractor's class-name rules, because
+    a single page has no corpus for the repetition filter to work from. A site
+    that puts a counter *inside* its article will still look changed — which
+    is visible in the poll history rather than silent.
+    """
+    got = await fetcher.get(state.url, headers=headers)
+    result = _conditional(got)
+    if result is not None:
+        return result
+
+    title, blocks = await asyncio.to_thread(_read_page, got.body, got.content_type or "text/html")
+    if not blocks and not title:
+        return FetchResult(
+            status=got.status,
+            error="nothing readable on that page — it may not be HTML",
+        )
+
+    canonical = canonical_url(state.url)
+    digest = hashlib.sha256("\n".join(blocks).encode("utf-8", "replace")).hexdigest()
+    return FetchResult(
+        status=got.status,
+        parsed=ParsedFeed(
+            kind="page",
+            title=title or None,
+            entries=[
+                Entry(
+                    guid=canonical,
+                    url=state.url,
+                    canonical=canonical,
+                    title=title or None,
+                    content_hash=digest,
+                )
+            ],
+        ),
+        etag=got.headers.get("etag"),
+        last_modified=got.headers.get("last-modified"),
+    )
+
+
+def _read_page(body: bytes, content_type: str) -> tuple[str, list[str]]:
+    from cairn.services import textextract
+
+    return textextract.parse(textextract.decode(body, content_type))
 
 
 def _conditional(got: Fetched) -> FetchResult | None:
@@ -499,6 +564,19 @@ def _merge(
                 if feed.recapture_on_update and existing.status == "captured":
                     existing.status = "pending"
                     new_ids.append(existing.id)
+            # A watched page announces nothing, so the content itself is the
+            # announcement. Unlike `updated`, a differing hash is not advisory
+            # and is acted on whatever `recapture_on_update` says — noticing
+            # the change *is* what the watcher is for.
+            if entry.content_hash and existing.content_hash != entry.content_hash:
+                if existing.content_hash:
+                    existing.status = "pending"
+                    existing.updated_at = now
+                    if existing.id not in new_ids:
+                        new_ids.append(existing.id)
+                existing.content_hash = entry.content_hash
+            if entry.title and existing.title != entry.title:
+                existing.title = entry.title
             continue
 
         item = FeedItem(
@@ -509,6 +587,7 @@ def _merge(
             title=entry.title,
             published_at=entry.published,
             updated_at=entry.updated,
+            content_hash=entry.content_hash or None,
             first_seen_at=now,
             last_seen_at=now,
             status="skipped" if baseline else "pending",
@@ -843,8 +922,12 @@ def _origin_of(url: str) -> str:
 
 
 def default_interval(kind: str) -> int:
-    """A sitemap is checked daily; a feed six-hourly (docs/08)."""
-    return DEFAULT_SITEMAP_INTERVAL_MIN if kind == "sitemap" else DEFAULT_INTERVAL_MIN
+    """A sitemap daily, a watched page twice daily, a feed six-hourly (docs/08)."""
+    if kind == "sitemap":
+        return DEFAULT_SITEMAP_INTERVAL_MIN
+    if kind == "page":
+        return DEFAULT_PAGE_INTERVAL_MIN
+    return DEFAULT_INTERVAL_MIN
 
 
 def add_feed(

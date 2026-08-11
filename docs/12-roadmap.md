@@ -269,6 +269,30 @@ Also worth doing: run `--warc-dedup` against a second capture and verify you get
 
 ---
 
+## M8 continued — change over time ✅
+
+**Ships:** knowing what changed, watching for change, and deciding what to keep.
+
+- [x] Diff view between captures of a page, and a site-level summary of which pages changed
+- [x] Page-change watcher for feedless sites
+- [x] Retention policies (prune superseded captures)
+
+**Done when:** a post is edited between two captures and the diff names the post and the sentence; a watched page with no feed is captured when its text changes and not when its visit counter does; and retention refuses to delete the capture holding the only copy of a post the author removed. *Asserted in `test_changes_e2e.py` against a real wget crawl of a fixture blog that is edited, watched and pruned while the test runs — including the negative case, that two captures of an unchanged site diff to zero changed pages while every response carried a different visit count.*
+
+**Three corrections from building it:**
+
+1. **Pruning a capture can destroy a capture it does not touch.** An incremental capture deduplicated with `--warc-dedup` writes a revisit record: a pointer with no payload. Measured against the pinned pywb — build two captures, delete the older, rebuild the index, and replay answers **503** for a page whose own capture directory is entirely present, whose WARC still passes its checksum, and whose index entry is still there. So "keep the last three captures" can destroy the three it keeps, and retention grew a fourth protection: a capture that later revisit records resolve into is never pruned. It is computed from the CDXJ, which is what replay itself resolves against.
+2. **Diffing markup reports every page as changed, forever.** A visit counter, a rotating ad slot or a "generated at" stamp changes the response on every fetch: three consecutive fetches of one unchanged post produced three different body hashes and one identical extracted-text hash. Both the diff and the page watcher therefore work from the extracted text, which is already there for search. The same measurement is what decides the watcher's change signal.
+3. **`last-copy` has to protect the *newest* capture holding a vanished URL, not every capture holding it.** Protecting all of them means one deleted post pins a site's entire history forever, and retention silently becomes a feature that never prunes anything. Walked newest-first with a running set of URLs seen so far, so exactly one capture is pinned per vanished page.
+
+**Also worth knowing:** `difflib` is enough. Measured at 9 ms for a 60,000-word page at block level plus 8 ms of word-level work inside the blocks that changed, and 0.1 ms for two pages with nothing in common — so there is no diffing dependency either.
+
+**Retention is off by default and its dry run works before it is switched on**, because the dry run is how anybody decides to switch it on. `apply` recomputes the plan inside the job rather than trusting the one a browser tab is showing, and reports every capture it refused to delete on that basis.
+
+**Left out of M8 entirely:** `yt-dlp` media capture, `single-file-cli`, ArchiveBox import, Prometheus metrics and public share links. The last is the one most likely to introduce a security hole, on the origin that replays untrusted JavaScript.
+
+---
+
 
 ## Sequencing notes
 

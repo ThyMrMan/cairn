@@ -294,10 +294,11 @@ function PollHistory({ feedId }: { feedId: number }) {
 function AddFeed({ siteId, onDone }: { siteId: number; onDone: () => void }) {
   const client = useQueryClient();
   const [url, setUrl] = useState("");
+  const [asPage, setAsPage] = useState(false);
   const [tested, setTested] = useState<FeedCandidate | null>(null);
 
   const test = useMutation({
-    mutationFn: () => endpoints.testFeed(siteId, url),
+    mutationFn: () => endpoints.testFeed(siteId, url, asPage ? "page" : "auto"),
     onSuccess: setTested,
   });
 
@@ -307,7 +308,7 @@ function AddFeed({ siteId, onDone }: { siteId: number; onDone: () => void }) {
     mutationFn: (candidate: FeedCandidate) =>
       endpoints.addFeed(siteId, {
         url: candidate.url,
-        kind: candidate.kind === "sitemap" ? "sitemap" : "auto",
+        kind: candidate.kind === "sitemap" ? "sitemap" : asPage ? "page" : "auto",
         title: candidate.title,
         // A comment feed is mostly noise, and a feed whose entries the scope
         // would refuse cannot capture anything — so both arrive watched but
@@ -347,6 +348,25 @@ function AddFeed({ siteId, onDone }: { siteId: number; onDone: () => void }) {
           Find feeds
         </button>
       </div>
+
+      <label className="flex items-center gap-2 text-xs text-muted">
+        <input
+          type="checkbox"
+          checked={asPage}
+          onChange={(e) => {
+            setAsPage(e.target.checked);
+            setTested(null);
+          }}
+        />
+        Watch this URL as a page, not a feed
+      </label>
+      {asPage && (
+        <p className="hint">
+          For a site with no feed. The page is fetched on a schedule and captured when its
+          readable text changes — not when its markup does, so a visit counter or a rotating
+          advert in the furniture will not set it off.
+        </p>
+      )}
 
       {test.error && <Alert kind="error">{(test.error as ApiError).message}</Alert>}
       {add.error && <Alert kind="error">{(add.error as ApiError).message}</Alert>}

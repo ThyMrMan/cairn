@@ -698,6 +698,81 @@ export type SearchStatus = {
 
 export type ExportEntry = { name: string; size_bytes: number; created_at: string };
 
+// ── diffs and retention ──────────────────────────────────────────────────
+
+export type PageSummary = {
+  url: string;
+  title: string;
+  kind: "added" | "removed" | "changed" | "unchanged";
+  change_ratio: number;
+};
+
+export type CaptureDiff = {
+  before_capture: string;
+  after_capture: string;
+  before_capture_id: number;
+  after_capture_id: number;
+  added: number;
+  removed: number;
+  changed: number;
+  unchanged: number;
+  pages: PageSummary[];
+  note: string;
+};
+
+export type WordEdit = { kind: string; before: string; after: string };
+
+export type BlockChange = {
+  kind: "added" | "removed" | "changed";
+  before: string;
+  after: string;
+  words: WordEdit[];
+};
+
+export type PageDiff = {
+  url: string;
+  before_capture: string;
+  after_capture: string;
+  before_title: string;
+  after_title: string;
+  changed: boolean;
+  change_ratio: number;
+  blocks: BlockChange[];
+  note: string;
+};
+
+export type ResourceChange = {
+  kind: "added" | "removed" | "changed";
+  url: string;
+  mime: string;
+  before_digest: string;
+  after_digest: string;
+};
+
+export type RetentionDecision = {
+  capture_id: number;
+  dir_name: string;
+  started_at: string;
+  size_bytes: number;
+  keep: boolean;
+  reason: string;
+  detail: string;
+};
+
+export type RetentionPlan = {
+  site_id: number;
+  site_title: string;
+  policy: {
+    enabled: boolean;
+    keep_last: number;
+    keep_monthly: number;
+    min_age_days: number;
+  };
+  captures: RetentionDecision[];
+  prunable: number;
+  freed_bytes: number;
+};
+
 export type IntegrityFinding = {
   kind: string;
   site_id: number;
@@ -820,6 +895,21 @@ export const endpoints = {
     ),
   exportUrl: (siteId: number, name: string) =>
     `/api/sites/${siteId}/exports/${encodeURIComponent(name)}`,
+
+  // ── diffs and retention ────────────────────────────────────────────────
+  diffCaptures: (siteId: number, params: { before?: number; after?: number } = {}) =>
+    api.get<CaptureDiff>(`/sites/${siteId}/diff${query(params as never)}`),
+  diffPage: (siteId: number, params: { url: string; before?: number; after?: number }) =>
+    api.get<PageDiff>(`/sites/${siteId}/diff/page${query(params as never)}`),
+  diffResources: (siteId: number, params: { before?: number; after?: number } = {}) =>
+    api.get<{ before_capture: string; after_capture: string; resources: ResourceChange[] }>(
+      `/sites/${siteId}/diff/resources${query(params as never)}`,
+    ),
+  retention: (siteId: number) => api.get<RetentionPlan>(`/sites/${siteId}/retention`),
+  putRetention: (siteId: number, body: Record<string, unknown>) =>
+    api.put<RetentionPlan>(`/sites/${siteId}/retention`, body),
+  applyRetention: (siteId: number) =>
+    api.post<JobAccepted>(`/sites/${siteId}/retention/apply`),
 
   // ── sites ──────────────────────────────────────────────────────────────
   sites: (params: Record<string, string | number | undefined> = {}) =>

@@ -263,12 +263,20 @@ The interactive session is a **CDP screencast over a WebSocket**, not the `vnc_u
 | `GET` | `/api/sites/{id}/exports/{name}` | Download. Always an attachment |
 | `GET` | `/api/sites/{id}/exports/{name}/verify` | Checksums, and every index entry resolving |
 | `DELETE` | `/api/sites/{id}/exports/{name}` | Remove an export. The archive is untouched |
+| `GET` | `/api/sites/{id}/diff` | `?before=&after=` — which pages two captures disagree about. Defaults to the last two |
+| `GET` | `/api/sites/{id}/diff/page` | `?url=&before=&after=` — one page, block and word level |
+| `GET` | `/api/sites/{id}/diff/resources` | Assets added, removed, or replaced under the same URL |
+| `GET` | `/api/sites/{id}/retention` | The dry run: every capture, kept or not, and why |
+| `PUT` | `/api/sites/{id}/retention` | `{enabled?, keep_last?, keep_monthly?, min_age_days?}` → the new plan |
+| `POST` | `/api/sites/{id}/retention/apply` | `202 {job_id}`. Not reversible |
 | `POST` | `/api/maintenance/rebuild-symlinks` | Regenerate `/data/by-tag` |
 | `POST` | `/api/maintenance/rebuild-collections` | Re-point every pywb collection |
 | `POST` | `/api/maintenance/rebuild-db` | Reconstruct DB rows from on-disk manifests |
 | `POST` | `/api/maintenance/purge-trash` | Purge only what is past the retention window |
 
 `/api/search` never receives FTS5 syntax. What somebody types is translated: every bare term becomes a quoted string literal, and only `"a phrase"`, a trailing `*` and a leading `-` are read as operators. Typing `c++` or a stray quote is a MATCH syntax error otherwise, and `AND` is an operator rather than the word somebody meant — a search box that answers with *fts5: syntax error near* is a search box people stop using.
+
+`/api/sites/{id}/retention` is a dry run on every path, including when the policy is switched off — which is the state it most needs to be readable in, because the dry run is how somebody decides whether to switch it on. `apply` recomputes the plan inside the job rather than taking the one the browser is showing: a capture that has become the last copy of something in the meantime must not be deleted because an older plan said it could be, and the job reports each such refusal rather than silently skipping it.
 
 `/api/sites/{id}/exports/{name}` is always `Content-Disposition: attachment` with `X-Content-Type-Options: nosniff`. A WACZ is a zip of untrusted archived bytes and the app origin is the last place it should ever be rendered ([11](11-security.md)).
 

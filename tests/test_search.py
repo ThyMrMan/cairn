@@ -67,6 +67,27 @@ def plain_page(slug: str, title: str, body: str) -> bytes:
 <div class="bottom">Older Post &middot; Newer Post</div></div></body></html>""".encode()
 
 
+CONTENT_TYPES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".css": "text/css",
+    ".js": "application/javascript",
+}
+
+
+def content_type_for(url: str) -> str:
+    """Guessed from the extension, because the callers care about the split.
+
+    Text extraction, resource diffing and the search index all key on whether
+    a record is HTML; serving a PNG as `text/html` would make every one of
+    them agree, wrongly.
+    """
+    for suffix, ctype in CONTENT_TYPES.items():
+        if url.endswith(suffix):
+            return ctype
+    return "text/html; charset=utf-8"
+
+
 def write_warc(path: Path, pages: dict[str, bytes]) -> None:
     from warcio.statusandheaders import StatusAndHeaders
     from warcio.warcwriter import WARCWriter
@@ -77,7 +98,10 @@ def write_warc(path: Path, pages: dict[str, bytes]) -> None:
         for url, body in pages.items():
             headers = StatusAndHeaders(
                 "200 OK",
-                [("Content-Type", "text/html; charset=utf-8"), ("Content-Length", str(len(body)))],
+                [
+                    ("Content-Type", content_type_for(url)),
+                    ("Content-Length", str(len(body))),
+                ],
                 protocol="HTTP/1.1",
             )
             writer.write_record(

@@ -74,10 +74,12 @@ TRASH_PURGE_SETTING = "schedule.last_trash_purge"
 ROLLUP_SETTING = "schedule.last_stats_rollup"
 DISK_WARNED_SETTING = "schedule.last_disk_warning"
 VERIFY_SETTING = "schedule.last_integrity_verify"
+RETENTION_SETTING = "schedule.last_retention"
 
 TRASH_PURGE_INTERVAL = timedelta(days=1)
 ROLLUP_INTERVAL = timedelta(hours=1)
 DISK_WARN_INTERVAL = timedelta(days=1)
+RETENTION_INTERVAL = timedelta(days=1)
 
 
 @dataclass(slots=True)
@@ -446,8 +448,35 @@ class Scheduler:
 
             done += self._due_recaptures(session, now)
             done += self._due_verification(session, now)
+            done += self._due_retention(session, now)
             session.commit()
         return done
+
+    def _due_retention(self, session: Session, now: datetime) -> list[str]:
+        """Queue a retention pass daily, for sites whose policy is on.
+
+        The stamp is written whether or not anything was queued, so a hundred
+        sites with retention off do not cost a full plan computation every
+        minute.
+        """
+        from cairn.services import retention
+
+        if not _elapsed(session, RETENTION_SETTING, RETENTION_INTERVAL, now):
+            return []
+        settings_store.put(session, RETENTION_SETTING, now.isoformat())
+
+        pending = session.scalar(
+            select(Job.id).where(Job.type == "purge", Job.status.in_(("queued", "running")))
+        )
+        if pending:
+            return []
+        sites = retention.due_sites(session, self._settings)
+        if not sites:
+            return []
+        job = self._supervisor.enqueue(
+            session, job_type="purge", site_id=None, spec={}, priority=250
+        )
+        return [f"queued retention for {len(sites)} site(s) as job {job.id}"]
 
     def _due_verification(self, session: Session, now: datetime) -> list[str]:
         """Queue the integrity pass when the interval has elapsed.

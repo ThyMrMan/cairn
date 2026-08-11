@@ -509,7 +509,7 @@ class FeedCreate(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
     url: str = Field(min_length=1, max_length=2048)
-    kind: str = Field(default="auto", pattern="^(auto|rss|atom|json|sitemap)$")
+    kind: str = Field(default="auto", pattern="^(auto|rss|atom|json|sitemap|page)$")
     title: str | None = Field(default=None, max_length=255)
     interval_min: int | None = Field(default=None, ge=5, le=60 * 24 * 30)
     enabled: bool = True
@@ -593,7 +593,7 @@ class FeedTestRequest(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
     url: str = Field(min_length=1, max_length=2048)
-    kind: str = Field(default="auto", pattern="^(auto|rss|atom|json|sitemap)$")
+    kind: str = Field(default="auto", pattern="^(auto|rss|atom|json|sitemap|page)$")
 
 
 class FeedPollResult(BaseModel):
@@ -709,3 +709,16 @@ class ExportEntry(BaseModel):
     name: str
     size_bytes: int
     created_at: str
+
+
+# ── retention ────────────────────────────────────────────────────────────
+
+
+class RetentionPolicy(BaseModel):
+    """A site's own retention rules. Every field is optional; what is not set
+    falls back to the instance default, and that to `DEFAULT_POLICY`."""
+
+    enabled: bool | None = None
+    keep_last: int | None = Field(default=None, ge=0, le=1000)
+    keep_monthly: int | None = Field(default=None, ge=0, le=600)
+    min_age_days: int | None = Field(default=None, ge=0, le=3650)

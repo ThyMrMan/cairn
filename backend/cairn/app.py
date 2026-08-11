@@ -20,6 +20,7 @@ from cairn.api import errors
 from cairn.api.middleware import SecurityHeadersMiddleware
 from cairn.api.routers import auth as auth_router
 from cairn.api.routers import captures as captures_router
+from cairn.api.routers import changes as changes_router
 from cairn.api.routers import discovery as discovery_router
 from cairn.api.routers import engines as engines_router
 from cairn.api.routers import exports as exports_router
@@ -193,6 +194,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(replay_router.router, prefix="/api")
     app.include_router(search_router.router, prefix="/api")
     app.include_router(exports_router.router, prefix="/api")
+    app.include_router(changes_router.router, prefix="/api")
 
     _mount_frontend(app)
     return app
