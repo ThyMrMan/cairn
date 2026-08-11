@@ -192,6 +192,7 @@ A stalled reader must never apply backpressure to a crawl, so each subscriber ha
 | Method | Path | Notes |
 |---|---|---|
 | `GET` | `/api/health` | Unauthenticated. `{status, version, db, pywb, disk_free_bytes}` |
+| `GET` | `/api/version` | **Authenticated.** `{version, build, built_at, label}` — which build is running |
 | `GET` | `/api/settings` | All DB-backed settings |
 | `PATCH` | `/api/settings` | Partial update |
 | `GET` | `/api/storage` | Per-folder and per-site usage, free space, trash size |
@@ -204,6 +205,8 @@ A stalled reader must never apply backpressure to a crawl, so each subscriber ha
 | `POST` | `/api/import/config` | Restore |
 
 `/api/health` is unauthenticated because Unraid's healthcheck and any uptime monitor need it. It therefore must leak nothing: no version-specific vulnerability hints beyond the version string, no paths, no site names, no counts.
+
+`/api/version` is the split from that. `version` alone is useless for the question people actually ask — it reads `0.1.0` on every commit, so an image several milestones behind reports exactly what a current one does. `build` is the part that changes, and because it names a commit it also names that commit's known bugs, so it sits behind a session while `/health` keeps the bare version it always had. Resolution order is `CAIRN_BUILD`/`CAIRN_BUILT_AT` in the environment, then the `BUILD_INFO` file the image writes, then `git describe` in a source checkout, then the literal string `source`. Nothing is invented: a fabricated id would read as a real build nobody can find.
 
 ---
 

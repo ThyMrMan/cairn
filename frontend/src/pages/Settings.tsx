@@ -5,19 +5,46 @@ import { Alert, Field, Spinner } from "../components/ui";
 import { ApiError, endpoints } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { dateTime, relative } from "../lib/format";
+import { useVersion } from "../lib/version";
 
 export default function Settings() {
   return (
     <div className="space-y-8">
       <header>
         <h1 className="text-2xl font-semibold">Settings</h1>
-        <p className="mt-1 text-sm text-muted">Account and security.</p>
+        <p className="mt-1 text-sm text-muted">This instance, your account, and security.</p>
       </header>
+      <AboutSection />
       <PasswordSection />
       <TotpSection />
       <SessionsSection />
       <AuditSection />
     </div>
+  );
+}
+
+function AboutSection() {
+  const version = useVersion();
+
+  return (
+    <Section
+      title="About"
+      description="Which build this instance is running. The version stays the same across
+                  commits; the build id is what changes when you deploy."
+    >
+      <dl className="grid max-w-md grid-cols-[7rem_1fr] gap-y-2 text-sm">
+        <dt className="text-muted">Version</dt>
+        <dd className="font-mono">{version.data?.version ?? "—"}</dd>
+        <dt className="text-muted">Build</dt>
+        <dd className="break-all font-mono">{version.data?.build ?? "—"}</dd>
+        <dt className="text-muted">Built</dt>
+        <dd className="font-mono">
+          {version.data?.built_at
+            ? dateTime(version.data.built_at)
+            : "running from a source checkout"}
+        </dd>
+      </dl>
+    </Section>
   );
 }
 

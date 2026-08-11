@@ -29,6 +29,20 @@ class HealthResponse(BaseModel):
     disk_free_bytes: int | None = None
 
 
+class VersionResponse(BaseModel):
+    """Authenticated, because `build` names the exact commit.
+
+    On an internet-exposed instance that is a direct index into which known
+    bugs are present, which is not something an unauthenticated liveness
+    probe should hand out. `/health` keeps the bare version it always had.
+    """
+
+    version: str
+    build: str
+    built_at: str | None = None
+    label: str
+
+
 # ── setup ────────────────────────────────────────────────────────────────
 
 

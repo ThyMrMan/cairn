@@ -233,7 +233,9 @@ https://lh3.googleusercontent.com/about                         ← no extension
 Both readings cost something. Rejecting extension-less URLs loses images with no error anywhere; accepting them lets wget crawl a CDN's HTML, which is the failure this whole design exists to prevent. Neither default is right for every host, so it is a per-host decision:
 
 - `allow_extensionless: false` (default) — safe, and the scope preview says plainly that extension-less URLs on that host will be skipped.
-- `allow_extensionless: true` — set by the Blogger preset for `blogger.googleusercontent.com` and `lh3.googleusercontent.com`, which serve images through extension-less URLs and do not serve linked HTML.
+- `allow_extensionless: true` — set by the Blogger preset for `blogger.googleusercontent.com`, `lh3.googleusercontent.com` and `themes.googleusercontent.com`, which serve images through extension-less URLs and do not serve linked HTML.
+
+  `themes.googleusercontent.com` was missing from that list until a live capture exposed it, and it is the instructive case: **every** URL on that host is `image?id=…`, so the flag is not an edge case there, it is the whole host. Listing a host under `assets_on` without also listing it under `extensionless_ok` puts it inside `--domains` and then rejects every URL it serves — in scope, and reachable by nothing. When adding a host to a preset, check what its URLs actually look like before assuming the default is safe.
 
 Because neither setting is reliably correct, the `asset-audit` post-processor closes the loop from the other end: after a capture it reads the archived HTML back out of the WARC and reports assets a page referenced but the crawl never fetched. That catches a dropped image regardless of which way the flag was set, and catches lazy-loaded images too — which no scope setting can reach, since wget does not execute JavaScript.
 

@@ -201,11 +201,17 @@ def step_asset_audit(ctx: Context) -> None:
                 for record in ArchiveIterator(fh):
                     if record.rec_type != "response":
                         continue
-                    ctype = (
-                        record.http_headers.get_header("Content-Type", "")
-                        if (record.http_headers)
-                        else ""
-                    )
+                    if not record.http_headers:
+                        continue
+                    # Error pages are not pages. `--content-on-error` archives
+                    # the body of every 404, and a site's 404 template
+                    # references its own logo and stylesheet — which are then
+                    # reported as assets the capture is missing, from a page
+                    # nobody asked for. It also made the page count nonsense:
+                    # 4 real pages and 12 mangled requests read as "16 pages".
+                    if not _is_success(record.http_headers.get_statuscode()):
+                        continue
+                    ctype = record.http_headers.get_header("Content-Type", "") or ""
                     if "html" not in ctype.lower():
                         continue
                     body = record.content_stream().read(512 * 1024)
@@ -257,17 +263,28 @@ _referenced_assets = htmlrefs.referenced_assets
 _unescape_css = htmlrefs.unescape_css
 
 
+def _is_success(status: str | None) -> bool:
+    return bool(status) and str(status).startswith("2")
+
+
 def _css_escaped_requests(ctx: Context) -> list[str]:
     """URLs the crawl requested that are mangled CSS escapes.
 
     These show up as 404s against the site's own host with a backslash in the
     path — percent-encoded, so `%5C`. Recognising them turns a pair of
     confusing log lines into an explanation.
+
+    `autoescape` is not optional here: without it the `%` is passed through to
+    SQL as a LIKE wildcard, so the filter degrades to "contains 5C" and
+    matches ordinary URLs that happen to have those two characters in a
+    cache-busting token.
     """
     rows = ctx.session.scalars(
         select(CaptureUrl.url).where(
             CaptureUrl.capture_id == ctx.capture.id,
-            CaptureUrl.url.contains("%5C") | CaptureUrl.url.contains("\\"),
+            CaptureUrl.url.contains("%5C", autoescape=True)
+            | CaptureUrl.url.contains("%5c", autoescape=True)
+            | CaptureUrl.url.contains("\\", autoescape=True),
         )
     ).all()
     return list(rows)
@@ -308,6 +325,7 @@ def run_chain(
     scope: dict[str, Any],
     seeds: list[str],
     seed_source: dict[str, int] | None = None,
+    warnings: list[str] | None = None,
 ) -> Context:
     ctx = Context(
         session=session,
@@ -321,7 +339,9 @@ def run_chain(
         seeds=seeds,
         seed_source=seed_source or {"manual": len(seeds)},
         artifacts=list(capture.warc_files or []),
-        warnings=[],
+        # Seeded with whatever the supervisor already knew was wrong before
+        # the crawl started, so one report covers the whole capture.
+        warnings=list(warnings or []),
     )
 
     for step in sorted(CHAIN, key=lambda s: s.order):

@@ -60,9 +60,11 @@ BLOGGER_PRESET = Preset(
         "fonts.gstatic.com",
         # The theme's compiled CSS and JS. Its absence is visible in replay.
         "resources.blogblog.com",
+        "www.blogblog.com",
         # Skin background images, reached through CSS-escaped URLs that wget
         # mangles — in scope so at least the scope half is right.
         "themes.googleusercontent.com",
+        "www.gstatic.com",
     ],
     hosts_off=[
         # What a blog pulls from here is the owner's admin-bar CSS and a
@@ -72,7 +74,15 @@ BLOGGER_PRESET = Preset(
         "*.googletagmanager.com",
         "*.doubleclick.net",
     ],
-    extensionless_ok=["blogger.googleusercontent.com", "lh3.googleusercontent.com"],
+    # Every one of these serves images through URLs with no file extension, so
+    # without this the assets-only reject regex drops them silently — the case
+    # the scope module's third finding is about. themes.googleusercontent.com
+    # is the one that bites: its skin images are all `image?id=…`.
+    extensionless_ok=[
+        "blogger.googleusercontent.com",
+        "lh3.googleusercontent.com",
+        "themes.googleusercontent.com",
+    ],
     reject_patterns=[
         (r"[?&]m=1", "the mobile duplicate of every page — halves the crawl, loses nothing"),
         (r"[?&]replytocom=", "one permutation per comment reply"),

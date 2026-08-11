@@ -8,6 +8,8 @@ merges two people's blogs, a default that turns something on by accident.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from cairn.discovery.hosts import (
@@ -28,6 +30,7 @@ from cairn.discovery.platform import (
 )
 from cairn.discovery.sources import parse_feed, parse_sitemap
 from cairn.services.htmlrefs import parse_page
+from cairn.services.scope import HostRule, asset_only_reject_pattern
 
 # ── sitemaps ─────────────────────────────────────────────────────────────
 
@@ -298,6 +301,27 @@ def test_every_host_gets_a_reason() -> None:
     """The picker shows why something is on or off; a blank is a bug."""
     for stat in apply_defaults(blogger_hosts(), BLOGGER_PRESET):
         assert stat.reason
+
+
+def test_blogger_skin_images_survive_the_assets_only_reject() -> None:
+    """themes.googleusercontent.com serves every skin image as `image?id=…`,
+    with no file extension anywhere in the URL. Without `allow_extensionless`
+    the generated reject drops all of them, and the only symptom is a page
+    that renders without its background."""
+    hosts = classify(
+        seed_host="example.blogspot.com",
+        link_refs={"example.blogspot.com": 5},
+        asset_refs={"themes.googleusercontent.com": 24},
+        urls_by_host={},
+    )
+    apply_defaults(hosts, BLOGGER_PRESET)
+    skin = next(h for h in hosts if h.host == "themes.googleusercontent.com")
+    assert skin.fetch_assets
+    assert skin.allow_extensionless
+
+    rule = HostRule(host=skin.host, fetch_assets=True, allow_extensionless=skin.allow_extensionless)
+    pattern = asset_only_reject_pattern(rule)
+    assert not re.search(pattern, "https://themes.googleusercontent.com/image?id=L1lcAxxz")
 
 
 def test_asset_only_host_is_enabled_even_without_a_preset() -> None:

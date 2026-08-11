@@ -229,6 +229,19 @@ def resolved_scope(session: Session, site: Site) -> Scope:
     return scope
 
 
+def scope_is_unindexed(session: Session, site: Site) -> bool:
+    """Whether the site still has the pre-discovery fallback scope.
+
+    `load_scope` falls back to `default_scope` — the seed host and nothing
+    else — when no rules have been saved. That is the right default, but a
+    capture that runs on it archives the HTML and none of the images, CSS or
+    JS the pages pull from anywhere else, and nothing about the result says
+    why. Callers use this to say so out loud.
+    """
+    count = session.scalar(select(func.count(ScopeRule.id)).where(ScopeRule.site_id == site.id))
+    return not count
+
+
 # ── tags ─────────────────────────────────────────────────────────────────
 
 

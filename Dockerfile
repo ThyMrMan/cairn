@@ -87,6 +87,19 @@ COPY alembic.ini /app/alembic.ini
 COPY --from=frontend /backend/cairn/static /app/backend/cairn/static
 COPY docker/rootfs/ /
 
+# Stamp the image so the UI can say which build it is running. Placed after
+# every COPY on purpose: any source change invalidates this layer and mints a
+# new stamp, and an unchanged rebuild reuses it — which is exactly the
+# question "am I testing the update?" is asking.
+#
+# A bare `docker build` still produces a distinct stamp. CI passes the commit:
+#     docker build --build-arg CAIRN_BUILD=$(git rev-parse --short HEAD) .
+ARG CAIRN_BUILD=
+RUN set -eux; \
+    now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"; \
+    printf '%s\n%s\n' "${CAIRN_BUILD:-img-$(date -u +%y%m%d%H%M)}" "$now" \
+      > /app/backend/cairn/BUILD_INFO
+
 ENV PYTHONPATH=/app/backend
 WORKDIR /app
 

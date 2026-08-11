@@ -13,6 +13,7 @@ import re
 import pytest
 
 from cairn.services.scope import (
+    CSS_ESCAPE_REJECT,
     HostRule,
     Scope,
     ScopeError,
@@ -178,14 +179,27 @@ def test_posix_is_refused_rather_than_silently_producing_a_broken_pattern() -> N
         to_wget_args(blog_scope(), regex_type="posix")
 
 
-def test_no_reject_regex_when_every_host_is_crawlable() -> None:
+def test_the_only_reject_for_a_single_crawlable_host_is_the_css_escape_guard() -> None:
+    """No asset host means no per-host fencing, but the CSS-escape reject is
+    unconditional: any scope can meet a skin that writes `url(https\\:\\/\\/…)`,
+    and wget requests that shape against the site itself, once per variant."""
     scope = Scope(
         seeds=["https://example.com/"],
         hosts=[HostRule("example.com", crawl_pages=True, fetch_assets=True)],
     )
-    args = to_wget_args(scope).args
-    assert not any(a.startswith("--reject-regex=") for a in args)
-    assert "--regex-type=pcre" not in args
+    reject = next(a for a in to_wget_args(scope).args if a.startswith("--reject-regex="))
+    assert reject == f"--reject-regex=(?:{CSS_ESCAPE_REJECT})"
+
+
+def test_the_css_escape_reject_matches_what_wget_actually_requests() -> None:
+    """The literal URL from a real Blogger capture: twelve of these 404'd."""
+    mangled = (
+        "https://jsrandomtest29.blogspot.com/2026/08/https%5C:%5C/%5C/"
+        "themes.googleusercontent.com%5C/image?id=L1lcAxxz&options=w640"
+    )
+    intended = "https://themes.googleusercontent.com/image?id=L1lcAxxz&options=w640"
+    assert re.search(CSS_ESCAPE_REJECT, mangled)
+    assert not re.search(CSS_ESCAPE_REJECT, intended)
 
 
 def test_user_reject_patterns_are_merged_with_generated_ones() -> None:

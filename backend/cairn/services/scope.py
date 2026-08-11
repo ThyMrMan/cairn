@@ -250,10 +250,23 @@ def asset_only_reject_pattern(rule: HostRule) -> str:
     return rf"^https?://{host}/{tail}"
 
 
+# A percent-encoded backslash is never part of a real URL. It is what a
+# crawler produces from a CSS escape it cannot decode: a Blogger skin writing
+# `url(https\:\/\/host\/x.png)` turns into a request for
+# `https://theblog/https%5C:%5C/%5C/host%5C/x.png` against the blog itself.
+#
+# Measured on one blog: twelve such requests, twelve 404s, twelve junk records
+# in the WARC, and twelve error pages the asset audit then counted as pages.
+# Rejecting the shape loses nothing — the asset is unreachable by that URL no
+# matter what — and the audit still reports the host that was really meant.
+CSS_ESCAPE_REJECT = r"%5[Cc]"
+
+
 def build_reject_patterns(scope: Scope) -> list[str]:
     """Every reject pattern the engine should enforce, user's plus generated."""
     patterns = list(scope.reject_patterns)
     patterns.extend(asset_only_reject_pattern(rule) for rule in scope.asset_only_hosts)
+    patterns.append(CSS_ESCAPE_REJECT)
     return patterns
 
 
@@ -295,8 +308,9 @@ def to_wget_args(scope: Scope, *, regex_type: Literal["pcre", "posix"] = "pcre")
     if rejects:
         if regex_type == "posix":
             raise ScopeError(
-                "asset-only hosts need a negative lookahead, which POSIX ERE does not "
-                "support. Pass --regex-type=pcre, or mark those hosts crawlable."
+                "the generated reject regex uses non-capturing groups, and asset-only "
+                "hosts additionally need a negative lookahead. POSIX ERE has neither. "
+                "Pass --regex-type=pcre, which the image verifies at build time."
             )
         args += ["--regex-type=pcre", f"--reject-regex={combine_patterns(rejects)}"]
 

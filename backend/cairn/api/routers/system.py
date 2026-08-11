@@ -1,4 +1,4 @@
-"""System endpoints: audit log, storage. Expands substantially in later milestones."""
+"""System endpoints: version, audit log, storage. Expands in later milestones."""
 
 from __future__ import annotations
 
@@ -8,11 +8,23 @@ from fastapi import APIRouter, Query
 from sqlalchemy import func, select
 
 from cairn.api.deps import AppSettings, CurrentUser, DbSession
-from cairn.api.schemas import AuditEntry, Page
+from cairn.api.schemas import AuditEntry, Page, VersionResponse
+from cairn.build import build_info
 from cairn.db.models import AuditLog
 from cairn.services import audit
 
 router = APIRouter(tags=["system"])
+
+
+@router.get("/version", response_model=VersionResponse)
+def version(_user: CurrentUser) -> VersionResponse:
+    info = build_info()
+    return VersionResponse(
+        version=info.version,
+        build=info.build,
+        built_at=info.built_at,
+        label=info.label,
+    )
 
 
 @router.get("/audit", response_model=Page[AuditEntry])

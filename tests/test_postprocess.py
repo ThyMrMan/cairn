@@ -7,10 +7,23 @@ images it cannot see at all.
 
 from __future__ import annotations
 
+import io
+from pathlib import Path
+
+from sqlalchemy.orm import Session
+
+from cairn.config import Settings
+from cairn.db.models import Capture, Site
+from cairn.db.types import utcnow
+from cairn.services import sites, storage
 from cairn.services.postprocess import (
+    Context,
     _escaped_target_host,
+    _is_success,
     _referenced_assets,
     _unescape_css,
+    run_chain,
+    step_asset_audit,
 )
 
 # The exact shape a real Blogger skin produces, from a live capture's log.
@@ -171,3 +184,113 @@ def test_recovers_the_intended_host_from_a_mangled_request() -> None:
 def test_intended_host_of_an_ordinary_url_is_its_own_host() -> None:
     host = _escaped_target_host("https://blog.example.com/logo.png")
     assert host in ("blog.example.com", None)
+
+
+# ── which records count as pages ─────────────────────────────────────────
+
+
+def test_only_successful_responses_count_as_pages() -> None:
+    assert _is_success("200")
+    assert _is_success("204")
+    assert not _is_success("404")
+    assert not _is_success("301")
+    assert not _is_success(None)
+
+
+def _write_warc(path: Path, records: list[tuple[str, int, bytes]]) -> None:
+    from warcio.statusandheaders import StatusAndHeaders
+    from warcio.warcwriter import WARCWriter
+
+    with open(path, "wb") as fh:
+        writer = WARCWriter(fh, gzip=True)
+        for url, status, body in records:
+            headers = StatusAndHeaders(
+                f"{status} OK", [("Content-Type", "text/html")], protocol="HTTP/1.1"
+            )
+            writer.write_record(
+                writer.create_warc_record(
+                    url, "response", payload=io.BytesIO(body), http_headers=headers
+                )
+            )
+
+
+def test_a_404_page_does_not_contribute_its_own_assets_or_page_count(
+    db: Session, settings: Settings, tmp_path: Path
+) -> None:
+    """`--content-on-error` archives the body of every 404, and a site's error
+    template references its own logo. Counting those made the gap report claim
+    assets were missing from a page nobody requested — and turned four real
+    pages plus twelve mangled requests into "16 page(s)"."""
+    warc_dir = tmp_path / storage.WARC_DIR
+    warc_dir.mkdir(parents=True)
+    _write_warc(
+        warc_dir / "part.warc.gz",
+        [
+            ("https://blog.example.com/", 200, b'<html><img src="/real.png" data-src="/lazy.png">'),
+            ("https://blog.example.com/gone", 404, b'<html><img src="/error-template.png">'),
+        ],
+    )
+
+    ctx = Context(
+        session=db,
+        settings=settings,
+        capture=Capture(),
+        site=Site(),
+        output_dir=tmp_path,
+        tool_version=None,
+        stats={},
+        scope={},
+        seeds=[],
+        seed_source={},
+        artifacts=[],
+        warnings=[],
+    )
+    step_asset_audit(ctx)
+
+    missing = " ".join(ctx.warnings)
+    assert "real.png" in missing
+    assert "error-template.png" not in missing
+    # One page scanned, not two: the 404 body is not a page of this site.
+    assert "in 1 page(s)" in missing
+
+
+# ── warnings known before the crawl starts ───────────────────────────────
+
+
+def test_a_never_indexed_site_is_reported_as_such(db: Session, settings: Settings) -> None:
+    """A site with no saved scope rules falls back to seed-host-only. That is
+    the right default and the wrong thing to do silently: the capture comes
+    back with the HTML and none of the images, and nothing says why."""
+    site = Site(
+        slug="blog",
+        title="Blog",
+        seed_url="https://blog.example.com/",
+        primary_host="blog.example.com",
+        folder_id=1,
+        archive_path="Unfiled/blog",
+    )
+    db.add(site)
+    db.flush()
+
+    assert sites.scope_is_unindexed(db, site)
+
+
+def test_pre_crawl_warnings_reach_the_gap_report(
+    db: Session, settings: Settings, tmp_path: Path
+) -> None:
+    """They are published to the live log as the crawl begins, but the log
+    scrolls away and the capture outlives it."""
+    ctx = run_chain(
+        db,
+        settings,
+        capture=Capture(status="ok", warc_files=[], started_at=utcnow()),
+        site=Site(seed_url="https://blog.example.com/", archive_path="Unfiled/blog"),
+        output_dir=tmp_path,
+        tool_version=None,
+        stats={},
+        scope={},
+        seeds=["https://blog.example.com/"],
+        warnings=["This site has never been indexed"],
+    )
+
+    assert any("never been indexed" in w for w in ctx.warnings)

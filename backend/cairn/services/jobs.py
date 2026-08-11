@@ -414,6 +414,15 @@ class JobSupervisor:
             config = engine.validate_config(dict(site.engine_config or {}))
 
             scope = sites.resolved_scope(session, site)
+            warnings: list[str] = []
+            if sites.scope_is_unindexed(session, site):
+                warnings.append(
+                    "This site has never been indexed, so the capture ran with the "
+                    "default scope: the seed host and nothing else. Everything the "
+                    "pages pull from elsewhere — images on a CDN, the theme's CSS "
+                    "and JS — was out of scope and is not in this archive. Press "
+                    "Index on the site, check the domain list, and capture again."
+                )
             # One source of truth at the boundary: the site's politeness wins
             # over the engine defaults, and the engine reads only `config`.
             for key in ("wait_s", "random_wait", "rate_limit"):
@@ -501,6 +510,7 @@ class JobSupervisor:
                 max_pages=scope.max_pages,
                 seeds=seeds,
                 seed_source=seed_source,
+                warnings=warnings,
             )
 
     async def _execute(self, running: RunningJob, prepared: _Prepared) -> None:
@@ -508,6 +518,8 @@ class JobSupervisor:
         self._bus.publish(
             job_id, EV_STATUS, {"status": "running", "capture_id": prepared.capture_id}
         )
+        for warning in prepared.warnings:
+            self._bus.publish(job_id, EV_LOG, {"level": "warning", "msg": warning})
 
         env = dict(os.environ)
         env.setdefault("PYTHONUNBUFFERED", "1")
@@ -635,6 +647,7 @@ class JobSupervisor:
                     scope=sites.resolved_scope(session, site).to_dict(),
                     seeds=prepared.seeds or [site.seed_url],
                     seed_source=prepared.seed_source,
+                    warnings=prepared.warnings,
                 )
             except Exception:
                 log.exception("post-processing failed", extra={"capture": capture.id})
@@ -687,6 +700,10 @@ class _Prepared:
     max_pages: int | None
     seeds: list[str] = field(default_factory=list)
     seed_source: dict[str, int] = field(default_factory=dict)
+    # Problems known before the engine starts. Shown in the live log as the
+    # crawl begins, and repeated in the capture's gap report so they survive
+    # past the moment the log scrolls away.
+    warnings: list[str] = field(default_factory=list)
 
 
 class _Collector:

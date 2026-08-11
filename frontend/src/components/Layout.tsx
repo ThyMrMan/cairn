@@ -2,6 +2,7 @@ import { NavLink, Outlet } from "react-router-dom";
 
 import { useAuth } from "../lib/auth";
 import { useTheme } from "../lib/theme";
+import { useVersion } from "../lib/version";
 import { Logo } from "./ui";
 
 const NAV = [
@@ -18,6 +19,7 @@ const NAV = [
 export default function Layout() {
   const { user, logout } = useAuth();
   const [theme, toggleTheme] = useTheme();
+  const version = useVersion();
 
   return (
     <div className="flex min-h-full">
@@ -70,6 +72,19 @@ export default function Layout() {
               Sign out
             </button>
           </div>
+          {/* Which build is running. The version alone never changes between
+              commits, so the build id after it is the part that answers
+              "is this the one I just deployed?". */}
+          <p
+            className="truncate px-1 font-mono text-[11px] leading-none text-muted opacity-70"
+            title={
+              version.data?.built_at
+                ? `built ${version.data.built_at}`
+                : "built from a source checkout"
+            }
+          >
+            {version.data ? `v${version.data.label}` : " "}
+          </p>
         </div>
       </aside>
 

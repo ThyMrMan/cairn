@@ -58,6 +58,12 @@ You can run the container, create an account, add a site, upload a `cookies.txt`
 
 Confirmed against a real Blogger blog behind an interstitial: the cookie bypass works and the archived pages contain the actual content.
 
+The running build is shown at the bottom of the sidebar and in **Settings → About**. The version on its own is not enough — it reads `0.1.0` on every commit — so the build id beside it is what answers "am I testing the update?". Images stamp themselves; pass the commit if you want it named:
+
+```bash
+docker build --build-arg CAIRN_BUILD=$(git rev-parse --short HEAD) -t cairn:local .
+```
+
 What is not there yet: browsing the archive in the UI (M3), and folders and tags (M4).
 
 ## Running it

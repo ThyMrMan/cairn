@@ -302,6 +302,8 @@ Failed requests are the one exception: a 404 writes no file, so it leaves no ded
 
   Confirmed on 1.25.0, in both `<style>` blocks and `src` attributes; an unescaped `url()` on the same page resolves correctly. Page content is unaffected — it costs a theme background. The `asset-audit` post-processor decodes the escapes, recovers the intended host, and reports it, because two 404s against your own domain with a percent-encoded backslash in them explain nothing on their own.
 
+  Every generated reject regex therefore also carries `%5[Cc]`, unconditionally. A percent-encoded backslash is never part of a real URL, so nothing legitimate is lost, and the requests are pure waste: one per page per variant. A live Blogger capture spent twelve requests and twelve WARC records on six theme-image URLs it could not have fetched by that path anyway — and the twelve archived 404 bodies then got counted as pages by the audit, which is how a capture of four pages reported "16 page(s)".
+
 - **Memory grows with crawl size.** wget keeps the visited-URL set and WARC dedup index in memory. A 100k-URL crawl can reach several GB. Cap `max_pages` for very large sites, or split into path-scoped captures.
 - **No JavaScript.** Lazy-loaded images (`data-src`) are missed. The engine should scan captured HTML for lazy-load attributes and emit a `warning` with a count — "312 images may be lazy-loaded and were not captured; consider the browser engine" — rather than leaving the user to discover the gaps during replay.
 - **No infinite scroll / dynamic pagination.**

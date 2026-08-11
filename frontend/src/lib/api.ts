@@ -117,6 +117,14 @@ export type Health = {
   disk_free_bytes: number | null;
 };
 
+/** `label` is what the UI shows: "0.1.0 (a9873aa)". */
+export type Version = {
+  version: string;
+  build: string;
+  built_at: string | null;
+  label: string;
+};
+
 export type SetupStatus = { setup_complete: boolean; password_min_length: number };
 
 export type LoginResponse = {
@@ -395,6 +403,7 @@ export const endpoints = {
   revokeOthers: () => api.del<{ ok: boolean }>("/auth/sessions"),
   audit: (page = 1) => api.get<Page<AuditEntry>>(`/audit?page=${page}`),
   storage: () => api.get<Storage>("/storage"),
+  version: () => api.get<Version>("/version"),
 
   // ── sites ──────────────────────────────────────────────────────────────
   sites: (params: Record<string, string | number | undefined> = {}) =>
