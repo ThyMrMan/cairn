@@ -138,6 +138,26 @@ It inherits none of the API's protections and needs replacements for both:
 
 `connect-src` names the socket's origin explicitly rather than relying on `'self'` to cover `ws:`. CSP3 says it does and current browsers agree, but the interactive pane is a canvas fed entirely by that socket — a browser that disagrees shows an empty box and explains itself only in the console, which is exactly how the replay tab failed in M3.
 
+### What interactive mode cannot do: sign in to Google
+
+Google refuses account sign-in from any browser it can tell is automated — the "this browser or app may not be secure" page. That is a deliberate anti-phishing measure on their side, aimed squarely at embedded and driven browsers, and it is maintained. **It is not a bug here and it is not worth trying to defeat**; anything that worked would be an arms race against a company that updates the detector, and the tool would break silently every time they did.
+
+Two automation signals were removed, because they were gratuitous rather than inherent:
+
+| Signal | Before | After |
+|---|---|---|
+| `navigator.webdriver` | `true` | `false` — Blink sets it from `--enable-automation`, which Playwright passes and this does not |
+| User agent | `HeadlessChrome/151…` | `Chrome/151…`, read from the running browser and rewritten rather than hard-coded |
+
+That helps with ordinary sites that treat a headless UA as a bot — where the thing being refused is a person at a keyboard whose window happens to be elsewhere. It does not help with Google, which looks at far more.
+
+**Use the right mode for the job:**
+
+- **A Blogger content warning needs no sign-in at all.** It is a button that sets a cookie. Interactive mode and a userscript both handle it, which is the case this feature was built for.
+- **Content behind an actual Google account** — a private blog, an invite-only site — needs `cookies` mode: sign in with your own browser, export a `cookies.txt`, upload it. The sign-in happened in a real browser, so there is nothing to detect. This is the mode that was proven against a real flagged blog in M1, and it remains the answer whenever a login is genuinely involved.
+
+Running headed under Xvfb was considered and rejected: it would remove the headless fingerprint natively, but the user agent override achieves the same visible result without adding an X server to the image, and neither approach changes the Google outcome.
+
 **Costs:** Chromium in the image. Budgeted here at ~500 MB; measured at **1.25 GB** — 389 MB of browser, 169 MB of software GL (libllvm and mesa), and ~85 MB of CJK and emoji fonts. The fonts stay: without them a Japanese blog is tofu boxes in both the mint screenshot and the interactive browser. Installing with `--no-shell` avoids a second 262 MB copy of Chromium that nothing uses, which does mean launching with `channel="chromium"` — the default headless mode runs that shell and fails outright without it.
 
 ---

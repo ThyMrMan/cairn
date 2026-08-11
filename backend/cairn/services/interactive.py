@@ -119,7 +119,9 @@ class SessionRegistry:
             launch = await browser.start()
             try:
                 context = await launch.browser.new_context(
-                    user_agent=user_agent or None,
+                    # Not "HeadlessChrome": there is a person driving this, and
+                    # sites that refuse a headless UA would be refusing them.
+                    user_agent=user_agent or await browser.presentable_user_agent(launch.browser),
                     viewport=browser.DEFAULT_VIEWPORT,
                     accept_downloads=False,
                     service_workers="block",

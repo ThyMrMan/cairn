@@ -213,6 +213,42 @@ async def test_a_launch_survives_an_unwritable_home() -> None:
             os.environ["HOME"] = original
 
 
+@needs_browser
+async def test_the_browser_does_not_announce_itself_as_automated() -> None:
+    """Two signals a driven browser gives away for no benefit to anyone here.
+
+    `navigator.webdriver` and a `HeadlessChrome` user agent are what make
+    sites refuse an interactive session — and the thing they are refusing is a
+    person at a keyboard whose window happens to be somewhere else.
+
+    This does not defeat a determined detector and is not trying to: Google's
+    sign-in check in particular is deliberate, maintained, and looks at far
+    more than this. It removes the gratuitous half.
+    """
+    async with browser.launched() as chromium, browser.context(chromium) as ctx:
+        page = await ctx.new_page()
+        await page.set_content("<h1>probe</h1>")
+
+        assert await page.evaluate("() => navigator.webdriver") is not True
+        agent = await page.evaluate("() => navigator.userAgent")
+        assert "Headless" not in agent, agent
+        assert "Chrome/" in agent
+
+
+@needs_browser
+async def test_the_profile_user_agent_still_wins() -> None:
+    """docs/06: some bypasses bind the cookie to the user agent, so a mint
+    that quietly used a different one produces a jar that fails in the crawl."""
+    async with (
+        browser.launched() as chromium,
+        browser.context(chromium, user_agent="Mozilla/5.0 (probe) Custom/1.0") as ctx,
+    ):
+        page = await ctx.new_page()
+        await page.set_content("<h1>probe</h1>")
+
+        assert await page.evaluate("() => navigator.userAgent") == "Mozilla/5.0 (probe) Custom/1.0"
+
+
 def test_only_a_sandbox_failure_disables_the_sandbox() -> None:
     """A blanket retry drops a security control for unrelated reasons — and
     did: an unwritable HOME was answered by disabling the sandbox and advising

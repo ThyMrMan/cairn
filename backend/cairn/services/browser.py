@@ -53,7 +53,17 @@ LAUNCH_ARGS = [
     # Docker default of 64 MB. The README tells people to pass --shm-size=2g;
     # this makes the tool work when they have not.
     "--disable-dev-shm-usage",
+    # Stops Blink setting `navigator.webdriver = true`. Together with dropping
+    # `--enable-automation` below, this removes the two signals a driven
+    # browser announces about itself for no benefit to anyone here — the
+    # person at the keyboard is a person, and a site refusing them because
+    # the window is remote is refusing the wrong thing.
+    "--disable-blink-features=AutomationControlled",
 ]
+
+# Playwright passes this to mark the browser as test-driven. It is what sets
+# `navigator.webdriver`, and it also puts an infobar on a headed window.
+SUPPRESSED_DEFAULT_ARGS = ["--enable-automation"]
 
 _sandbox_warning_given = False
 
@@ -180,7 +190,12 @@ def _environment(home: Path) -> dict[str, str]:
 async def _launch(playwright: Any, home: Path) -> Any:
     env = _environment(home)
     try:
-        return await playwright.chromium.launch(channel=CHANNEL, args=LAUNCH_ARGS, env=env)
+        return await playwright.chromium.launch(
+            channel=CHANNEL,
+            args=LAUNCH_ARGS,
+            env=env,
+            ignore_default_args=SUPPRESSED_DEFAULT_ARGS,
+        )
     except Exception as exc:
         # Only retry without the sandbox when the sandbox is what failed.
         # Blanket-retrying drops a security control for unrelated reasons —
@@ -194,7 +209,10 @@ async def _launch(playwright: Any, home: Path) -> Any:
         _warn_about_the_sandbox(exc)
         try:
             return await playwright.chromium.launch(
-                channel=CHANNEL, args=[*LAUNCH_ARGS, "--no-sandbox"], env=env
+                channel=CHANNEL,
+                args=[*LAUNCH_ARGS, "--no-sandbox"],
+                env=env,
+                ignore_default_args=SUPPRESSED_DEFAULT_ARGS,
             )
         except Exception as fallback:
             raise BrowserUnavailableError(
@@ -237,6 +255,31 @@ def _warn_about_the_sandbox(exc: Exception) -> None:
     )
 
 
+async def presentable_user_agent(browser: Any) -> str | None:
+    """The browser's own user agent, minus the word `Headless`.
+
+    Headless Chromium announces itself as `HeadlessChrome/151.0.0.0`, and
+    plenty of sites treat that as a bot regardless of who is driving. There is
+    a person at the keyboard here, so saying `Chrome` is the accurate
+    description of what is rendering the page — it is the same browser, the
+    same engine and the same version, just not advertising that its window is
+    somewhere else.
+
+    Read from the running browser rather than written down, because a
+    hard-coded string is wrong the day Chromium updates and nothing notices.
+    """
+    try:
+        session = await browser.new_browser_cdp_session()
+        version = await session.send("Browser.getVersion")
+        await session.detach()
+    except Exception:  # pragma: no cover — CDP unavailable
+        return None
+    agent = str(version.get("userAgent") or "")
+    if not agent:
+        return None
+    return agent.replace("HeadlessChrome/", "Chrome/")
+
+
 @asynccontextmanager
 async def context(
     browser: Any,
@@ -250,9 +293,13 @@ async def context(
     A context rather than reusing one: cookies must not leak between two
     profiles minted in the same process, and a context is the isolation
     boundary Playwright actually gives you.
+
+    The profile's own user agent wins when it has one — docs/06 is explicit
+    that some bypasses bind the cookie to it, so a mint that quietly used a
+    different one would produce a jar that fails in the crawl.
     """
     created = await browser.new_context(
-        user_agent=user_agent or None,
+        user_agent=user_agent or await presentable_user_agent(browser),
         viewport=viewport or DEFAULT_VIEWPORT,
         storage_state=storage_state,
         # A userscript that triggers a download would otherwise write into the

@@ -173,6 +173,14 @@ export function InteractiveBrowser({
         Click into the picture to give it your keyboard. Sign in or click through the warning
         as you normally would, then press Save below — nothing is stored until you do.
       </p>
+      <Alert kind="info">
+        <strong>Signing in with Google will not work here.</strong> Google refuses account
+        sign-in from any browser it can tell is being driven remotely — that is deliberate, on
+        their side, and not something this tool can talk its way around. A Blogger content
+        warning needs no sign-in and works fine. For anything that genuinely needs a Google
+        account, sign in with your own browser, export a <code>cookies.txt</code>, and upload
+        it to a profile instead.
+      </Alert>
       <p className="truncate font-mono text-[11px] text-muted">{url}</p>
 
       <div className="flex flex-wrap gap-2">
