@@ -336,20 +336,30 @@ def test_rebuild_recreates_links_rather_than_trusting_the_text(
     made the mistyped-link bug unfixable — nothing on this side can see the
     type, so the only reliable repair is to make it again.
     """
-    if os.name == "nt":
-        pytest.skip("symlinks need elevation on Windows")
-
     site = make_site(db, settings, seeded, "example.com")
     site_service.set_tags(db, site, ["travel"])
     symlinks.rebuild(db, settings)
 
-    link = settings.by_tag_dir / "travel" / "example-com"
-    before = link.lstat().st_ino
-    symlinks.rebuild(db, settings)
+    # Counting the syscall, not comparing inodes: a filesystem is free to hand
+    # the same inode number back after an unlink, and overlayfs does — so the
+    # first version of this test passed on Windows and failed in the container
+    # while the code did exactly the same thing in both.
+    calls: list[object] = []
+    real = os.symlink
 
-    assert link.lstat().st_ino != before, "the link was left in place instead of remade"
-    assert link.is_symlink()
-    assert (link / "site.yaml").is_file()
+    def spy(src: str, dst: object, **kwargs: object) -> None:
+        calls.append(dst)
+        real(src, dst, **kwargs)  # type: ignore[arg-type]
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(os, "symlink", spy)
+        symlinks.rebuild(db, settings)
+
+    assert calls, "the link was left in place instead of remade"
+    link = settings.by_tag_dir / "travel" / "example-com"
+    if os.name != "nt":  # elsewhere the link never got written at all
+        assert link.is_symlink()
+        assert (link / "site.yaml").is_file()
 
 
 def test_a_hand_made_directory_under_by_tag_is_never_deleted(
