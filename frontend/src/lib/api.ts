@@ -386,6 +386,10 @@ export type Profile = {
   sensitive: string[];
   warnings: string[];
   has_material: boolean;
+  has_cookies: boolean;
+  has_script: boolean;
+  has_storage: boolean;
+  script: ParsedScript | null;
   minted_at: string | null;
   expires_at: string | null;
   fingerprint: string | null;
@@ -409,6 +413,47 @@ export type CookieReport = {
 };
 
 export type Coverage = { covered: Record<string, boolean>; warnings: string[] };
+
+export type ParsedScript = {
+  name: string | null;
+  version: string | null;
+  description: string | null;
+  run_at: string;
+  matches: string[];
+  includes: string[];
+  excludes: string[];
+  grants: string[];
+  requires: string[];
+  resources: string[];
+  warnings: string[];
+};
+
+export type MintResult = {
+  ok: boolean;
+  reason: string;
+  final_url: string;
+  cookie_count: number;
+  hosts: string[];
+  console: string[];
+  warnings: string[];
+  has_screenshot: boolean;
+};
+
+export type VerifyResult = {
+  ok: boolean;
+  reason: string;
+  status: number;
+  final_url?: string;
+  bytes?: number;
+};
+
+export type InteractiveSession = {
+  session_id: string;
+  profile_id: number;
+  url: string;
+  width: number;
+  height: number;
+};
 
 export type Engine = {
   id: string;
@@ -624,14 +669,37 @@ export const endpoints = {
 
   // ── profiles ───────────────────────────────────────────────────────────
   profiles: () => api.get<Profile[]>("/profiles"),
-  createProfile: (body: { name: string; mode?: string; user_agent?: string; notes?: string }) =>
-    api.post<Profile>("/profiles", body),
+  createProfile: (body: {
+    name: string;
+    mode?: string;
+    verify_url?: string;
+    user_agent?: string;
+    notes?: string;
+  }) => api.post<Profile>("/profiles", body),
   updateProfile: (id: number, body: Record<string, unknown>) =>
     api.patch<Profile>(`/profiles/${id}`, body),
   deleteProfile: (id: number) => api.del<{ ok: boolean }>(`/profiles/${id}`),
   uploadCookies: (id: number, file: File) =>
     api.upload<CookieReport>(`/profiles/${id}/cookies`, file),
+  uploadScript: (id: number, file: File) =>
+    api.upload<{ script: ParsedScript; profile: Profile }>(`/profiles/${id}/script`, file),
+  mintProfile: (id: number) =>
+    api.post<{ result: MintResult; profile: Profile }>(`/profiles/${id}/mint`),
+  verifyProfile: (id: number) => api.post<VerifyResult>(`/profiles/${id}/verify`),
   clearMaterial: (id: number) => api.del<{ ok: boolean }>(`/profiles/${id}/material`),
+
+  // ── interactive ────────────────────────────────────────────────────────
+  startInteractive: (id: number, url?: string) =>
+    api.post<InteractiveSession>(`/profiles/${id}/interactive`, { url: url || null }),
+  saveInteractive: (id: number) =>
+    api.post<{ cookie_count: number; hosts_covered: string[]; warnings: string[] }>(
+      `/profiles/${id}/interactive/save`,
+    ),
+  stopInteractive: (id: number) => api.del<{ ok: boolean }>(`/profiles/${id}/interactive`),
+  interactiveSocketUrl: (id: number, sessionId: string) => {
+    const scheme = window.location.protocol === "https:" ? "wss" : "ws";
+    return `${scheme}://${window.location.host}/api/profiles/${id}/interactive/ws?session_id=${sessionId}`;
+  },
   coverage: (id: number, siteId: number) =>
     api.get<Coverage>(`/profiles/${id}/coverage?site_id=${siteId}`),
 

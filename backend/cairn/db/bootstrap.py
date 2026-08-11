@@ -38,6 +38,10 @@ DEFAULT_SETTINGS: dict[str, object] = {
     "crawl.obey_robots": True,
     "crawl.user_agent": "Mozilla/5.0 (compatible; Cairn/1.0; +https://github.com/you/cairn)",
     "storage.trash_retention_days": 30,
+    # How old a minted jar may be before a capture re-mints it first. Only
+    # userscript profiles can be re-minted unattended — they are the only mode
+    # that still holds the thing that does the minting (docs/06).
+    "profiles.mint_ttl_days": 7,
     "storage.free_space_floor_bytes": 10 * 1024**3,
     "jobs.per_host_serial": True,
     "jobs.quiet_hours": {"enabled": False, "start": "01:00", "end": "07:00"},

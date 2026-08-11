@@ -96,21 +96,49 @@ sequenceDiagram
 
 ### Re-minting
 
-Minted jars expire. Re-mint when: the earliest cookie expiry is within 24 h, a capture emits `interstitial_detected`, a scheduled capture is about to start and the jar is older than `mint_ttl` (default 7 days), or the user clicks **Re-mint now**.
+Minted jars expire. Re-mint when the earliest cookie expiry is within 24 h, when the jar is older than `profiles.mint_ttl_days` (default 7), when there is no jar yet, or when the user clicks **Run the script now**. All of it happens **before** the capture starts.
 
-The `interstitial_detected` path is the important one. The engine watches for content-warning markers in fetched HTML and emits a warning; the supervisor pauses the job, re-mints, and resumes with the fresh jar. Without this, a cookie that expires two hours into a six-hour crawl produces 4,000 archived copies of the interstitial page and no error — which is exactly the kind of failure you don't discover until you try to read the archive.
+**The pause-and-resume design in earlier drafts of this document cannot be built.** It said: the engine emits `interstitial_detected`, the supervisor pauses the job, re-mints, and resumes with the fresh jar. wget reads `--load-cookies` once at startup and holds the jar in memory — there is no way to hand a running crawl a new one, and overwriting the file it was given changes nothing. Nothing about that is a limitation of the supervisor; it is what the flag means.
+
+What replaces it is two checks either side of the crawl, which between them cover the same failure:
+
+- **Before.** A jar that is expiring, stale, or missing is re-minted while re-minting is still free. That covers the case pause-and-resume was aimed at — a cookie that would have died two hours into a six-hour capture. A failed re-mint is a warning, not a refusal: the existing jar may still work, and blocking the capture would turn a possible problem into a certain one.
+- **After.** The capture's own gap report counts how many archived pages look like a content warning rather than content, in the same WARC pass the asset audit already makes. If any do, it says so and the capture is downgraded from `ok` to `partial` — because a capture that reports success while containing 4,000 copies of an interstitial is precisely the failure this whole feature exists to prevent, and it must not be silent.
+
+Only a **userscript** profile can be re-minted unattended. It is the only mode that still holds the thing that does the minting: a `cookies` profile has no way to produce a new jar, and an `interactive` one needs a person.
 
 ---
 
-## Mode 3 — `interactive` (M5)
+## Mode 3 — `interactive`
 
 The strongest option, borrowed from Browsertrix's browser-profile workflow, which the original evaluation correctly identified as the most robust answer to the bypass problem.
 
-Click **Create interactive profile** → a Chromium session starts in the container → you interact with it through an embedded noVNC/CDP view → you click through the interstitial or log in normally → click **Save profile** → cookies, localStorage, and sessionStorage are captured as a reusable profile.
+Click **Open a browser and sign in** → a Chromium session starts in the container → you drive it from the page you already have open → you click through the interstitial or log in normally → click **Save this session as the profile** → cookies and localStorage are captured as a reusable profile.
 
-**Why it beats both other modes:** it handles arbitrary login flows, multi-step consent, and anything requiring a human decision, with no script to write and no export extension to install. It's also the natural input for `browsertrix-crawler --profile` when that engine lands, so the same profile serves both the wget path (via exported cookies) and the browser path (via a full profile tarball).
+**Why it beats both other modes:** it handles arbitrary login flows, multi-step consent, and anything requiring a human decision, with no script to write and no export extension to install. It's also the natural input for `browsertrix-crawler --profile` when that engine lands, so the same profile serves both the wget path (via exported cookies) and the browser path (via the stored `storage_state`).
 
-**Costs:** Chromium in the image (~500 MB), a noVNC/websocket path through the app, and a genuinely interactive UI surface. That's why it's M5 and not M1.
+### A CDP screencast, not noVNC
+
+This document specified noVNC, which means Xvfb, a VNC server, websockify, and an X stack in the image. **None of that is needed.** Chromium streams the page itself over the DevTools protocol: `Page.startScreencast` emits JPEG frames, `Input.dispatchMouseEvent` and `Input.insertText` send events back, and it all works headless.
+
+Measured at 1280×800, quality 60: **~8 KB a frame, ~75 KB/s** while something is actually moving. The app proxies it over one WebSocket — frames out as binary, input in as JSON.
+
+Three things about that API are worth knowing, because each one produces a convincing-looking failure:
+
+- **Frames are only emitted on visual change.** A settled page streams nothing at all, which is indistinguishable from a dead socket. The first attempt at this saw zero frames and nearly concluded screencast was unusable; the fix is that the server sends an explicit `idle` message and forces a frame when a client attaches.
+- **Every frame must be acknowledged.** Without `Page.screencastFrameAck`, Chromium sends one frame and waits forever.
+- **Typing goes through `Input.insertText`, not synthesised key events.** Getting the virtual key codes subtly wrong produces an empty password field with no error anywhere. Only keys that carry no text — Enter, Tab, the arrows — are dispatched as key events, from an explicit list.
+
+### The WebSocket is its own security boundary
+
+It inherits none of the API's protections and needs replacements for both:
+
+- **The same-origin policy does not apply to WebSockets.** Any page on the internet can open one to `ws://your-nas:8080/…` and the browser will attach your session cookie. The handshake therefore checks `Origin` itself and refuses anything that is not this instance. What a hijacked socket would get is a live, driveable browser looking at whatever you are signed into — this is not a defacement-grade risk.
+- **The CSRF header check cannot apply either**, since a handshake carries no custom headers. The origin check is what stands in for it.
+
+`connect-src` names the socket's origin explicitly rather than relying on `'self'` to cover `ws:`. CSP3 says it does and current browsers agree, but the interactive pane is a canvas fed entirely by that socket — a browser that disagrees shows an empty box and explains itself only in the console, which is exactly how the replay tab failed in M3.
+
+**Costs:** Chromium in the image. Budgeted here at ~500 MB; measured at **1.25 GB** — 389 MB of browser, 169 MB of software GL (libllvm and mesa), and ~85 MB of CJK and emoji fonts. The fonts stay: without them a Japanese blog is tofu boxes in both the mint screenshot and the interactive browser. Installing with `--no-shell` avoids a second 262 MB copy of Chromium that nothing uses, which does mean launching with `channel="chromium"` — the default headless mode runs that shell and fails outright without it.
 
 ---
 

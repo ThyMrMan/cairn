@@ -177,11 +177,21 @@ A stalled reader must never apply backpressure to a crawl, so each subscriber ha
 | `PUT` | `/api/profiles/{id}/cookies` | `multipart` upload of `cookies.txt`; write-only. Returns the parse report |
 | `PUT` | `/api/profiles/{id}/script` | Upload `.user.js`; write-only. Returns parsed metadata + shim warnings |
 | `DELETE` | `/api/profiles/{id}/material` | Clear stored secrets |
-| `POST` | `/api/profiles/{id}/mint` | Run the headless mint → `202 {job_id}` |
-| `POST` | `/api/profiles/{id}/verify` | Fetch `verify_url` with the jar → `{ok, final_url, interstitial_detected, screenshot_url?}` |
+| `POST` | `/api/profiles/{id}/mint` | Run the script in a browser → `{result, profile}` |
+| `POST` | `/api/profiles/{id}/verify` | Fetch `verify_url` with the jar → `{ok, reason, status, final_url}` |
 | `GET` | `/api/profiles/{id}/coverage?site_id=N` | Which of a site's scope hosts the jar covers |
-| `POST` | `/api/profiles/interactive` | Start an interactive browser session (M5) → `{session_id, vnc_url}` |
-| `POST` | `/api/profiles/interactive/{sid}/save` | Persist the session as a profile |
+| `POST` | `/api/profiles/{id}/interactive` | Start a live browser session → `{session_id, url, width, height}` |
+| `WS` | `/api/profiles/{id}/interactive/ws?session_id=` | JPEG frames out, mouse and keyboard in |
+| `POST` | `/api/profiles/{id}/interactive/save` | Seal what the session collected |
+| `DELETE` | `/api/profiles/{id}/interactive` | Close it without saving |
+
+`/mint` and `/verify` are synchronous rather than the `202 {job_id}` this table originally specified. Both are a single page load with a hard ceiling, and the person who pressed the button is waiting to find out whether their script worked — watching a job row for something that takes five seconds is worse in every way.
+
+`/verify` deliberately uses plain HTTP rather than the browser. The question it answers is whether *wget* will get real content, and a browser would answer a different one: it runs the site's JavaScript and can talk its way past a gate that wget then cannot, which is the exact failure the check exists to catch.
+
+The interactive session is a **CDP screencast over a WebSocket**, not the `vnc_url` this table used to name — see [06](06-access-profiles.md#a-cdp-screencast-not-novnc) for why the whole VNC stack turned out to be unnecessary.
+
+**That socket carries its own protections, because it inherits none of the API's.** The same-origin policy does not apply to WebSockets and a handshake carries no CSRF header, so any page could otherwise open a socket to a LAN address, have the browser attach the session cookie, and receive a driveable browser looking at whatever the user is signed into. `Origin` is checked during the handshake, and `connect-src` names the socket's origin explicitly rather than relying on `'self'` to cover `ws:`.
 
 ---
 

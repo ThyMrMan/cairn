@@ -1,8 +1,17 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRef, useState } from "react";
 
+import { InteractiveBrowser } from "../components/InteractiveBrowser";
 import { Alert, EmptyState, Field, Spinner } from "../components/ui";
-import { ApiError, type CookieReport, type Profile, endpoints } from "../lib/api";
+import {
+  ApiError,
+  type CookieReport,
+  type InteractiveSession,
+  type MintResult,
+  type Profile,
+  type VerifyResult,
+  endpoints,
+} from "../lib/api";
 import { dateTime, relative } from "../lib/format";
 
 export default function Profiles() {
@@ -53,12 +62,15 @@ function NewProfile({ onDone }: { onDone: () => void }) {
   const client = useQueryClient();
   const [name, setName] = useState("");
   const [userAgent, setUserAgent] = useState("");
+  const [mode, setMode] = useState("cookies");
+  const [verifyUrl, setVerifyUrl] = useState("");
 
   const create = useMutation({
     mutationFn: () =>
       endpoints.createProfile({
         name,
-        mode: "cookies",
+        mode,
+        verify_url: verifyUrl || undefined,
         user_agent: userAgent || undefined,
       }),
     onSuccess: async () => {
@@ -88,6 +100,41 @@ function NewProfile({ onDone }: { onDone: () => void }) {
         />
       </Field>
       <Field
+        label="How the cookies are obtained"
+        htmlFor="mode"
+        hint="Every mode ends in a cookie jar — this is only about where it comes from. The
+              crawler never runs JavaScript, so a userscript runs once here instead."
+      >
+        <select
+          id="mode"
+          className="field"
+          value={mode}
+          onChange={(event) => setMode(event.target.value)}
+        >
+          <option value="cookies">Upload a cookies.txt I exported</option>
+          <option value="userscript">Run a Tampermonkey userscript</option>
+          <option value="interactive">Open a browser and let me sign in</option>
+        </select>
+      </Field>
+      <Field
+        label="Verify URL"
+        htmlFor="verify"
+        hint={
+          mode === "cookies"
+            ? "Optional. A page behind the gate, used by the Test button."
+            : "A page behind the gate. The script runs against this, and Test checks it."
+        }
+      >
+        <input
+          id="verify"
+          className="field"
+          placeholder="https://example.blogspot.com/"
+          value={verifyUrl}
+          onChange={(event) => setVerifyUrl(event.target.value)}
+          required={mode !== "cookies"}
+        />
+      </Field>
+      <Field
         label="User agent"
         htmlFor="ua"
         hint="Optional. Match the browser you exported the cookies from — some bypasses bind the cookie to it."
@@ -110,19 +157,59 @@ function NewProfile({ onDone }: { onDone: () => void }) {
 function ProfileCard({ profile }: { profile: Profile }) {
   const client = useQueryClient();
   const fileRef = useRef<HTMLInputElement>(null);
+  const scriptRef = useRef<HTMLInputElement>(null);
   const [report, setReport] = useState<CookieReport | null>(null);
+  const [mintResult, setMintResult] = useState<MintResult | null>(null);
+  const [verifyResult, setVerifyResult] = useState<VerifyResult | null>(null);
+  const [session, setSession] = useState<InteractiveSession | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  const refresh = () => client.invalidateQueries({ queryKey: ["profiles"] });
 
   const upload = useMutation({
     mutationFn: (file: File) => endpoints.uploadCookies(profile.id, file),
     onSuccess: async (result) => {
       setReport(result);
-      await client.invalidateQueries({ queryKey: ["profiles"] });
+      await refresh();
     },
     onError: (error) => {
       // The parse report is the useful part of a rejection: it names the line.
       const detail = (error as ApiError).detail as CookieReport | undefined;
       if (detail?.errors) setReport(detail);
     },
+  });
+
+  const uploadScript = useMutation({
+    mutationFn: (file: File) => endpoints.uploadScript(profile.id, file),
+    onSuccess: refresh,
+  });
+
+  const mint = useMutation({
+    mutationFn: () => endpoints.mintProfile(profile.id),
+    onSuccess: async (result) => {
+      setMintResult(result.result);
+      setActionError(null);
+      await refresh();
+    },
+    onError: (error) => setActionError((error as ApiError).message),
+  });
+
+  const verify = useMutation({
+    mutationFn: () => endpoints.verifyProfile(profile.id),
+    onSuccess: (result) => {
+      setVerifyResult(result);
+      setActionError(null);
+    },
+    onError: (error) => setActionError((error as ApiError).message),
+  });
+
+  const startSession = useMutation({
+    mutationFn: () => endpoints.startInteractive(profile.id),
+    onSuccess: (started) => {
+      setSession(started);
+      setActionError(null);
+    },
+    onError: (error) => setActionError((error as ApiError).message),
   });
 
   const clear = useMutation({
@@ -173,7 +260,22 @@ function ProfileCard({ profile }: { profile: Profile }) {
           />
           <button className="btn-ghost" onClick={() => fileRef.current?.click()}>
             {upload.isPending && <Spinner />}
-            {profile.has_material ? "Replace cookies" : "Upload cookies.txt"}
+            {profile.has_cookies ? "Replace cookies" : "Upload cookies.txt"}
+          </button>
+          <input
+            ref={scriptRef}
+            type="file"
+            accept=".js,.user.js,text/javascript"
+            className="hidden"
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              if (file) uploadScript.mutate(file);
+              event.target.value = "";
+            }}
+          />
+          <button className="btn-ghost" onClick={() => scriptRef.current?.click()}>
+            {uploadScript.isPending && <Spinner />}
+            {profile.has_script ? "Replace script" : "Upload userscript"}
           </button>
           {profile.has_material && (
             <button className="btn-ghost" onClick={() => clear.mutate()}>
@@ -228,6 +330,84 @@ function ProfileCard({ profile }: { profile: Profile }) {
             ))}
           </ul>
         </Alert>
+      )}
+
+      {actionError && <Alert kind="error">{actionError}</Alert>}
+
+      {profile.script && (
+        <div className="rounded-md border border-border p-3 text-xs">
+          <p className="font-medium">
+            {profile.script.name ?? "Userscript"}
+            {profile.script.version && (
+              <span className="ml-1 text-muted">v{profile.script.version}</span>
+            )}
+            <span className="ml-2 text-muted">runs at {profile.script.run_at}</span>
+          </p>
+          {profile.script.matches.length > 0 && (
+            <p className="mt-1 font-mono text-muted">{profile.script.matches.join("  ")}</p>
+          )}
+          {profile.script.warnings.length > 0 && (
+            <ul className="mt-2 list-disc space-y-1 pl-5 text-warn">
+              {profile.script.warnings.map((warning) => (
+                <li key={warning}>{warning}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+
+      {/* The actions that need a browser, and the one that does not. */}
+      <div className="flex flex-wrap gap-2">
+        {profile.has_script && (
+          <button className="btn-ghost" onClick={() => mint.mutate()} disabled={mint.isPending}>
+            {mint.isPending && <Spinner />}
+            Run the script now
+          </button>
+        )}
+        {profile.has_cookies && profile.verify_url && (
+          <button className="btn-ghost" onClick={() => verify.mutate()} disabled={verify.isPending}>
+            {verify.isPending && <Spinner />}
+            Test against {new URL(profile.verify_url).hostname}
+          </button>
+        )}
+        {!session && (
+          <button
+            className="btn-ghost"
+            onClick={() => startSession.mutate()}
+            disabled={startSession.isPending}
+          >
+            {startSession.isPending && <Spinner />}
+            Open a browser and sign in
+          </button>
+        )}
+      </div>
+
+      {mintResult && (
+        <Alert kind={mintResult.ok ? "ok" : "error"} title={mintResult.ok ? "Minted" : "No jar"}>
+          <p>{mintResult.reason}</p>
+          {mintResult.console.length > 0 && (
+            <pre className="mt-2 max-h-32 overflow-auto rounded bg-raised p-2 font-mono text-[11px]">
+              {mintResult.console.join("\n")}
+            </pre>
+          )}
+        </Alert>
+      )}
+
+      {verifyResult && (
+        <Alert kind={verifyResult.ok ? "ok" : "warn"}>
+          {verifyResult.ok ? "Real content: " : "Still gated: "}
+          {verifyResult.reason}
+        </Alert>
+      )}
+
+      {session && (
+        <InteractiveBrowser
+          session={session}
+          onClosed={() => {
+            setSession(null);
+            void refresh();
+          }}
+        />
       )}
 
       {profile.fingerprint && (

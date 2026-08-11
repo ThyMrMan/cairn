@@ -103,7 +103,22 @@ For users fronting the app with Authelia, Authentik, or Cloudflare Access, `CAIR
 
 Two places accept executable input:
 
-**Userscripts** run in headless Chromium against the target site. This is intended behavior, but the script is running inside your container. Mitigations: no `--no-sandbox` (keep Chromium's sandbox on), a hard timeout, network access permitted only to the profile's declared hosts via request interception, no filesystem access, no downloads, and a dedicated low-privilege user for the browser process.
+**Userscripts** run in headless Chromium against the target site. This is intended behavior, but the script is running inside your container. Mitigations: no `--no-sandbox` (keep Chromium's sandbox on), a hard timeout, no filesystem access, no downloads, no service workers, and a dedicated low-privilege user for the browser process.
+
+**As built:** the sandbox requirement turned out to be satisfiable rather than aspirational, and it is verified rather than assumed — the image build launches Chromium as a non-root user with the sandbox on and fails the build if it cannot. At runtime the launcher retries without it and logs a prominent warning, because a host that denies unprivileged user namespaces should degrade loudly rather than silently.
+
+One mitigation in the original list was dropped: **network access is not restricted to the profile's declared hosts.** An interstitial bypass routinely redirects through a login domain, a consent domain and a CDN, none of which the person filling in the form can be expected to enumerate first — so request interception would break the normal case to constrain a script the user chose to install. The containment that matters is the browser sandbox and the fact that nothing it fetches is written anywhere but a cookie jar.
+
+### An archive contains the credential that fetched it
+
+A WARC records the **request** as well as the response, and the request carries the `Cookie:` header wget sent. So a capture of a gated site contains the jar that opened the gate, and it travels with any copy, backup or WACZ export of that file.
+
+There is no flag to suppress it, and rewriting finished WARCs to redact would invalidate the checksums the integrity job depends on. So it is handled by saying so:
+
+- A capture whose profile carries **account session cookies** — Google's `SID`, `__Secure-*` and friends, which the cookie parser already recognises — emits a warning before the crawl starts, naming them.
+- The profile upload already warns when a whole-browser export includes a full account session, and recommends a narrower one.
+
+The practical advice is unchanged and now enforced by a visible warning: use a jar containing only what the gate needs. A consent cookie inside an archive is uninteresting; a login session inside a file you might share is not.
 
 **Engine addons** are arbitrary executables by definition. There's no meaningful sandbox for "run this program to crawl a website," so be honest: engine installation is a trust decision equivalent to installing a package. Show a clear confirmation on install, keep the Docker-socket runtime **off by default** (socket access is root on the host), and never auto-install engines from a remote registry.
 

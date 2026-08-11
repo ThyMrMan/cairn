@@ -32,7 +32,7 @@ from cairn.config import Settings
 from cairn.db.models import Capture, CaptureUrl, Site
 from cairn.db.types import utcnow
 from cairn.logging import get_logger
-from cairn.services import htmlrefs, replay, storage
+from cairn.services import htmlrefs, interstitial, replay, storage
 from cairn.services.scope import Scope, ScopeError, build_reject_patterns
 
 log = get_logger(__name__)
@@ -219,6 +219,7 @@ def step_asset_audit(ctx: Context) -> None:
     referenced: set[str] = set()
     lazy_hits = 0
     scanned = 0
+    blocked = 0
     for warc in warcs:
         try:
             with open(warc, "rb") as fh:
@@ -243,6 +244,10 @@ def step_asset_audit(ctx: Context) -> None:
                     lazy_hits += sum(body.count(attr) for attr in LAZY_ATTRIBUTES)
                     base = record.rec_headers.get_header("WARC-Target-URI") or ""
                     referenced |= _referenced_assets(body, base)
+                    # Counted in the pass that is already reading every page,
+                    # rather than a second walk over gigabytes of WARC.
+                    if interstitial.looks_blocked(body, base).blocked:
+                        blocked += 1
         except Exception as exc:
             # An unreadable or truncated WARC downgrades the audit to a
             # warning; it must never turn a completed capture into a failure.
@@ -283,6 +288,26 @@ def step_asset_audit(ctx: Context) -> None:
             "The page text is unaffected; the asset itself is not in this archive."
         )
 
+    if blocked:
+        share = blocked / scanned if scanned else 0
+        ctx.warnings.append(
+            f"{blocked} of {scanned} archived page(s) look like a content warning rather than "
+            "content. The access profile's cookies were not accepted"
+            + (
+                " for any of this capture — check the profile covers this host, then run it again."
+                if share > 0.8
+                else " for part of this capture, most likely because they expired partway "
+                "through. Re-mint or re-export the profile and capture again."
+            )
+        )
+        if capture_is_ok(ctx):
+            # Not "ok": the pages are there and they are the wrong pages. A
+            # capture that reports success and contains four thousand copies
+            # of an interstitial is the failure this whole feature exists to
+            # prevent, and it must not be silent.
+            ctx.capture.status = "partial"
+
+    ctx.stats["interstitial_pages"] = blocked
     ctx.stats["referenced_assets"] = len(referenced)
     # `missing_assets` counts only what the scope permitted and the crawl
     # still did not get. That is the number worth acting on; the deliberate
@@ -301,6 +326,10 @@ _unescape_css = htmlrefs.unescape_css
 
 def _is_success(status: str | None) -> bool:
     return bool(status) and str(status).startswith("2")
+
+
+def capture_is_ok(ctx: Context) -> bool:
+    return ctx.capture.status == "ok"
 
 
 def _partition_missing(ctx: Context, missing: list[str]) -> tuple[list[str], list[str]]:

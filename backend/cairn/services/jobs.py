@@ -275,6 +275,8 @@ class JobSupervisor:
             if job_type == "move":
                 await self._run_move(running)
                 return
+            # Before the capture, never during it: see _refresh_stale_profile.
+            await self._refresh_stale_profile(job_id)
             prepared = await asyncio.to_thread(self._prepare, job_id, temp_dir)
             running.capture_id = prepared.capture_id
             await self._execute(running, prepared)
@@ -399,6 +401,130 @@ class JobSupervisor:
             }
             if status != "ok":
                 job.error = "; ".join(result.errors[:3]) or "discovery found nothing"
+            session.commit()
+
+    # ── keeping a profile fresh ──────────────────────────────────────────
+
+    async def _refresh_stale_profile(self, job_id: int) -> None:
+        """Re-mint an aging jar before the crawl, not during it.
+
+        docs/06 describes the supervisor pausing a running capture on
+        `interstitial_detected`, re-minting, and resuming with the fresh jar.
+        **wget cannot do that.** It reads `--load-cookies` once at startup and
+        holds the jar in memory; there is no path to hand a running crawl a
+        new one, and writing over the file it was given changes nothing.
+
+        So the check moves to the only place it can do any good: before the
+        job starts. A cookie that would have expired two hours into a six-hour
+        crawl is re-minted while re-minting is still free, which covers the
+        case the pause-and-resume design was aiming at. What is left over —
+        a jar that dies mid-crawl anyway — is detected afterwards by the
+        capture's own gap report, because by then the only honest thing to do
+        is say so rather than pretend the archive is complete.
+        """
+        plan = await asyncio.to_thread(self._mint_plan, job_id)
+        if plan is None:
+            return
+
+        self._bus.publish(
+            job_id,
+            EV_LOG,
+            {"level": "info", "msg": f"Re-minting the access profile first: {plan['why']}"},
+        )
+        try:
+            from cairn.services import mint as mint_service
+
+            result = await mint_service.mint(
+                script_text=plan["script"],
+                verify_url=plan["verify_url"],
+                user_agent=plan["user_agent"],
+            )
+        except Exception as exc:
+            # Never fatal. The jar may still work, and refusing to start the
+            # capture would turn a possible problem into a certain one.
+            self._bus.publish(
+                job_id,
+                EV_LOG,
+                {
+                    "level": "warning",
+                    "msg": f"Could not re-mint the profile: {str(exc).splitlines()[0][:200]}",
+                },
+            )
+            return
+
+        await asyncio.to_thread(self._store_mint, plan["profile_id"], result)
+        self._bus.publish(
+            job_id,
+            EV_LOG,
+            {
+                "level": "info" if result.ok else "warning",
+                "msg": (
+                    f"Profile re-minted: {result.reason}"
+                    if result.ok
+                    else f"Re-mint failed, continuing with the jar we have: {result.reason}"
+                ),
+            },
+        )
+
+    def _mint_plan(self, job_id: int) -> dict[str, Any] | None:
+        """Whether this job's profile needs re-minting, and what it would take."""
+        from datetime import timedelta
+
+        from cairn.db.models import AccessProfile
+        from cairn.services import profiles as profile_service
+        from cairn.services import settings_store
+
+        with self._sessions() as session:
+            job = session.get(Job, job_id)
+            if job is None or job.site_id is None:
+                return None
+            site = session.get(Site, job.site_id)
+            if site is None or site.profile_id is None:
+                return None
+            profile = session.get(AccessProfile, site.profile_id)
+            # Only a userscript profile can be re-minted unattended: it is the
+            # only mode that still holds the thing that does the minting.
+            if profile is None or profile.mode != "userscript" or not profile.verify_url:
+                return None
+
+            script = profile_service.load_script(self._sealer, profile)
+            if script is None:
+                return None
+
+            now = utcnow()
+            ttl_days = settings_store.get_int(session, "profiles.mint_ttl_days", 7)
+            why: str | None = None
+            if profile.cookies_enc is None:
+                why = "there is no jar yet"
+            elif profile.expires_at is not None and profile.expires_at <= now + timedelta(hours=24):
+                why = "the earliest cookie expires within a day"
+            elif profile.minted_at is None or profile.minted_at <= now - timedelta(days=ttl_days):
+                why = f"the jar is older than {ttl_days} days"
+            if why is None:
+                return None
+
+            return {
+                "profile_id": profile.id,
+                "script": script,
+                "verify_url": profile.verify_url,
+                "user_agent": profile.user_agent,
+                "why": why,
+            }
+
+    def _store_mint(self, profile_id: int, result: Any) -> None:
+        from cairn.db.models import AccessProfile
+        from cairn.services import profiles as profile_service
+
+        with self._sessions() as session:
+            profile = session.get(AccessProfile, profile_id)
+            if profile is None:  # pragma: no cover — deleted mid-job
+                return
+            if result.ok and result.cookies_text:
+                profile_service.store_cookies(
+                    session, self._sealer, profile, result.cookies_text, mode="userscript"
+                )
+            profile.last_verified_at = utcnow()
+            profile.last_verify_result = "ok" if result.ok else "failed"
             session.commit()
 
     # ── moves ────────────────────────────────────────────────────────────
@@ -554,6 +680,7 @@ class JobSupervisor:
                     auth["cookies_file"] = str(material.cookies_file)
                     if material.user_agent:
                         auth["user_agent"] = material.user_agent
+                warnings.extend(_credential_warnings(session, site.profile_id))
 
             spec = {
                 "protocol": PROTOCOL_VERSION,
@@ -1000,6 +1127,33 @@ def _final_status(result: ResultEvent | None, returncode: int, cancelled: bool) 
     if returncode != 0:
         return "partial" if result.status == "ok" else result.status
     return result.status
+
+
+def _credential_warnings(session: Session, profile_id: int) -> list[str]:
+    """Say so before the crawl when the jar carries an account session.
+
+    A WARC records the request as well as the response, so every `Cookie:`
+    header wget sends is written into the archive. That is standard and not
+    suppressible — which means an archive fetched with a full account session
+    contains that session, and it travels with any copy or export of the file.
+
+    A consent cookie is not worth mentioning. A Google `SID` is, and the
+    profile parser already knows the difference (docs/06, docs/11).
+    """
+    from cairn.db.models import AccessProfile
+
+    profile = session.get(AccessProfile, profile_id)
+    if profile is None:
+        return []
+    sensitive = list((profile.cookie_meta or {}).get("sensitive") or [])
+    if not sensitive:
+        return []
+    return [
+        f"This profile carries account session cookies ({', '.join(sorted(sensitive)[:4])}). "
+        "A WARC stores the request headers as well as the responses, so those cookies will "
+        "be inside this archive — treat the files as credentials, and prefer a profile "
+        "holding only what the gate needs."
+    ]
 
 
 def _scope_was_edited(session: Session, site: Site) -> bool:

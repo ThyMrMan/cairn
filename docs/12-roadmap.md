@@ -158,20 +158,29 @@ Also worth doing: run `--warc-dedup` against a second capture and verify you get
 
 ---
 
-## M5 — Access profiles, complete
+## M5 — Access profiles, complete ✅
 
 **Ships:** userscripts and interactive login.
 
-- Chromium (Playwright) added to the image
-- `mint` engine: userscript injection, `GM_*` shim, success detection, screenshot artifact
-- Userscript metadata parsing with warnings for unsupported `@grant`/`@require`
-- Auto re-mint on expiry and on `interstitial_detected`
-- Interactive profile mode: browser session, noVNC/CDP embed, save cookies + storage
-- Profile test/verify with per-site coverage checking
+- [x] Chromium (Playwright) added to the image
+- [x] The mint: userscript injection, `GM_*` shim, success detection, screenshot artifact
+- [x] Userscript metadata parsing with warnings for unsupported `@grant`/`@require`
+- [x] Auto re-mint on expiry, and interstitial detection after a capture
+- [x] Interactive profile mode: browser session, CDP screencast embed, save cookies + storage
+- [x] Profile test/verify with per-site coverage checking
 
-**Done when:** you upload a Tampermonkey script, the tool mints a working cookie jar from it, and a capture using that profile returns real content. And separately: you click through an interstitial in the embedded browser, save the profile, and it works the same way.
+**Done when:** you upload a Tampermonkey script, the tool mints a working cookie jar from it, and a capture using that profile returns real content. *Asserted in `test_access_e2e.py`: a real Chromium runs the script, a real wget runs the crawl with the jar it produced, and the page text is read back out of the WARC — with the control case asserted too, that the same capture without the profile archives the interstitial and is marked `partial`.*
 
-**Move earlier if** the M-1 spike showed cookies alone don't work.
+**Six corrections from building it:**
+
+1. **The interactive browser needs no noVNC.** docs/06 planned Xvfb, a VNC server and websockify. A CDP screencast does the same job headless at ~8 KB a frame and ~75 KB/s, so none of that stack is in the image. Its trap: frames are emitted only on *visual change*, so a settled page streams nothing and looks exactly like a broken socket.
+2. **`interstitial_detected` cannot pause and resume a capture.** wget reads `--load-cookies` once at startup; there is no way to hand a running crawl a new jar. Re-minting moved to before the capture, and detection to after it, where the honest response is to downgrade the capture to `partial` and say so.
+3. **`--no-shell` and `channel="chromium"` go together.** Playwright's default headless mode runs a separate 262 MB headless shell; installing without it makes a plain `launch()` fail outright. The build-time probe caught this on its first run.
+4. **`PLAYWRIGHT_BROWSERS_PATH` is mandatory.** Otherwise the browser installs under the *building* user's home while the container runs as `abc` with `HOME=/config` — a mounted volume — so it would not be missing at build time, it would appear to vanish on a fresh install.
+5. **Match patterns carry ports in practice.** Chrome's do not, Tampermonkey's do, and reading `host:port` as a hostname makes every such pattern match nothing — surfacing as "the script never ran".
+6. **A WARC contains the cookies that fetched it.** Request records carry the `Cookie:` header. Not fixable and not previously written down; now warned about before any capture whose profile holds account session cookies (docs/11).
+
+**Image cost:** 446 MB → 1.7 GB, against this document's ~500 MB estimate. Kept as one image rather than splitting `latest` and `full`: a button that silently does nothing because you pulled the wrong tag is a worse failure than a larger pull.
 
 ---
 
