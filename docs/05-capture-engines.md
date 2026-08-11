@@ -286,8 +286,8 @@ Failed requests are the one exception: a 404 writes no file, so it leaves no ded
 |---|---|
 | `--warc-file` | Do *not* include `.warc.gz` — wget appends the extension and segment number itself |
 | `--warc-tempdir` | Must be on the same filesystem as the output, or every segment close is a full byte copy |
-| `--warc-dedup=FILE` | Reads a CDX from a previous run and emits `revisit` records instead of re-storing identical payloads. This is what makes incremental feed captures cheap. Behavior differs across wget versions — pin 1.21+ |
-| `--warc-cdx` | Produces the CDX that the *next* run's `--warc-dedup` consumes. Not the replay index ([D11](00-decisions.md#d11--cdxj-for-replay-wgets-cdx-only-for-dedup)) |
+| `--warc-dedup=FILE` | Reads a CDX from previous runs and emits `revisit` records instead of re-storing identical payloads. This is what makes incremental feed captures cheap. Behavior differs across wget versions — pin 1.21+. **Feed it every prior capture's CDX, not the last one** — see below |
+| `--warc-cdx` | Produces the CDX that later runs' `--warc-dedup` consume. Not the replay index ([D11](00-decisions.md#d11--cdxj-for-replay-wgets-cdx-only-for-dedup)). **Writes nothing for a deduplicated URL** — see below |
 | `--delete-after` | **Do not use.** See below — it silently multiplies the crawl |
 | `--keep-session-cookies` | Blogger interstitial cookies are frequently session cookies. Without this they're dropped and the bypass silently fails |
 | `--content-on-error` | Archives 4xx/5xx response bodies. Often the only record of a page that broke |
@@ -343,7 +343,14 @@ http://example.com/i.html 20260810203702 http://example.com/i.html text/html 200
 
 Eleven fields, **space**-separated (not tab), `-` for absent values, in order: url, timestamp, url again, MIME, status, payload digest (base32 SHA-1), redirect target, meta, compressed offset, filename, record id. The same URL legitimately appears more than once — a redirect target that is also fetched directly — so the consumer must tolerate repeats.
 
-The two streams divide cleanly: the CDX has everything that became a record; the log has the failures that never did (connection refused, DNS, timeouts), which are invisible in the CDX and are exactly the ones worth showing a user.
+The two streams divide cleanly — almost. The CDX has everything that became a *response* record; the log has the failures that never became a record at all (connection refused, DNS, timeouts), which are invisible in the CDX and are exactly the ones worth showing a user.
+
+**The exception, and it is a large one: a deduplicated URL appears in neither.** Measured on 1.25.0 — a second crawl of a four-page site with `--warc-dedup` wrote four `revisit` records into the WARC and a CDX containing **nothing but its header line**, while the crawl log listed all four `URL:` lines normally. Two consequences, both invisible until an incremental capture is examined:
+
+- Built from the CDX alone, an incremental capture reports **zero URLs** and an empty URL list while its WARC is full. That reads as "the capture did nothing" at precisely the moment it did the best possible thing.
+- The next run's `--warc-dedup` cannot be pointed at that CDX, because it is empty. Chaining capture to capture makes the saving hold for exactly one run and then silently alternate on and off. The dedup file must be the union of *every* prior capture's CDX, keyed on URL plus payload digest.
+
+So the log is not only for failures. At the end of a crawl the engine reconciles its `URL:` lines against the CDX and emits the difference as `url` events with `revisit: true`, which is what makes `capture_urls` describe what wget actually fetched.
 
 **With `--warc-max-size` set**, segments are `part-00000.warc.gz`, `part-00001.warc.gz`, … plus a `part-meta.warc.gz`, but there is still exactly one `part.cdx` covering all of them.
 

@@ -51,6 +51,8 @@ Every URL the app fetches — seeds, discovery targets, feeds, sitemaps, `verify
 
 wget follows redirects itself, so the engine can't validate hop-by-hop the way the app's own fetcher can. Mitigate with `--max-redirect=10` plus the scope allowlist — wget won't fetch a host that isn't in `--domains`, which incidentally makes it much harder to redirect a crawl somewhere interesting. Note the residual risk rather than pretending it's zero.
 
+**Notification targets are outbound requests to a user-supplied URL, and they are not SSRF.** A webhook pointed at `http://192.168.1.1/` is the single user of a single-user tool choosing to POST to their own router, which they could do from a shell on the same box. Two things do apply: the request carries no credentials and no archive content beyond the notification text, and the HTTP clients run with `trust_env=False` so an inherited `HTTP_PROXY` cannot silently redirect them. The private-range block above deliberately does not extend here — a self-hosted ntfy on the LAN is the *expected* configuration, and blocking it would make the feature useless for the people it is for.
+
 ---
 
 ## Secrets

@@ -199,15 +199,29 @@ The interactive session is a **CDP screencast over a WebSocket**, not the `vnc_u
 
 | Method | Path | Notes |
 |---|---|---|
-| `GET` | `/api/sites/{id}/feeds` | |
-| `POST` | `/api/sites/{id}/feeds` | `{url, kind?, interval_min?}` |
-| `POST` | `/api/sites/{id}/feeds/discover` | Auto-find feeds for this site |
-| `POST` | `/api/feeds/test` | `{url}` — parse without saving; returns format, entry count, samples, scope check |
+| `GET` | `/api/sites/{id}/feeds` | Each row carries its poll state and its item counts |
+| `POST` | `/api/sites/{id}/feeds` | `{url, kind?, title?, interval_min?, enabled?, auto_capture?}` |
+| `POST` | `/api/sites/{id}/feeds/discover` | Everything worth watching, probed live. Saves nothing |
+| `POST` | `/api/sites/{id}/feeds/test` | `{url, kind?}` — parse without saving; returns format, entry count, recent titles, scope check |
 | `PATCH` `DELETE` | `/api/feeds/{id}` | |
-| `POST` | `/api/feeds/{id}/poll` | Poll now → `202` |
-| `GET` | `/api/feeds/{id}/items` | `?status=pending\|captured\|failed` |
-| `GET` | `/api/feeds/{id}/history` | Poll log |
-| `POST` | `/api/feeds/{id}/capture-pending` | Capture all pending items |
+| `POST` | `/api/feeds/{id}/poll` | Poll now, synchronously, and capture what it finds |
+| `POST` | `/api/feeds/{id}/capture` | Capture what is already pending, without polling |
+| `GET` | `/api/feeds/{id}/items` | `?status=pending\|captured\|failed\|skipped` |
+| `GET` | `/api/feeds/{id}/polls` | Poll history: status, entries, new items, action, error |
+
+**Test is per site, not global.** This document had `POST /api/feeds/test` with no site in the path, which cannot answer the question that makes the endpoint worth having: whether the feed's entries are inside *this site's* scope. A feed whose entries fall outside it polls happily forever, finds new posts every time, and archives none of them.
+
+**Poll is synchronous, not `202`.** A poll is one conditional GET and it finishes in well under a second; handing back a job id would mean a progress bar for work already done, and the response can carry what it actually found. The capture it enqueues *is* a job, and its ids come back in `job_ids`.
+
+**There is no `capture-pending`; it is `capture`.** Same operation, and the noun was already unambiguous under `/feeds/{id}/`.
+
+### Scheduling & notifications
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` `PUT` | `/api/schedule` | Quiet hours, per-host serialization, full-recapture interval |
+| `GET` `PUT` | `/api/notifications` | Targets and the per-event opt-ins |
+| `POST` | `/api/notifications/test` | One message to every enabled target; reports per-target failures |
 
 ---
 

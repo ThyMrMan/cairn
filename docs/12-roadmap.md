@@ -184,19 +184,32 @@ Also worth doing: run `--warc-dedup` against a second capture and verify you get
 
 ---
 
-## M6 — Feeds & scheduling
+## M6 — Feeds & scheduling ✅
 
 **Ships:** archives that stay current unattended.
 
-- `feedparser` integration; auto-discovery; feed test endpoint with scope checking
-- Conditional GET, GUID dedup, URL canonicalization, backoff
-- APScheduler; per-feed intervals; jitter; quiet hours; per-host serialization
-- Incremental captures with `--warc-dedup`; batching
-- Sitemap-diff watcher
-- Feeds UI with poll history
-- Notifications (ntfy / Apprise / webhook)
+- [x] `feedparser` integration; auto-discovery; feed test endpoint with scope checking
+- [x] Conditional GET, GUID dedup, URL canonicalization, backoff
+- [x] Per-feed intervals; jitter; quiet hours; per-host serialization — **not APScheduler**, see below
+- [x] Incremental captures with `--warc-dedup`; batching
+- [x] Sitemap-diff watcher
+- [x] Feeds UI with poll history
+- [x] Notifications (ntfy / Apprise / webhook)
 
-**Done when:** a new post appears on a watched blog and is archived into that site's folder within the poll interval, at a fraction of a full capture's cost, with a notification.
+**Done when:** a new post appears on a watched blog and is archived into that site's folder within the poll interval, at a fraction of a full capture's cost, with a notification. *Asserted in `test_feeds_e2e.py`: a fixture blog gains a post while the test is running, a real poll finds it, a real wget captures it, the new post's text is read back out of the WARC, the capture directory sits beside the full one in the same site folder, wget's own log proves it started from the new post rather than the site, and a real socket receives the notification. Both regressions it guards were reintroduced and confirmed to fail it.*
+
+**Six corrections from building it:**
+
+1. **APScheduler is the wrong tool, and its defaults are the reason.** A persistent job store is a second copy of a schedule the `feeds` table already holds, so every interval change is two writes that can disagree. Measured against 3.11 on SQLite: restarting across a fire time **drops the run** at the default `misfire_grace_time`, and with grace disabled and `coalesce` off a 30-second outage of a 3-second job fired **12 times at once**. Both failures are silent, and a container on Unraid restarts routinely. A due-time query has neither problem and costs only the cron syntax nothing here needs.
+2. **The first poll of a feed has to be a baseline, not a backlog.** Every entry is new the first time it is read, so capturing them meant adding a watch to a blog and immediately re-fetching its whole archive one post at a time — the most expensive possible way to get what one full capture already covers.
+3. **wget writes no CDX line for a URL `--warc-dedup` deduplicated.** Measured: a second crawl of a four-page site wrote four revisit records and a CDX containing only its header. So handing the *previous* capture's CDX to the next run means it deduplicates against an empty file — the saving holds for exactly one capture, then silently alternates on and off. The dedup source is now the union of every prior capture's CDX. The same finding, inverted, made an incremental capture report **zero URLs** and an empty URL list while its WARC was full; the engine now reconciles the CDX against wget's crawl log and emits the difference as revisits.
+4. **Absence means opposite things in a feed and a sitemap.** A feed carries the most recent N entries, so an entry leaving one is the feed working correctly; a sitemap is meant to be complete. Disappearance — the "a post you archived no longer exists upstream" notification, the one worth having — is therefore only ever inferred from a *complete* sitemap read. Inferring it from feeds would fire on every poll of every healthy blog.
+5. **Per-host serialization belongs in the supervisor, not the scheduler.** It is politeness rather than scheduling, so a capture somebody started by hand owes it too; two simultaneous crawls of one blog is what gets an archiver blocked, whoever started them.
+6. **Quiet hours default to off.** docs/08 asked for 01:00–07:00 on by default, which would mean adding a feed, watching a post appear, and seeing nothing for eighteen hours — while throttling only an incremental capture of a few hundred kilobytes, since full recapture is off by default anyway.
+
+**Left out on purpose:** the monthly discovery refresh from docs/08's schedule table. Re-running discovery can change a site's scope, and doing that unattended is a decision rather than maintenance. Log rotation is also absent and should be: logs go to stdout for s6 and Docker to handle.
+
+**One thing to know:** the M4 note that the retention sweep runs only at boot is now retired. Trash purge and the size rollup are on the ticker, daily and hourly.
 
 ---
 

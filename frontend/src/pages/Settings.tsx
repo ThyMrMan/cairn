@@ -15,6 +15,8 @@ export default function Settings() {
         <p className="mt-1 text-sm text-muted">This instance, your account, and security.</p>
       </header>
       <AboutSection />
+      <ScheduleSection />
+      <NotificationsSection />
       <StorageSection />
       <TagsSection />
       <TrashSection />
@@ -281,6 +283,222 @@ function AboutSection() {
             : "running from a source checkout"}
         </dd>
       </dl>
+    </Section>
+  );
+}
+
+function ScheduleSection() {
+  const client = useQueryClient();
+  const schedule = useQuery({ queryKey: ["schedule"], queryFn: endpoints.schedule });
+  const save = useMutation({
+    mutationFn: endpoints.putSchedule,
+    onSuccess: () => client.invalidateQueries({ queryKey: ["schedule"] }),
+  });
+
+  const data = schedule.data;
+  if (!data) return null;
+  const quiet = data.quiet_hours;
+  const patch = (change: Partial<typeof data>) =>
+    save.mutate({
+      quiet_hours: quiet,
+      per_host_serial: data.per_host_serial,
+      full_recapture_days: data.full_recapture_days,
+      ...change,
+    });
+
+  return (
+    <Section
+      title="Scheduling"
+      description="Feeds carry their own intervals — these are the rules that apply to every
+                  scheduled job. None of them affect a capture you start yourself."
+    >
+      <div className="space-y-4 text-sm">
+        <div>
+          <label className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              checked={quiet.enabled}
+              onChange={(e) => patch({ quiet_hours: { ...quiet, enabled: e.target.checked } })}
+            />
+            Only run scheduled captures between
+            <input
+              className="field w-24 py-1"
+              type="time"
+              value={quiet.start}
+              onChange={(e) => patch({ quiet_hours: { ...quiet, start: e.target.value } })}
+            />
+            and
+            <input
+              className="field w-24 py-1"
+              type="time"
+              value={quiet.end}
+              onChange={(e) => patch({ quiet_hours: { ...quiet, end: e.target.value } })}
+            />
+          </label>
+          <p className="hint mt-1.5">
+            Off by default. Feeds are still polled outside the window — a poll is one
+            conditional request — but anything new waits until the window opens rather than
+            being lost. Times are this container's local time.
+            {quiet.enabled && data.in_quiet_hours_now && (
+              <strong className="ml-1 text-warn">Scheduled captures are paused right now.</strong>
+            )}
+          </p>
+        </div>
+
+        <div>
+          <label className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              checked={data.per_host_serial}
+              onChange={(e) => patch({ per_host_serial: e.target.checked })}
+            />
+            Never run two jobs against the same host at once
+          </label>
+          <p className="hint mt-1.5">
+            Politeness rather than scheduling, so it applies to a capture you started by hand
+            too. Two simultaneous crawls of one blog is what gets an archiver rate-limited.
+          </p>
+        </div>
+
+        <div>
+          <label className="flex items-center gap-2">
+            Re-capture every site in full every
+            <select
+              className="field w-auto py-1"
+              value={data.full_recapture_days}
+              onChange={(e) => patch({ full_recapture_days: Number(e.target.value) })}
+            >
+              <option value={0}>never</option>
+              <option value={7}>week</option>
+              <option value={30}>month</option>
+              <option value={90}>quarter</option>
+              <option value={365}>year</option>
+            </select>
+          </label>
+          <p className="hint mt-1.5">
+            Off deliberately. A monthly full re-capture of a 3 GB archive is about 38 GB a year
+            and mostly re-stores what you already have; feed capture covers new posts at a few
+            percent of that. Turn this on only if you need to detect edits to existing pages.
+          </p>
+        </div>
+      </div>
+    </Section>
+  );
+}
+
+function NotificationsSection() {
+  const client = useQueryClient();
+  const settings = useQuery({ queryKey: ["notifications"], queryFn: endpoints.notifications });
+  const [draft, setDraft] = useState("");
+  const [result, setResult] = useState<string | null>(null);
+
+  const save = useMutation({
+    mutationFn: endpoints.putNotifications,
+    onSuccess: () => client.invalidateQueries({ queryKey: ["notifications"] }),
+  });
+  const test = useMutation({
+    mutationFn: endpoints.testNotifications,
+    onSuccess: (r) =>
+      setResult(
+        r.problems.length
+          ? `${r.delivered} of ${r.targets} delivered. ${r.problems.join("; ")}`
+          : `Delivered to ${r.delivered} of ${r.targets} target(s).`,
+      ),
+    onError: (err) => setResult((err as ApiError).message),
+  });
+
+  const data = settings.data;
+  if (!data) return null;
+
+  return (
+    <Section
+      title="Notifications"
+      description="New content in an archive is worth a push, and so is a feed that quietly
+                  stopped working."
+    >
+      <div className="space-y-5 text-sm">
+        <div className="space-y-2">
+          {data.targets.map((target, index) => (
+            <div key={`${target.url}-${index}`} className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={target.enabled}
+                onChange={(e) =>
+                  save.mutate({
+                    targets: data.targets.map((t, i) =>
+                      i === index ? { ...t, enabled: e.target.checked } : t,
+                    ),
+                  })
+                }
+              />
+              <code className="min-w-0 flex-1 truncate rounded bg-raised px-2 py-1 text-xs">
+                {target.url}
+              </code>
+              <button
+                className="btn-ghost px-2 text-xs text-danger"
+                onClick={() =>
+                  save.mutate({ targets: data.targets.filter((_, i) => i !== index) })
+                }
+              >
+                Remove
+              </button>
+            </div>
+          ))}
+
+          <div className="flex gap-2">
+            <input
+              className="field min-w-0 flex-1 py-1 font-mono text-xs"
+              placeholder="ntfy://ntfy.sh/my-topic, https://my-webhook/..., discord://id/token"
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              aria-label="Notification target"
+            />
+            <button
+              className="btn-ghost text-xs"
+              disabled={!draft.trim()}
+              onClick={() => {
+                save.mutate({
+                  targets: [...data.targets, { url: draft.trim(), enabled: true, label: "" }],
+                });
+                setDraft("");
+              }}
+            >
+              Add
+            </button>
+            <button
+              className="btn-ghost text-xs"
+              disabled={!data.targets.length || test.isPending}
+              onClick={() => test.mutate()}
+            >
+              {test.isPending && <Spinner className="mr-1 h-3 w-3" />}
+              Send a test
+            </button>
+          </div>
+          <p className="hint">
+            An <code>ntfy://</code> URL or an ntfy.sh address goes to ntfy; any other{" "}
+            <code>http(s)://</code> gets a JSON POST, which is what Discord, Slack, Gotify and
+            Home Assistant webhooks expect. Anything else is handed to Apprise
+            {data.apprise_available ? "" : ", which is not installed in this build"}.
+          </p>
+          {result && <Alert kind="info">{result}</Alert>}
+        </div>
+
+        <div>
+          <p className="label">Tell me about</p>
+          <div className="mt-2 grid gap-1.5 sm:grid-cols-2">
+            {Object.entries(data.labels).map(([event, label]) => (
+              <label key={event} className="flex items-center gap-2 text-xs">
+                <input
+                  type="checkbox"
+                  checked={data.events[event] ?? false}
+                  onChange={(e) => save.mutate({ events: { [event]: e.target.checked } })}
+                />
+                {label}
+              </label>
+            ))}
+          </div>
+        </div>
+      </div>
     </Section>
   );
 }

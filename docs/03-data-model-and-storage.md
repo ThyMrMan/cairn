@@ -310,28 +310,62 @@ CREATE TABLE feeds (
   title          TEXT,
   enabled        INTEGER NOT NULL DEFAULT 1,
   interval_min   INTEGER NOT NULL DEFAULT 360,
+  auto_capture   INTEGER NOT NULL DEFAULT 1,
+  recapture_on_update INTEGER NOT NULL DEFAULT 0,
+  next_poll_at   TEXT,                           -- the schedule itself; see below
   last_polled_at TEXT,
   last_success_at TEXT,
+  last_status    INTEGER,
   etag           TEXT,
   last_modified  TEXT,
   consecutive_failures INTEGER NOT NULL DEFAULT 0,
   last_error     TEXT,
+  disabled_reason TEXT,                          -- set when the tool switched it off
   UNIQUE(site_id, url)
 );
+CREATE INDEX ix_feeds_due ON feeds(enabled, next_poll_at);
 
 CREATE TABLE feed_items (
   id          INTEGER PRIMARY KEY,
   feed_id     INTEGER NOT NULL REFERENCES feeds(id) ON DELETE CASCADE,
   guid        TEXT NOT NULL,
-  url         TEXT NOT NULL,
+  url         TEXT NOT NULL,                     -- raw: what gets fetched
+  canonical_url TEXT NOT NULL DEFAULT '',        -- normalized: what gets compared
   title       TEXT,
   published_at TEXT,
+  updated_at  TEXT,
   first_seen_at TEXT NOT NULL,
+  last_seen_at  TEXT NOT NULL,
+  gone_at     TEXT,                              -- sitemaps only; see below
   capture_id  INTEGER REFERENCES captures(id) ON DELETE SET NULL,
   status      TEXT NOT NULL DEFAULT 'pending', -- pending|captured|skipped|failed
   UNIQUE(feed_id, guid)
 );
+
+-- Every poll, whether or not anything came of it. This table is the milestone
+-- as much as the polling is: the ArchiveBox note that a `curl | grep` cron was
+-- more dependable than the tool's scheduler was a judgement about
+-- observability, and a scheduler you cannot inspect is one you will not trust.
+CREATE TABLE feed_polls (
+  id          INTEGER PRIMARY KEY,
+  feed_id     INTEGER NOT NULL REFERENCES feeds(id) ON DELETE CASCADE,
+  ts          TEXT NOT NULL,
+  status      INTEGER NOT NULL DEFAULT 0,        -- 0 when there was no response at all
+  duration_ms INTEGER NOT NULL DEFAULT 0,
+  entries_seen INTEGER NOT NULL DEFAULT 0,
+  new_items   INTEGER NOT NULL DEFAULT 0,
+  gone_items  INTEGER NOT NULL DEFAULT 0,
+  action      TEXT NOT NULL DEFAULT '',
+  job_id      INTEGER REFERENCES jobs(id) ON DELETE SET NULL,
+  error       TEXT
+);
 ```
+
+**`next_poll_at` is the schedule, not a derivation of it.** Jitter has to be stored somewhere or it is not jitter, and a stored due time makes "what should run now" one indexed comparison whose answer does not depend on how long the container was stopped.
+
+**`canonical_url` is a second dedup key, not a convenience.** Some platforms regenerate a post's guid whenever it is edited; keyed on the guid alone, one editorial pass re-captures the entire archive.
+
+**`gone_at` is only ever set from a sitemap.** A feed carries the most recent N entries, so an entry leaving one is the normal course of events and means nothing. A sitemap is meant to be complete, so a URL vanishing from one is the "a post you archived no longer exists upstream" event. Inferring it from feeds would fire that alert on every poll of every healthy blog.
 
 ### Access profiles
 

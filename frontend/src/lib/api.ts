@@ -466,6 +466,98 @@ export type Engine = {
   error: string | null;
 };
 
+// ── feeds ────────────────────────────────────────────────────────────────
+
+export type Feed = {
+  id: number;
+  site_id: number;
+  url: string;
+  kind: string;
+  title: string | null;
+  enabled: boolean;
+  auto_capture: boolean;
+  recapture_on_update: boolean;
+  interval_min: number;
+  next_poll_at: string | null;
+  last_polled_at: string | null;
+  last_success_at: string | null;
+  last_status: number | null;
+  consecutive_failures: number;
+  last_error: string | null;
+  /** Set when the tool switched it off, not when a person did. */
+  disabled_reason: string | null;
+  counts: { seen: number; pending: number; captured: number; failed: number; skipped: number; gone: number };
+};
+
+export type FeedPoll = {
+  id: number;
+  ts: string;
+  status: number;
+  duration_ms: number;
+  entries_seen: number;
+  new_items: number;
+  gone_items: number;
+  action: string;
+  error: string | null;
+};
+
+export type FeedItem = {
+  id: number;
+  url: string;
+  title: string | null;
+  status: string;
+  published_at: string | null;
+  first_seen_at: string;
+  gone_at: string | null;
+  capture_id: number | null;
+};
+
+/**
+ * What the add-feed dialog shows before anything is saved. `in_scope` is the
+ * point of testing first: a feed whose entries fall outside the site's scope
+ * polls happily forever and archives none of them.
+ */
+export type FeedCandidate = {
+  url: string;
+  kind: string;
+  title: string | null;
+  entry_count: number;
+  recent_titles: string[];
+  is_comments: boolean;
+  in_scope: number;
+  out_of_scope: string[];
+  error: string | null;
+  ok: boolean;
+};
+
+export type FeedPollResult = {
+  status: number;
+  action: string;
+  entries_seen: number;
+  new_items: number;
+  gone_items: number;
+  /** The first poll of a feed records what already exists and captures none of it. */
+  baseline: boolean;
+  error: string | null;
+  job_ids: number[];
+};
+
+export type ScheduleSettings = {
+  quiet_hours: { enabled: boolean; start: string; end: string };
+  per_host_serial: boolean;
+  full_recapture_days: number;
+  in_quiet_hours_now: boolean;
+};
+
+export type NotifyTarget = { url: string; enabled: boolean; label: string };
+
+export type NotifySettings = {
+  targets: NotifyTarget[];
+  events: Record<string, boolean>;
+  labels: Record<string, string>;
+  apprise_available: boolean;
+};
+
 // ── replay ───────────────────────────────────────────────────────────────
 
 export type ReplayStatus = {
@@ -722,6 +814,43 @@ export const endpoints = {
         (timestamp ? `&timestamp=${timestamp}` : ""),
     ),
   reindex: (id: number) => api.post<{ records: number; warcs: number }>(`/sites/${id}/reindex`),
+
+  // ── feeds ──────────────────────────────────────────────────────────────
+  feeds: (siteId: number) => api.get<Feed[]>(`/sites/${siteId}/feeds`),
+  addFeed: (
+    siteId: number,
+    body: {
+      url: string;
+      kind?: string;
+      title?: string | null;
+      interval_min?: number | null;
+      enabled?: boolean;
+      auto_capture?: boolean;
+    },
+  ) => api.post<Feed>(`/sites/${siteId}/feeds`, body),
+  discoverFeeds: (siteId: number) =>
+    api.post<FeedCandidate[]>(`/sites/${siteId}/feeds/discover`),
+  testFeed: (siteId: number, url: string, kind = "auto") =>
+    api.post<FeedCandidate>(`/sites/${siteId}/feeds/test`, { url, kind }),
+  updateFeed: (id: number, body: Record<string, unknown>) =>
+    api.patch<Feed>(`/feeds/${id}`, body),
+  deleteFeed: (id: number) => api.del<{ ok: boolean }>(`/feeds/${id}`),
+  pollFeed: (id: number) => api.post<FeedPollResult>(`/feeds/${id}/poll`),
+  captureFeed: (id: number) => api.post<FeedPollResult>(`/feeds/${id}/capture`),
+  feedPolls: (id: number, limit = 25) =>
+    api.get<FeedPoll[]>(`/feeds/${id}/polls?limit=${limit}`),
+  feedItems: (id: number, params: { status?: string; limit?: number } = {}) =>
+    api.get<FeedItem[]>(`/feeds/${id}/items${query(params)}`),
+
+  // ── scheduling & notifications ─────────────────────────────────────────
+  schedule: () => api.get<ScheduleSettings>("/schedule"),
+  putSchedule: (body: Omit<ScheduleSettings, "in_quiet_hours_now">) =>
+    api.put<ScheduleSettings>("/schedule", { ...body, in_quiet_hours_now: false }),
+  notifications: () => api.get<NotifySettings>("/notifications"),
+  putNotifications: (body: { targets?: NotifyTarget[]; events?: Record<string, boolean> }) =>
+    api.put<NotifySettings>("/notifications", body),
+  testNotifications: () =>
+    api.post<{ targets: number; delivered: number; problems: string[] }>("/notifications/test"),
 
   // ── engines ────────────────────────────────────────────────────────────
   engines: () => api.get<Engine[]>("/engines"),

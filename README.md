@@ -52,7 +52,7 @@ Read in order for a full picture; each is standalone if you're looking for one t
 
 ## Status
 
-**M0 (foundation & auth), M1 (capture core), M2 (discovery & scoping), M3 (replay), M4 (organization) and M5 (access profiles) are complete** — see the [roadmap](docs/12-roadmap.md).
+**M0 (foundation & auth), M1 (capture core), M2 (discovery & scoping), M3 (replay), M4 (organization), M5 (access profiles) and M6 (feeds & scheduling) are complete** — see the [roadmap](docs/12-roadmap.md).
 
 You can run the container, create an account, add a site, upload a `cookies.txt` for a blog behind a content warning, and press **Index** — it reads the sitemap and feeds, works out which domains the site pulls from, and shows you a table with two checkboxes per host: crawl its pages, and fetch its files. On a Blogger blog the answer arrives already correct, including the `?m=1` reject that otherwise archives every post twice. Then press **Capture** and watch URLs stream past in a live log, ending with a WARC on disk, checksums, a `manifest.json`, and the failures listed and greppable.
 
@@ -64,6 +64,12 @@ For a site behind a content warning or a login there are now three ways to get a
 
 Confirmed against a real Blogger blog behind an interstitial: the cookie bypass works and the archived pages contain the actual content.
 
+Once a site is captured, **Feeds and watchers** keeps it current. Add a feed — or press *Find feeds* and pick from what the site actually publishes — and new posts are archived into that same site's folder, seeded from the feed alone and deduplicated against everything already stored, so a new post costs a few hundred kilobytes rather than another full crawl. The first poll is deliberately a baseline: it records what the blog already has and captures none of it, because watching a blog should not mean re-fetching its archive one post at a time.
+
+A sitemap can be watched too, and it is the only thing that will tell you a page **disappeared** — which is the moment the archive paid for itself, and the one notification that is on by default. Notifications go to ntfy, any webhook, or any Apprise URL.
+
+Every poll is recorded: what it fetched, what it parsed, what was new, and what it did about it. That is the whole point. The evaluation this project started from found a tool whose scheduler was less trustworthy than `curl | grep` on a cron — not because the cron was better, but because you could see what it produced.
+
 > **An archive contains the cookies that fetched it.** A WARC records requests as well as responses, `Cookie:` header included. That is unavoidable and worth knowing before sharing one — use a jar holding only what the gate needs, and Cairn warns before any capture whose profile carries full account session cookies.
 
 The running build is shown at the bottom of the sidebar and in **Settings → About**. The version on its own is not enough — it reads `0.1.0` on every commit — so the build id beside it is what answers "am I testing the update?". Images stamp themselves; pass the commit if you want it named:
@@ -72,7 +78,7 @@ The running build is shown at the bottom of the sidebar and in **Settings → Ab
 docker build --build-arg CAIRN_BUILD=$(git rev-parse --short HEAD) -t cairn:local .
 ```
 
-What is not there yet: feeds and scheduling (M6), and a second capture engine (M7).
+What is not there yet: a second capture engine and the addon SDK (M7), and full-text search (M8).
 
 The image carries Chromium for the userscript and interactive modes, which puts it at roughly **1.7 GB**. Everything except those two modes works without it.
 

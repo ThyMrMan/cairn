@@ -45,6 +45,47 @@ def test_migrations_are_idempotent(settings: Settings) -> None:
     run_migrations(settings)  # must not raise
 
 
+def test_the_migrated_schema_matches_the_models(settings: Settings) -> None:
+    """A model edited without a matching migration is invisible until deploy.
+
+    Every test here builds its database by *migrating*, so a column added to
+    the ORM and forgotten in Alembic passes the whole suite on a fresh
+    database and then fails on somebody's existing one — which is the only
+    database that matters.
+    """
+    from alembic.autogenerate import compare_metadata
+    from alembic.migration import MigrationContext
+
+    from cairn.db.base import Base
+
+    ensure_directories(settings)
+    run_migrations(settings)
+
+    with get_engine(settings.db_url).connect() as conn:
+        context = MigrationContext.configure(conn)
+        drift = compare_metadata(context, Base.metadata)
+
+    real = [entry for entry in drift if not _is_expression_index(entry)]
+    assert not real, f"the models and the migrations disagree: {real}"
+
+
+# Indexes over an expression rather than a column — `text("ts DESC")`. Alembic
+# says so itself when it meets one ("Generating approximate signature…") and
+# then reports every such index as both removed and added on every run.
+# Named individually rather than pattern-matched, so this cannot quietly
+# swallow a real difference in an index somebody adds later.
+EXPRESSION_INDEXES = frozenset({"ix_audit_ts", "ix_feed_polls_feed_ts"})
+
+
+def _is_expression_index(entry: object) -> bool:
+    if not isinstance(entry, tuple) or len(entry) != 2:
+        return False
+    action, obj = entry
+    return action in ("add_index", "remove_index") and (
+        str(getattr(obj, "name", "")) in EXPRESSION_INDEXES
+    )
+
+
 def test_wal_and_foreign_keys_enabled(settings: Settings) -> None:
     ensure_directories(settings)
     run_migrations(settings)

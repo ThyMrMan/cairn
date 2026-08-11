@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 
 import { DomainPicker } from "../components/DomainPicker";
+import { Feeds } from "../components/Feeds";
 import { LiveLog } from "../components/LiveLog";
 import { Replay } from "../components/Replay";
 import { Alert, EmptyState, Spinner } from "../components/ui";
@@ -131,6 +132,8 @@ export default function SiteDetail() {
         siteId={siteId}
         onChanged={() => void client.invalidateQueries({ queryKey: ["site", siteId] })}
       />
+
+      <Feeds siteId={siteId} />
 
       <ReplaySection siteId={siteId} captureCount={data.capture_count} />
 

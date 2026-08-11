@@ -29,6 +29,8 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
+import cairn.db.types
+
 revision: str = "c8b4f2913a07"
 down_revision: str | None = "a3c07b2e5d41"
 branch_labels: str | Sequence[str] | None = None
@@ -45,7 +47,9 @@ def upgrade() -> None:
                 "recapture_on_update", sa.Boolean(), nullable=False, server_default=sa.false()
             )
         )
-        batch_op.add_column(sa.Column("next_poll_at", sa.DateTime(), nullable=True))
+        batch_op.add_column(
+            sa.Column("next_poll_at", cairn.db.types.UtcDateTime(length=32), nullable=True)
+        )
         batch_op.add_column(sa.Column("last_status", sa.Integer(), nullable=True))
         batch_op.add_column(sa.Column("disabled_reason", sa.Text(), nullable=True))
         batch_op.create_index("ix_feeds_due", ["enabled", "next_poll_at"], unique=False)
@@ -54,18 +58,26 @@ def upgrade() -> None:
         batch_op.add_column(
             sa.Column("canonical_url", sa.Text(), nullable=False, server_default="")
         )
-        batch_op.add_column(sa.Column("updated_at", sa.DateTime(), nullable=True))
+        batch_op.add_column(
+            sa.Column("updated_at", cairn.db.types.UtcDateTime(length=32), nullable=True)
+        )
         # NOT NULL with no sensible constant default: an existing row was last
         # seen when it was first seen, which is per-row rather than fixed. Added
         # nullable, backfilled, then tightened.
-        batch_op.add_column(sa.Column("last_seen_at", sa.DateTime(), nullable=True))
-        batch_op.add_column(sa.Column("gone_at", sa.DateTime(), nullable=True))
+        batch_op.add_column(
+            sa.Column("last_seen_at", cairn.db.types.UtcDateTime(length=32), nullable=True)
+        )
+        batch_op.add_column(
+            sa.Column("gone_at", cairn.db.types.UtcDateTime(length=32), nullable=True)
+        )
 
     op.execute("UPDATE feed_items SET last_seen_at = first_seen_at WHERE last_seen_at IS NULL")
     op.execute("UPDATE feed_items SET canonical_url = url WHERE canonical_url = ''")
 
     with op.batch_alter_table("feed_items", schema=None) as batch_op:
-        batch_op.alter_column("last_seen_at", existing_type=sa.DateTime(), nullable=False)
+        batch_op.alter_column(
+            "last_seen_at", existing_type=cairn.db.types.UtcDateTime(length=32), nullable=False
+        )
         batch_op.create_index("ix_feed_items_canonical", ["feed_id", "canonical_url"], unique=False)
         batch_op.create_index("ix_feed_items_pending", ["feed_id", "status"], unique=False)
 
@@ -73,7 +85,7 @@ def upgrade() -> None:
         "feed_polls",
         sa.Column("id", sa.Integer(), nullable=False),
         sa.Column("feed_id", sa.Integer(), nullable=False),
-        sa.Column("ts", sa.DateTime(), nullable=False),
+        sa.Column("ts", cairn.db.types.UtcDateTime(length=32), nullable=False),
         sa.Column("status", sa.Integer(), nullable=False),
         sa.Column("duration_ms", sa.Integer(), nullable=False),
         sa.Column("entries_seen", sa.Integer(), nullable=False),
