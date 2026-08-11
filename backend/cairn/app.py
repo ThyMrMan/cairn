@@ -98,7 +98,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             verify_secret_key(session, master_key)
         except KeyMismatchError as exc:
             _fatal_config_error(str(exc))
-        seed_defaults(session)
+        seed_defaults(session, settings)
         registry.refresh(session)
         purged = purge_expired_sessions(session)
         session.commit()

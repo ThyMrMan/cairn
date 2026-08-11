@@ -41,7 +41,7 @@ def _cmd_migrate(_args: argparse.Namespace) -> int:
     run_migrations(settings)
     engine = get_engine(settings.db_url)
     with sessionmaker_for(engine)() as session:
-        seed_defaults(session)
+        seed_defaults(session, settings)
         session.commit()
     print("Migrations applied.")
     return 0

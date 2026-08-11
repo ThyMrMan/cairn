@@ -180,8 +180,14 @@ def verify_secret_key(session: Session, master_key: bytes) -> None:
     )
 
 
-def seed_defaults(session: Session) -> None:
-    """Create the default folder and any missing settings. Idempotent."""
+def seed_defaults(session: Session, settings: Settings | None = None) -> None:
+    """Create the default folder and any missing settings. Idempotent.
+
+    The directory is created alongside the row, not left for the boot
+    reconcile to notice. A folder is a row *and* a directory — making the very
+    first one only half of that would have every fresh instance report
+    repairing itself before anyone had used it.
+    """
     existing = session.scalar(select(Folder).where(Folder.parent_id.is_(None)).limit(1))
     if existing is None:
         session.add(
@@ -193,6 +199,8 @@ def seed_defaults(session: Session) -> None:
                 sort_order=0,
             )
         )
+        if settings is not None:
+            (settings.archives_dir / DEFAULT_FOLDER_NAME).mkdir(parents=True, exist_ok=True)
         log.info("created default folder", extra={"folder": DEFAULT_FOLDER_NAME})
 
     known = set(session.scalars(select(Setting.key)).all())
