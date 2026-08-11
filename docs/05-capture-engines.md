@@ -27,9 +27,8 @@ runtime:
   type: subprocess                  # subprocess | docker
   command: ["python", "-m", "cairn.engines.wget"]
   # docker runtime instead:
-  # image: webrecorder/browsertrix-crawler:1.7.0
-  # args: ["crawl", "--config", "{job_dir}/browsertrix.yaml"]
-  # mounts: [{host: "{job_dir}", container: "/crawls", mode: rw}]
+  # image: my/engine:1.0.0
+  # args: ["/cairn/job/job.json"]   # optional; this is the default
   # shm_size: 2g
 
 capabilities:
@@ -92,6 +91,44 @@ config_schema:                      # JSON Schema → auto-generated UI form
       title: "User agent"
       default: "Mozilla/5.0 (compatible; Cairn/1.0; +https://github.com/you/cairn)"
 ```
+
+> **Built in M7, and the `docker` sketch above was wrong.** It showed a stock
+> third-party image run with templated arguments and hand-written mounts, and
+> that cannot work for two reasons.
+>
+> **The mounts cannot be written by the engine author.** Cairn's `/data` is not
+> the daemon's `/data`: the daemon resolves every path on the *host*, so a
+> bind of our own `/data/archives/…` asks for something that does not exist
+> there. Probed on a real daemon — our `/data` came from a named volume at
+> `/var/lib/docker/volumes/…/_data`, our `/config` from
+> `/run/desktop/mnt/host/c/Coding/Website Backup`, space and all. Cairn works
+> out the mounts itself by looking up which of *its own* mounts contains each
+> directory (`VolumeOptions.Subpath` for a volume, a composed host path for a
+> bind), and the container always sees the same two locations:
+> **`/cairn/job`** and **`/cairn/out`**, with a `job.json` rewritten to match.
+> An image cannot be written against paths that depend on somebody's array
+> layout.
+>
+> `--volumes-from` would have reproduced everything at our own paths — it
+> works, it was tested — but "everything" includes `/config`, which holds the
+> database and the master key that decrypts every stored cookie jar. The
+> precise mounts were verified to leave `/config` invisible to the engine.
+>
+> **A stock image does not speak the protocol.** `runtime: docker` means "run
+> my image and read its stdout as cairn NDJSON", exactly as the subprocess
+> type does. browsertrix writes its own JSON log format, so it is wrapped by
+> an *adapter engine* (`cairn/engines/browsertrix.py`) rather than run
+> directly. Putting the translation inside the runtime would give the runtime
+> an "and which log format?" field, which is where a clean seam turns into a
+> pile of special cases.
+>
+> **A relative `command` resolves against the engine's own directory.**
+> `command: ["python3", "engine.py"]` is the obvious thing to write and could
+> never have worked otherwise — an engine runs with the *job's* temp directory
+> as its working directory. Any argument naming a file that exists in the
+> engine's directory is made absolute; `-m` and module names are left alone.
+> Found by the conformance harness on its first run against the template,
+> which is exactly what the harness is for.
 
 ### Config schema → generated UI
 
@@ -400,11 +437,21 @@ Built-in chain (✅ = shipped):
 
 Ranked by value. Details and alternatives in [14](14-tooling-landscape.md).
 
-### 1. `browsertrix-crawler` — the JavaScript answer
+### 1. `browsertrix-crawler` — the JavaScript answer ✅ **built in M7**
 
 Single Docker image, Chromium-based, purpose-built for archiving. Handles lazy-load and infinite scroll via *behaviors* (autoscroll, auto-play, site-specific scripts), supports `--profile` for pre-authenticated browser profiles, outputs WARC and WACZ.
 
-This is the most valuable second engine because it covers every wget limitation at once, and its profile system is a natural home for the `interactive` access-profile mode ([06](06-access-profiles.md)). Runs via the `docker` runtime type, needs `--shm-size=2g`.
+This is the most valuable second engine because it covers every wget limitation at once. Runs as a sibling container, needs `--shm-size=2g`.
+
+> **Its profile system is not a home for the `interactive` access-profile mode, and cannot be.** `crawl --help` has no cookie option at all; `--profile` takes a tar.gz of a browser profile directory. A profile built with our own Chromium is *accepted and ignored* — browsertrix runs **Brave** and cairn ships **Google Chrome for Testing**, so the cookie-encryption key differs. Verified end to end against a gated fixture: the crawl archived the interstitial. The engine declares `auth: [user_agent]` and warns before any capture of a site that has an access profile. A gated site wants the wget engine, or a custom behavior that clicks through the warning.
+>
+> **Leave `--behaviors` at its default.** It is `autoplay,autofetch,autoscroll,siteSpecific`, and passing a shorter list drops `autofetch` — the behavior that fetches lazily-referenced resources, which is most of the reason to use this engine. Measured: the lazy-image fixture went from three images to one.
+>
+> **Its output layout is not cairn's.** It writes `collections/<name>/archive/*.warc.gz`; a capture keeps WARCs in `warc/`, which is what `site_warcs` globs and therefore all that ever reaches replay. The adapter moves them.
+>
+> **Its stdout has no per-URL record.** Pages started and finished, and a periodic `crawlStatus` — the complete list of what was archived is only in the CDXJ it writes at the end, which is where the `url` events come from.
+>
+> **Do not override the container's working directory.** Its Dockerfile sets `WORKDIR /crawls` and it resolves its output tree from there, so pointing it elsewhere wrote the crawl where nobody was looking — and still exited 0, reporting two pages crawled and no archive.
 
 ### 2. `single-file-cli` — the one-file snapshot
 
@@ -426,10 +473,27 @@ A MITM recording proxy. Point any HTTP client — a headless browser, a custom s
 
 ## Writing an addon: the short version
 
-1. `mkdir /config/engines/my-engine`
-2. Write `engine.yaml` with `id`, `runtime`, `capabilities`, `config_schema`
-3. Write an executable that reads `job.json` from `argv[1]` and emits NDJSON on stdout
-4. Restart, or hit **Rescan engines** in Settings
-5. The engine appears in the site editor with a form generated from your schema
+```bash
+cp -r examples/engine-template /config/engines/my-engine
+# edit engine.yaml — `id` must match the directory name
+cairn engines validate /config/engines/my-engine
+cairn engines test     /config/engines/my-engine
+```
 
-Ship a `cairn-engine-template` repo with a working Python example, a schema validator (`cairn engines validate ./my-engine`), and a protocol conformance test harness. The addon system is only real if someone other than you can use it, and the conformance test is what makes that true.
+Then **Rescan engines** in Settings, or restart. The engine appears in the site editor with a form generated from your schema.
+
+`examples/engine-template/` is a working engine in two files, with its own README. `cairn engines test` runs it against a fixture site the harness serves itself and checks every rule core relies on — including the ones core enforces silently, which are exactly the ones an addon author never discovers until a capture behaves strangely six months later:
+
+| Check | Why it is not left to good intentions |
+|---|---|
+| stdout is NDJSON | A stray `print()` is survivable — core counts and skips malformed lines — but it is still a bug |
+| emits `started` | It is the first line of the live log |
+| emits `url` events | Without them a capture has no URL list and no gap report |
+| exactly one `result` | No result is a failure whatever the exit code: an engine that stopped without saying how it went is indistinguishable from one that crashed |
+| the exit code agrees | `result: ok` followed by exit 1 does not get to be ok |
+| artifacts inside `output_dir` | Engine output is data, not instruction; enough `..` would have core checksum, and later serve, a file anywhere on disk |
+| artifacts exist | A declared file that is not there fails the checksum step, not the capture |
+
+**Capabilities are a promise, not decoration.** The UI hides options an engine cannot honour and warns when a site needs something it does not declare. The shipped browsertrix engine declares `auth: [user_agent]` for exactly this reason — claiming `cookies` it then ignores would produce an archive full of content warnings, with nothing anywhere saying why.
+
+The addon system is only real if someone other than its author can use it, and the conformance test is what makes that true.

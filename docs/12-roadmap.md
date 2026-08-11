@@ -213,18 +213,33 @@ Also worth doing: run `--warc-dedup` against a second capture and verify you get
 
 ---
 
-## M7 — Engine SDK & second engine
+## M7 — Engine SDK & second engine ✅
 
 **Ships:** the extension system, proven by using it.
 
-- `cairn-engine-template` repo with a working example
-- `cairn engines validate` and a protocol conformance test harness
-- Docker runtime type (opt-in, socket access clearly flagged)
-- `browsertrix-crawler` engine: profiles, behaviors, WACZ ingest
-- Per-site engine selection with capability-aware UI (hide JS-dependent options on non-JS engines)
-- Engine documentation
+- [x] Engine template with a working example — `examples/engine-template/`, in-repo rather than a separate repo
+- [x] `cairn engines validate` and a protocol conformance test harness (`cairn engines test`)
+- [x] Docker runtime type (opt-in, socket access clearly flagged)
+- [x] `browsertrix-crawler` engine: behaviors, WARC ingest — **not profiles**, see below
+- [x] Per-site engine selection with capability-aware UI
+- [x] Engine documentation
 
-**Done when:** a JS-heavy site with lazy-loaded images that wget captures badly is captured correctly by browsertrix, selected per-site in the UI, with both engines' captures replaying from the same collection.
+**Done when:** a JS-heavy site with lazy-loaded images that wget captures badly is captured correctly by browsertrix, selected per-site in the UI, with both engines' captures replaying from the same collection. *Asserted in `test_browsertrix_e2e.py`: a real wget and a real browsertrix container crawl the same fixture, the WARCs are read back with warcio — wget gets **none** of the three lazy images and never sees the script-generated link, browsertrix gets all four — and the site's single CDXJ index is checked for WARCs from both captures.*
+
+**Six corrections from building it:**
+
+1. **The daemon resolves mounts on the *host*, so an engine's paths cannot be written by its author.** Cairn's `/data` is not the daemon's `/data`. Probed on a real daemon: our `/data` came from a named volume at `/var/lib/docker/volumes/…/_data` and our `/config` from `/run/desktop/mnt/host/c/Coding/Website Backup`, space and all. Cairn works the mounts out itself from its own mount table, and the container always sees `/cairn/job` and `/cairn/out`.
+2. **`--volumes-from` is the obvious fix and gives away too much.** It reproduces every one of our mounts at our own paths — tested, including a Windows host bind — but "every one" includes `/config`, the database and the master key. Precise subpath mounts leave `/config` invisible, which was verified rather than assumed.
+3. **`runtime: docker` cannot run a stock third-party image.** docs/05 sketched exactly that, with templated arguments. A stock image emits its own log format, and the protocol says stdout is cairn NDJSON. Tools that do not speak it get an *adapter engine*; letting the runtime translate would give it an "and which log format?" field.
+4. **browsertrix cannot take a cookie jar, and no bridge exists.** It has no cookie option; `--profile` wants a browser profile tarball, and one built with our Chromium is accepted and ignored because it runs **Brave** while we ship **Chrome for Testing**. Verified against a gated fixture: it archived the interstitial. So "profiles" is struck from the bullet list above, the engine declares `auth: [user_agent]`, and the picker warns before the capture.
+5. **A relative `command` could never work.** An engine runs with the *job's* temp directory as its working directory, so `command: ["python3", "engine.py"]` — the obvious thing to write — resolved to nothing. Arguments naming files in the engine's own directory are now made absolute. Found by the conformance harness on its first run against the template.
+6. **Do not override a container's working directory.** browsertrix sets `WORKDIR /crawls` and resolves its output tree from there; pointing it elsewhere wrote the crawl where nobody was looking and still exited 0, reporting two pages crawled and no archive.
+
+**Also measured:** `--behaviors` defaults to `autoplay,autofetch,autoscroll,siteSpecific`, and passing a shorter list drops `autofetch` — three lazy images became one. And the fixture itself needed correcting: wget scans script *text* for anything shaped like a URL attribute, so a literal `href="/post.html"` inside a script was found by it, and a test meant to prove "only a browser sees this" was quietly proving nothing.
+
+**Left out on purpose:** the `single-file-cli`, `yt-dlp`, `wget2` and `warcprox` engines from docs/05's candidate list. The interface is proven by a second engine that exercises every part of it; a third that exercises the same parts again proves nothing further, and each is a real maintenance cost.
+
+**One thing to know:** the container-engine tests need the Docker socket *and* `CAIRN_TEST_CONTAINERS=1`. They pull most of a gigabyte and take minutes, and a CI runner has a socket — so the second gate is a deliberate opt-in rather than something every push pays for.
 
 ---
 

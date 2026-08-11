@@ -647,6 +647,14 @@ class NotifyUpdate(BaseModel):
 
 
 class EngineSummary(BaseModel):
+    """An installed engine, and whether it can actually run right now.
+
+    `enabled` is about the manifest loading; `available` is about the
+    environment. An engine that needs the Docker socket on a host without one
+    is perfectly valid and completely unusable, and the picker has to be able
+    to say which — otherwise it is selectable and fails at capture time.
+    """
+
     id: str
     name: str
     version: str
@@ -654,4 +662,6 @@ class EngineSummary(BaseModel):
     description: str
     capabilities: dict[str, Any]
     enabled: bool
+    available: bool = True
+    unavailable_reason: str | None = None
     error: str | None = None

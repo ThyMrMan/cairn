@@ -1,0 +1,53 @@
+apiVersion: cairn.engine/v1
+id: engine-template
+name: "Example: single-page snapshot"
+version: "1.0.0"
+description: >-
+  A worked example of the engine protocol. Fetches each seed once and writes a
+  WARC — no recursion, no assets. Copy this directory, rename it, and replace
+  the fetching.
+author: "cairn"
+homepage: https://github.com/you/cairn
+
+runtime:
+  # `subprocess`: cairn spawns this command with the path to job.json as the
+  # last argument. It never imports your code, so an engine can be written in
+  # any language that can read JSON and print lines.
+  #
+  # The other type is `docker`, where cairn runs an image beside itself and
+  # reads its stdout the same way. Use that when your tool needs a whole
+  # environment; see docs/05.
+  type: subprocess
+  command: ["python3", "engine.py"]
+
+capabilities:
+  # Honesty here is load-bearing: the UI hides options an engine cannot honour
+  # and warns when a site needs something it does not declare. Claiming
+  # `cookies` you ignore produces an archive full of login pages.
+  outputs: [warc, log]
+  javascript: false
+  scope: [host]
+  auth: [cookies, headers, user_agent]
+  incremental: false
+  resumable: false
+  max_concurrency: 1
+  requires_browser: false
+
+config_schema:
+  # Rendered directly into a form: title, description, type, enum, min/max,
+  # default. You write no frontend code. Cairn validates submitted config
+  # against this schema on the server too — never trust the browser to have
+  # applied your constraints.
+  type: object
+  additionalProperties: false
+  properties:
+    timeout_s:
+      type: integer
+      title: "Per-request timeout"
+      minimum: 1
+      maximum: 300
+      default: 30
+    user_agent:
+      type: string
+      title: "User agent"
+      default: "Mozilla/5.0 (compatible; cairn-engine-template/1.0)"

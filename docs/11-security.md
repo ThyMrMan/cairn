@@ -51,6 +51,20 @@ Every URL the app fetches — seeds, discovery targets, feeds, sitemaps, `verify
 
 wget follows redirects itself, so the engine can't validate hop-by-hop the way the app's own fetcher can. Mitigate with `--max-redirect=10` plus the scope allowlist — wget won't fetch a host that isn't in `--domains`, which incidentally makes it much harder to redirect a crawl somewhere interesting. Note the residual risk rather than pretending it's zero.
 
+### The Docker socket is root on the host
+
+A container engine needs `/var/run/docker.sock` mounted into cairn. **That grants root-equivalent control of the machine** — anything that can talk to the daemon can start a privileged container that mounts `/`. It is not a partial privilege and there is no way to scope it down from inside.
+
+So it is opt-in by omission: the socket is not mounted by default, nothing asks for it, and the engine picker says plainly that the engine is unavailable without it rather than failing at capture time. `jobs.allow_docker` exists so an operator who mounted the socket for something else can still forbid engines from using it; it defaults to on, because mounting the socket is already the deliberate act and a second switch defaulting to off would mean somebody does the work and is told the feature is unavailable with no hint why.
+
+What cairn does with it, once granted:
+
+- **Two directories, chosen by cairn.** The engine container gets the capture's output directory and the job's temp directory, and nothing else — not `/config`, which holds the database and the master key, and not the socket. Verified by probe: `/config` is not visible from inside an engine container.
+- **No privilege escalation.** `Privileged: false`, `no-new-privileges`, no added capabilities, and the socket is never passed on.
+- **Every container is labelled and swept.** `cairn.managed=true` plus the job id, so a process killed mid-capture does not leave a crawler running against somebody's site indefinitely. Swept at boot.
+
+None of that changes the first sentence. An engine image is third-party code running on a daemon that can do anything; the containment above limits what it reaches *by accident*, not what a hostile image could do. Install engines you trust, or leave the socket unmounted and use the ones in the image.
+
 **Notification targets are outbound requests to a user-supplied URL, and they are not SSRF.** A webhook pointed at `http://192.168.1.1/` is the single user of a single-user tool choosing to POST to their own router, which they could do from a shell on the same box. Two things do apply: the request carries no credentials and no archive content beyond the notification text, and the HTTP clients run with `trust_env=False` so an inherited `HTTP_PROXY` cannot silently redirect them. The private-range block above deliberately does not extend here — a self-hosted ntfy on the LAN is the *expected* configuration, and blocking it would make the feature useless for the people it is for.
 
 ---

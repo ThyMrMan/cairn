@@ -98,7 +98,17 @@ class Engine:
         # surprising and undocumented behaviour.
         if self.source == "builtin" and argv and argv[0] in ("python", "python3"):
             argv[0] = sys.executable
-        return argv
+
+        # An argument naming a file in the engine's own directory is made
+        # absolute. `command: ["python3", "engine.py"]` is the obvious thing to
+        # write and could never work otherwise: the engine runs with the job's
+        # temp directory as its working directory, so a relative path resolves
+        # there. Found by the conformance harness on its first run against the
+        # template — which is what the harness is for.
+        #
+        # Keyed on the file actually existing, so `-m` and `cairn.engines.wget`
+        # are left alone rather than being guessed at.
+        return [str(self.path / arg) if (self.path / arg).is_file() else arg for arg in argv]
 
     def env_overrides(self) -> dict[str, str]:
         """Environment additions for this engine's subprocess.

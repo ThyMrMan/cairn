@@ -928,9 +928,7 @@ class JobSupervisor:
         async with containers.client() as http:
             try:
                 if not await containers.image_present(http, image):
-                    self._bus.publish(
-                        job_id, EV_LOG, {"level": "info", "msg": f"pulling {image}"}
-                    )
+                    self._bus.publish(job_id, EV_LOG, {"level": "info", "msg": f"pulling {image}"})
                     async for status in containers.pull(http, image):
                         self._bus.publish(job_id, EV_LOG, {"level": "debug", "msg": status})
 
@@ -953,9 +951,7 @@ class JobSupervisor:
         )
         await self._announce(prepared, collector, status)
 
-    async def _pump_container(
-        self, http: Any, running: RunningJob, collector: _Collector
-    ) -> str:
+    async def _pump_container(self, http: Any, running: RunningJob, collector: _Collector) -> str:
         """Reassemble the container's framed log stream into protocol lines.
 
         Docker frames each chunk with an eight-byte header and the frames do

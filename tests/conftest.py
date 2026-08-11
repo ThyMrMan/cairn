@@ -349,6 +349,122 @@ def blog() -> Iterator[Blog]:
         server.server_close()
 
 
+# ── a site wget captures badly, for the M7 second engine ─────────────────
+#
+# Three things wget structurally cannot see, all of them ordinary on a modern
+# blog theme: a gallery built by script, images whose src is set when they
+# scroll into view, and a link that only exists after the script runs.
+
+LAZY_NAMES = ("one", "two", "three")
+
+JS_INDEX = b"""<!doctype html>
+<html><head><title>Gallery</title><style>
+  body { margin: 0; font: 16px/1.6 sans-serif; }
+  section { padding: 40px 24px; min-height: 30vh; }
+  img { display: block; width: 200px; height: 200px; background: #eee; }
+</style></head><body>
+<h1>Gallery</h1><p>MARKER-STATIC-TEXT</p>
+<div id="gallery"></div>
+<script>
+const NAMES = ["one", "two", "three"];
+const gallery = document.getElementById("gallery");
+for (const name of NAMES) {
+  const section = document.createElement("section");
+  const caption = document.createElement("p");
+  caption.textContent = "Photo " + name + " with enough text to give the page real height.";
+  const img = document.createElement("img");
+  img.dataset.src = "/img/" + name + ".png";
+  section.appendChild(caption); section.appendChild(img);
+  gallery.appendChild(section);
+}
+const io = new IntersectionObserver((entries) => {
+  for (const entry of entries) {
+    if (entry.isIntersecting && entry.target.dataset.src) {
+      entry.target.src = entry.target.dataset.src;
+      delete entry.target.dataset.src;
+    }
+  }
+}, { rootMargin: "100px" });
+for (const img of gallery.querySelectorAll("img")) io.observe(img);
+// Assembled from pieces on purpose. wget scans script *text* for anything
+// shaped like a URL attribute, so a literal href="/post.html" in here would
+// be found by it, and a fixture meant to prove "only a browser sees this"
+// would be quietly proving nothing.
+const nav = document.createElement("p");
+const link = document.createElement("a");
+link.setAttribute("h" + "ref", "/" + "post" + "." + "html");
+link.textContent = "the post";
+nav.appendChild(link);
+document.body.appendChild(nav);
+</script></body></html>"""
+
+JS_PAGES: dict[str, tuple[str, bytes]] = {
+    "/": ("text/html", JS_INDEX),
+    "/post.html": (
+        "text/html",
+        b"<html><body><h1>The post</h1><p>MARKER-POST-BODY</p></body></html>",
+    ),
+    "/robots.txt": ("text/plain", b"User-agent: *\nAllow: /\n"),
+    **{
+        f"/img/{name}.png": (
+            "image/png",
+            b"\x89PNG\r\n\x1a\n" + f"LAZY-IMAGE-{name.upper()}".encode() * 8,
+        )
+        for name in LAZY_NAMES
+    },
+}
+
+
+class _JsHandler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def do_GET(self) -> None:
+        hit = JS_PAGES.get(self.path.split("?")[0])
+        ctype, body = hit or ("text/html", b"<html><body>not found</body></html>")
+        self.send_response(200 if hit else 404)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *_args: object) -> None:
+        pass
+
+
+@pytest.fixture
+def js_server() -> Iterator[str]:
+    """A JS-heavy site, bound to every interface.
+
+    Not 127.0.0.1: a container engine reaches this from its own network
+    namespace, where loopback is its own.
+    """
+    server = ThreadingHTTPServer(("0.0.0.0", 0), _JsHandler)  # noqa: S104
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        yield f"http://{_lan_address()}:{server.server_address[1]}/"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def _lan_address() -> str:
+    """An address a sibling container can reach us on.
+
+    Determined by asking the routing table which source address would be used
+    to reach somewhere else — no packet is sent, and it works without DNS.
+    """
+    import socket
+
+    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        probe.connect(("10.255.255.255", 1))
+        return str(probe.getsockname()[0])
+    except OSError:  # pragma: no cover — no route at all
+        return "127.0.0.1"
+    finally:
+        probe.close()
+
+
 class _WebhookHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     received: list[dict[str, object]]

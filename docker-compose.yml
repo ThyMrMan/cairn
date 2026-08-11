@@ -11,6 +11,10 @@ services:
     volumes:
       - ./config:/config          # database + settings. Put this on an SSD.
       - ./data:/data              # WARC storage. Bulk; an array is fine.
+      # Uncomment for container engines (browsertrix). READ docs/11 FIRST:
+      # the Docker socket grants root-equivalent control of this host. Without
+      # it the engine shows as unavailable and everything else works as before.
+      # - /var/run/docker.sock:/var/run/docker.sock
     environment:
       # Generate with: openssl rand -base64 48
       # Losing this makes stored cookie jars unrecoverable.

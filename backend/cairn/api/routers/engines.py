@@ -20,6 +20,31 @@ def _registry(request: Request) -> EngineRegistry:
     return registry
 
 
+def _availability(engine: Any) -> tuple[bool, str | None]:
+    """Whether this engine could run here, and why not if it could not.
+
+    Only the environment, not the manifest — a container engine on a host with
+    no Docker socket is a perfectly valid engine that cannot run, and saying
+    so in the picker is better than discovering it when a capture fails.
+    """
+    needs_docker = bool(engine.capabilities.get("requires_docker")) or (
+        engine.runtime.get("type") == "docker"
+    )
+    if needs_docker:
+        from cairn.services import containers
+
+        ok, reason = containers.available()
+        if not ok:
+            return False, reason
+    if engine.capabilities.get("requires_browser") and not needs_docker:
+        from cairn.services import browser
+
+        ok, reason = browser.availability()
+        if not ok:
+            return False, reason
+    return True, None
+
+
 @router.get("/engines", response_model=list[EngineSummary])
 def list_engines(
     _user: CurrentUser, registry: Annotated[EngineRegistry, Depends(_registry)]
@@ -34,6 +59,8 @@ def list_engines(
             description=e.description,
             capabilities=e.capabilities,
             enabled=True,
+            available=_availability(e)[0],
+            unavailable_reason=_availability(e)[1],
             error=None,
         )
         for e in registry.all()

@@ -290,6 +290,109 @@ def _cmd_reset_key(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_engines_list(_args: argparse.Namespace) -> int:
+    from cairn.engines.registry import discover
+
+    settings = get_settings()
+    engines, errors = discover(settings)
+    for engine in sorted(engines.values(), key=lambda e: e.id):
+        caps = engine.capabilities
+        marks = "".join(
+            (
+                "js " if caps.get("javascript") else "",
+                "docker " if caps.get("requires_docker") else "",
+            )
+        )
+        print(f"{engine.id:<16} {engine.version:<8} {engine.source:<8} {marks}{engine.name}")
+    for engine_id, error in sorted(errors.items()):
+        print(f"{engine_id:<16} {'—':<8} {'broken':<8} {error}", file=sys.stderr)
+    return 1 if errors else 0
+
+
+def _resolve_engine(target: str) -> object:
+    """An engine by id, or by path to its directory.
+
+    Both, because an author testing something they have not installed yet has
+    only a path, and somebody debugging an installed one has only an id.
+    """
+    from pathlib import Path
+
+    from cairn.engines.registry import discover, load_manifest
+
+    candidate = Path(target)
+    if (candidate / "engine.yaml").is_file():
+        return load_manifest(candidate.resolve(), source="dropin")
+    engines, errors = discover(get_settings())
+    if target in engines:
+        return engines[target]
+    if target in errors:
+        raise SystemExit(f"{target}: {errors[target]}")
+    known = ", ".join(sorted(engines)) or "none"
+    raise SystemExit(f"no engine {target!r} and no engine.yaml there (installed: {known})")
+
+
+def _cmd_engines_validate(args: argparse.Namespace) -> int:
+    """Check a manifest without running anything."""
+    from cairn.engines.registry import EngineError
+
+    try:
+        engine = _resolve_engine(args.target)
+    except EngineError as exc:
+        print(f"invalid: {exc}", file=sys.stderr)
+        return 1
+
+    print(f"{engine.id} {engine.version} — {engine.name}")  # type: ignore[attr-defined]
+    print(f"  runtime      {engine.runtime.get('type')}")  # type: ignore[attr-defined]
+    caps = engine.capabilities  # type: ignore[attr-defined]
+    print(f"  outputs      {', '.join(caps.get('outputs') or []) or '—'}")
+    print(f"  javascript   {bool(caps.get('javascript'))}")
+    print(f"  auth         {', '.join(caps.get('auth') or []) or '—'}")
+    defaults = engine.defaults()  # type: ignore[attr-defined]
+    print(f"  config       {len(defaults)} setting(s) with defaults")
+    try:
+        engine.validate_config({})  # type: ignore[attr-defined]
+    except EngineError as exc:
+        print(f"  its own defaults do not satisfy its schema: {exc}", file=sys.stderr)
+        return 1
+    print("manifest is valid.")
+    return 0
+
+
+def _cmd_engines_test(args: argparse.Namespace) -> int:
+    """Run an engine against a fixture site and judge the protocol."""
+    import tempfile
+    from pathlib import Path
+
+    from cairn.engines import conformance
+    from cairn.engines.registry import EngineError
+
+    try:
+        engine = _resolve_engine(args.target)
+    except EngineError as exc:
+        print(f"invalid: {exc}", file=sys.stderr)
+        return 1
+
+    with tempfile.TemporaryDirectory(prefix="cairn-conformance-") as tmp:
+        report = conformance.run(
+            engine,  # type: ignore[arg-type]
+            Path(tmp),
+            seed=args.url,
+            timeout_s=args.timeout,
+        )
+
+    print(f"conformance: {report.engine_id}")
+    for check in report.checks:
+        print(check)
+    if report.events:
+        counts = ", ".join(f"{k}={v}" for k, v in sorted(report.events.items()))
+        print(f"  events: {counts}")
+    if not report.ok and report.stderr.strip():
+        print("--- its stderr ---", file=sys.stderr)
+        print(report.stderr, file=sys.stderr)
+    print("PASS" if report.ok else "FAIL")
+    return 0 if report.ok else 1
+
+
 def _cmd_key_info(_args: argparse.Namespace) -> int:
     settings = get_settings()
     ensure_directories(settings)
@@ -352,6 +455,29 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("users", help="List accounts and whether they are locked").set_defaults(
         func=_cmd_list_users
     )
+
+    engines = sub.add_parser("engines", help="Inspect, validate and test capture engines")
+    engine_sub = engines.add_subparsers(dest="engines_command", required=True)
+
+    engine_sub.add_parser("list", help="Show installed engines").set_defaults(
+        func=_cmd_engines_list
+    )
+
+    validate = engine_sub.add_parser("validate", help="Check an engine manifest")
+    validate.add_argument("target", help="An engine id, or a path to its directory")
+    validate.set_defaults(func=_cmd_engines_validate)
+
+    test = engine_sub.add_parser(
+        "test", help="Run an engine against a fixture site and check the protocol"
+    )
+    test.add_argument("target", help="An engine id, or a path to its directory")
+    test.add_argument(
+        "--url",
+        help="Crawl this instead of the built-in fixture. Use for an engine that "
+        "needs something the fixture cannot be.",
+    )
+    test.add_argument("--timeout", type=int, default=900, help="Seconds before giving up")
+    test.set_defaults(func=_cmd_engines_test)
 
     sub.add_parser("key-info", help="Show the master key fingerprint").set_defaults(
         func=_cmd_key_info

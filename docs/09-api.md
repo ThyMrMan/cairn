@@ -229,11 +229,14 @@ The interactive session is a **CDP screencast over a WebSocket**, not the `vnc_u
 
 | Method | Path | Notes |
 |---|---|---|
-| `GET` | `/api/engines` | Installed, with manifests and capabilities |
-| `GET` | `/api/engines/{id}/schema` | JSON Schema for the config form |
+| `GET` | `/api/engines` | Installed, with capabilities, plus `available` and `unavailable_reason` |
+| `GET` | `/api/engines/{id}/schema` | JSON Schema and defaults for the config form |
 | `POST` | `/api/engines/rescan` | Re-read `/config/engines` |
 | `POST` | `/api/engines/{id}/validate` | Validate a config object without saving |
-| `PATCH` | `/api/engines/{id}` | Enable/disable, set instance defaults |
+
+**`enabled` and `available` are different questions.** The first is whether the manifest loaded; the second is whether this host can run it. A container engine on a machine with no Docker socket is a perfectly valid engine that cannot run, and the picker has to be able to say which — otherwise it is selectable and fails at capture time.
+
+**There is no `PATCH /api/engines/{id}`.** This document listed one for enable/disable and instance defaults, and neither turned out to be a real thing: an engine is enabled by being installed and disabled by being removed, and "instance defaults" would be a third layer under the schema defaults and the per-site config with no case that needs it. An engine is chosen and configured per site, through `PATCH /api/sites/{id}`.
 | `GET` | `/api/postprocessors` | Chain with order and enabled state |
 | `PATCH` | `/api/postprocessors/{id}` | Enable/disable, reorder |
 

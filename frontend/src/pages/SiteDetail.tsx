@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 
 import { DomainPicker } from "../components/DomainPicker";
+import { EnginePicker } from "../components/EnginePicker";
 import { Feeds } from "../components/Feeds";
 import { LiveLog } from "../components/LiveLog";
 import { Replay } from "../components/Replay";
@@ -132,6 +133,8 @@ export default function SiteDetail() {
         siteId={siteId}
         onChanged={() => void client.invalidateQueries({ queryKey: ["site", siteId] })}
       />
+
+      <EnginePicker site={data} />
 
       <Feeds siteId={siteId} />
 

@@ -455,6 +455,11 @@ export type InteractiveSession = {
   height: number;
 };
 
+/**
+ * `enabled` is whether the manifest loaded; `available` is whether the
+ * environment can actually run it. An engine needing the Docker socket on a
+ * host without one is valid and unusable, and the picker has to say which.
+ */
 export type Engine = {
   id: string;
   name: string;
@@ -463,7 +468,14 @@ export type Engine = {
   description: string;
   capabilities: Record<string, unknown>;
   enabled: boolean;
+  available: boolean;
+  unavailable_reason: string | null;
   error: string | null;
+};
+
+export type EngineSchema = {
+  schema: Record<string, unknown>;
+  defaults: Record<string, unknown>;
 };
 
 // ── feeds ────────────────────────────────────────────────────────────────
@@ -854,6 +866,7 @@ export const endpoints = {
 
   // ── engines ────────────────────────────────────────────────────────────
   engines: () => api.get<Engine[]>("/engines"),
+  engineSchema: (id: string) => api.get<EngineSchema>(`/engines/${id}/schema`),
   rescanEngines: () => api.post<Engine[]>("/engines/rescan"),
 };
 
