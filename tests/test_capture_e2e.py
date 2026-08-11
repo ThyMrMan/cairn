@@ -324,19 +324,29 @@ def test_lazy_images_are_reported_rather_than_left_to_be_discovered(
     assert any("lazy-loaded" in w for w in manifest["stats"].get("warnings", []))
 
 
-def test_css_escaped_urls_are_explained_rather_than_left_as_404s(
+def test_css_escaped_urls_are_never_requested_in_their_mangled_form(
     authed: TestClient, settings: Settings, site_server: str
 ) -> None:
     r"""Blogger skins write theme images as url(https\:\/\/host\/x.png).
 
-    wget does not decode CSS escapes, so it treats that absolute URL as
-    relative and requests it against the blog, producing a 404 whose cause is
-    not remotely obvious from the log. The capture should say what happened
-    and name the host the asset was really on.
+    wget does not decode CSS escapes, so it reads that absolute URL as
+    relative and requests it against the blog — one 404 per referencing page
+    per variant, none of which could ever have fetched the asset. The reject
+    stops them, and the property worth pinning is the absence: no request the
+    capture makes may carry a backslash.
+
+    Note which spelling the assertion uses. wget stores the percent-encoded
+    `%5C`, so that is what lands in the CDX and in these rows, but it matches
+    --reject-regex against the literal backslash. Writing the pattern from
+    what the log shows is exactly how this shipped broken.
     """
     _job, site_id = run_capture(authed, site_server)
     site = authed.get(f"/api/sites/{site_id}").json()
     capture = authed.get(f"/api/sites/{site_id}/captures").json()[0]
+
+    urls = authed.get(f"/api/captures/{capture['id']}/urls?per_page=200").json()["items"]
+    mangled = [u["url"] for u in urls if "%5C" in u["url"] or "\\" in u["url"]]
+    assert not mangled, f"the crawl still requested CSS-escaped URLs: {mangled[:3]}"
 
     manifest = storage.read_json(
         storage.site_dir(settings, site["archive_path"])
@@ -344,12 +354,12 @@ def test_css_escaped_urls_are_explained_rather_than_left_as_404s(
         / capture["dir_name"]
         / storage.MANIFEST_FILE
     )
-    stats = manifest["stats"]
-    assert stats.get("css_escaped_failures", 0) >= 1
+    assert manifest["stats"].get("css_escaped_failures", 0) == 0
 
-    warnings = " ".join(stats.get("warnings", []))
-    assert "CSS-escaped" in warnings
-    assert "themes.example.test" in warnings
+    # The asset itself is still absent — this capture ran without discovery,
+    # so nothing injected the decoded URL. Silence would be the wrong outcome.
+    missing = " ".join(manifest["stats"].get("warnings", []))
+    assert "themes.example.test" in missing
 
 
 def test_second_capture_of_the_same_site_gets_its_own_directory(
