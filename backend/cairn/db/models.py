@@ -440,6 +440,12 @@ class AccessProfile(Base):
     hosts: Mapped[Any | None] = mapped_column(JsonText, default=None)
     cookies_enc: Mapped[bytes | None] = mapped_column(LargeBinary, default=None)
     script_enc: Mapped[bytes | None] = mapped_column(LargeBinary, default=None)
+    # Playwright's full storage_state from an interactive session: cookies plus
+    # localStorage per origin. wget can only use the cookies, which is why they
+    # are also kept separately in `cookies_enc` — this is what lets the same
+    # profile drive a browser engine later (docs/06), and a login that keeps
+    # its token in localStorage is not reconstructable from cookies alone.
+    storage_enc: Mapped[bytes | None] = mapped_column(LargeBinary, default=None)
     cookie_meta: Mapped[Any | None] = mapped_column(JsonText, default=None)
     minted_at: Mapped[datetime | None] = mapped_column(UtcDateTime, default=None)
     expires_at: Mapped[datetime | None] = mapped_column(UtcDateTime, default=None)

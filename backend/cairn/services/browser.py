@@ -88,7 +88,11 @@ def require_available() -> None:
 
 @asynccontextmanager
 async def launched() -> AsyncIterator[Any]:
-    """A running browser, closed on the way out however that happens."""
+    """A running browser, closed on the way out however that happens.
+
+    For work that starts and finishes inside one call — the mint. An
+    interactive session outlives its request and uses `start`/`shutdown`.
+    """
     require_available()
     from playwright.async_api import async_playwright
 
@@ -98,6 +102,37 @@ async def launched() -> AsyncIterator[Any]:
             yield browser
         finally:
             await browser.close()
+
+
+async def start() -> tuple[Any, Any]:
+    """A browser that outlives the call, for interactive sessions.
+
+    Returns the Playwright handle as well, because stopping it is not
+    optional: it owns a Node subprocess, and dropping the reference without
+    stopping leaks that process for the life of the container.
+    """
+    require_available()
+    from playwright.async_api import async_playwright
+
+    playwright = await async_playwright().start()
+    try:
+        browser = await _launch(playwright)
+    except BaseException:
+        await playwright.stop()
+        raise
+    return playwright, browser
+
+
+async def shutdown(playwright: Any, browser: Any) -> None:
+    """Close both halves, letting neither failure hide the other."""
+    from contextlib import suppress
+
+    if browser is not None:
+        with suppress(Exception):
+            await browser.close()
+    if playwright is not None:
+        with suppress(Exception):
+            await playwright.stop()
 
 
 async def _launch(playwright: Any) -> Any:

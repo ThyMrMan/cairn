@@ -167,6 +167,136 @@ def clear_material(profile_id: int, db: DbSession, user: CurrentUser, ip: Client
     return Ok()
 
 
+@router.put("/profiles/{profile_id}/script")
+async def upload_script(
+    profile_id: int,
+    db: DbSession,
+    sealer: AppSealer,
+    user: CurrentUser,
+    ip: ClientIp,
+    file: UploadFile = File(...),
+) -> dict[str, Any]:
+    """Upload a `.user.js`. Write-only; returns what was parsed out of it."""
+    from cairn.services import userscripts
+
+    profile = _require_profile(db, profile_id)
+    raw = await file.read(userscripts.MAX_SCRIPT_BYTES + 1)
+    if len(raw) > userscripts.MAX_SCRIPT_BYTES:
+        raise ApiError("payload_too_large", "That file is larger than 512 KB.", status_code=413)
+
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        text = raw.decode("latin-1")
+
+    try:
+        script = profile_service.store_script(db, sealer, profile, text)
+    except userscripts.UserscriptError as exc:
+        raise ApiError("invalid_script", str(exc), status_code=422) from exc
+
+    # The parse report is metadata, so it can be kept unsealed and shown
+    # without ever unsealing the script itself.
+    profile.cookie_meta = {**(profile.cookie_meta or {}), "script": script.to_dict()}
+    db.flush()
+    audit.record(
+        db,
+        audit.PROFILE_MATERIAL_WRITE,
+        actor=user.username,
+        target=profile.name,
+        ip=ip,
+        detail={"kind": "userscript", "name": script.name},
+    )
+    return {"script": script.to_dict(), "profile": profile_service.summary(profile)}
+
+
+@router.post("/profiles/{profile_id}/mint")
+async def mint_profile(
+    profile_id: int, db: DbSession, sealer: AppSealer, user: CurrentUser, ip: ClientIp
+) -> dict[str, Any]:
+    """Run the stored userscript and keep the cookies it earns.
+
+    Synchronous rather than a queued job: a mint is one page load with a hard
+    ceiling, and the person who pressed the button is waiting to see whether
+    their script worked. Watching a job row for something that takes five
+    seconds would be worse in every way.
+    """
+    from cairn.services import browser
+    from cairn.services import mint as mint_service
+
+    profile = _require_profile(db, profile_id)
+    script_text = profile_service.load_script(sealer, profile)
+    if script_text is None:
+        raise ApiError("no_script", "This profile has no userscript to run.", status_code=409)
+    if not profile.verify_url:
+        raise ApiError(
+            "no_verify_url",
+            "Set a verify URL first — it is the page the script runs against.",
+            status_code=409,
+        )
+
+    try:
+        result = await mint_service.mint(
+            script_text=script_text,
+            verify_url=profile.verify_url,
+            user_agent=profile.user_agent,
+        )
+    except browser.BrowserUnavailableError as exc:
+        raise ApiError("browser_unavailable", str(exc), status_code=503) from exc
+
+    if result.ok and result.cookies_text:
+        profile_service.store_cookies(db, sealer, profile, result.cookies_text, mode="userscript")
+    profile.last_verified_at = utcnow()
+    profile.last_verify_result = "ok" if result.ok else "failed"
+    db.flush()
+
+    audit.record(
+        db,
+        audit.PROFILE_MATERIAL_WRITE,
+        actor=user.username,
+        target=profile.name,
+        ip=ip,
+        detail={"kind": "mint", "ok": result.ok, "count": result.cookie_count},
+    )
+    return {"result": result.to_dict(), "profile": profile_service.summary(profile)}
+
+
+@router.post("/profiles/{profile_id}/verify")
+async def verify_profile(
+    profile_id: int, db: DbSession, sealer: AppSealer, user: CurrentUser, ip: ClientIp
+) -> dict[str, Any]:
+    """Fetch the verify URL with this jar and say what came back.
+
+    Always run this before a multi-hour capture (docs/06). It is one request,
+    and the failure it catches — a jar that no longer gets past the gate — is
+    otherwise discovered by reading the archive weeks later.
+
+    Deliberately plain HTTP rather than the browser: this has to answer the
+    question *wget* will face, and a browser would run the site's JavaScript
+    and could get past a gate that wget then will not.
+    """
+    profile = _require_profile(db, profile_id)
+    if not profile.verify_url:
+        raise ApiError("no_verify_url", "This profile has no verify URL set.", status_code=409)
+
+    text = profile_service.load_cookies(sealer, profile)
+    if text is None:
+        raise ApiError("no_cookies", "This profile has no cookies stored yet.", status_code=409)
+
+    outcome = await profile_service.verify(profile, text)
+    profile.last_verified_at = utcnow()
+    profile.last_verify_result = "ok" if outcome["ok"] else "failed"
+    db.flush()
+    audit.record(
+        db,
+        "profile.verify",
+        actor=user.username,
+        target=profile.name,
+        ip=ip,
+        detail={"ok": outcome["ok"]},
+    )
+    return outcome
+
+
 @router.get("/profiles/{profile_id}/coverage", response_model=CoverageResponse)
 def coverage(
     profile_id: int,

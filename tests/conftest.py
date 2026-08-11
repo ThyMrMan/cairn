@@ -167,13 +167,22 @@ def site_server() -> Iterator[str]:
 
 GATE_COOKIE = "cairn_test_consent"
 
+# The button is positioned absolutely, and accepting lands on a *different*
+# path. Both are for the interactive test, which drives this through a
+# screencast: it can only send a coordinate, so where the button is must not
+# depend on default font metrics, and "did the click work?" has to be
+# answerable from the URL rather than from pixels.
 INTERSTITIAL_PAGE = (
-    b"<html><body><h1>Content warning</h1>"
+    b"<html><body style='margin:0'><h1>Content warning</h1>"
     b"<p>This blog may contain content only suitable for adults.</p>"
-    b'<button id="continue" onclick="accept()">I understand and wish to continue</button>'
+    b'<button id="continue" onclick="accept()" '
+    b"style='position:absolute;left:0;top:200px;width:600px;height:120px'>"
+    b"I understand and wish to continue</button>"
     b"<script>function accept(){document.cookie='" + GATE_COOKIE.encode() + b"=1; path=/';"
-    b"location.href='/';}</script></body></html>"
+    b"location.href='/post-1.html';}</script></body></html>"
 )
+# Anywhere inside the button above.
+INTERSTITIAL_BUTTON = (300, 260)
 
 GATED_PAGES: dict[str, bytes] = {
     "/": b"<html><body><h1>Index</h1><a href='/post-1.html'>one</a>"

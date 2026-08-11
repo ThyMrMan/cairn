@@ -33,6 +33,7 @@ log = get_logger(__name__)
 
 COOKIES_CONTEXT = "profile.cookies"
 SCRIPT_CONTEXT = "profile.script"
+STORAGE_CONTEXT = "profile.storage"
 COOKIE_FILE_NAME = "cookies.txt"
 MAX_COOKIE_BYTES = 1024 * 1024
 NETSCAPE_FIELDS = 7
@@ -274,15 +275,27 @@ def fingerprint(text: str) -> str:
 
 
 def store_cookies(
-    session: Session, sealer: Sealer, profile: AccessProfile, text: str
+    session: Session,
+    sealer: Sealer,
+    profile: AccessProfile,
+    text: str,
+    *,
+    mode: str = "cookies",
 ) -> CookieReport:
+    """Seal a jar onto a profile, whatever produced it.
+
+    `mode` says where it came from — an upload, a mint, or an interactive
+    session — and it matters beyond bookkeeping: only a `userscript` profile
+    can be re-minted automatically, because only it still has the script that
+    would do the minting.
+    """
     report = parse_cookies(text)
     if not report.ok:
         raise ProfileError(report.errors[0] if report.errors else "no usable cookies")
 
     canonical = "# Netscape HTTP Cookie File\n" + "\n".join(c.to_line() for c in report.cookies)
     profile.cookies_enc = sealer.seal(canonical, context=COOKIES_CONTEXT)
-    profile.mode = "cookies"
+    profile.mode = mode
     profile.hosts = report.hosts_covered
     profile.expires_at = report.earliest_expiry
     profile.fingerprint = fingerprint(canonical)
@@ -304,9 +317,52 @@ def store_cookies(
     return report
 
 
+def store_script(session: Session, sealer: Sealer, profile: AccessProfile, text: str) -> Any:
+    """Seal a userscript onto a profile and return what was parsed out of it.
+
+    Sealed like the cookies, for a reason worth stating: a userscript that
+    dismisses an interstitial usually encodes something about how to get past
+    that site, and the archive tree it would otherwise sit in is shared over
+    SMB and copied into backups.
+    """
+    from cairn.services import userscripts
+
+    script = userscripts.parse(text)
+    profile.script_enc = sealer.seal(text, context=SCRIPT_CONTEXT)
+    profile.mode = "userscript"
+    profile.updated_at = utcnow()
+    session.flush()
+    log.info("userscript stored", extra={"profile": profile.id, "name": script.name})
+    return script
+
+
+def load_script(sealer: Sealer, profile: AccessProfile) -> str | None:
+    if profile.script_enc is None:
+        return None
+    return sealer.unseal_text(profile.script_enc, context=SCRIPT_CONTEXT)
+
+
+def store_storage_state(
+    session: Session, sealer: Sealer, profile: AccessProfile, state: dict[str, Any]
+) -> None:
+    """Keep the full browser state an interactive session ended with.
+
+    wget can only be handed cookies, so this changes nothing about capture
+    today. It is what lets the same profile drive a browser engine in M7, and
+    a login that keeps its token in localStorage cannot be rebuilt from
+    cookies alone — so it is captured now, while the browser still has it.
+    """
+    import json
+
+    profile.storage_enc = sealer.seal(json.dumps(state), context=STORAGE_CONTEXT)
+    profile.updated_at = utcnow()
+    session.flush()
+
+
 def clear_material(session: Session, profile: AccessProfile) -> None:
     profile.cookies_enc = None
     profile.script_enc = None
+    profile.storage_enc = None
     profile.cookie_meta = None
     profile.fingerprint = None
     profile.expires_at = None
@@ -355,6 +411,48 @@ def materialize(
     return Material(cookies_file=target, user_agent=profile.user_agent)
 
 
+async def verify(profile: AccessProfile, cookies_text: str) -> dict[str, Any]:
+    """Fetch `verify_url` with this jar and report what came back.
+
+    Plain HTTP on purpose. The question is whether *wget* will get real
+    content, and a browser would answer a different one — it runs the site's
+    JavaScript and can talk its way past a gate that wget then cannot, which
+    is the exact failure this check exists to catch.
+    """
+    import httpx
+
+    from cairn.services import interstitial
+
+    jar = httpx.Cookies()
+    for cookie in parse_cookies(cookies_text).cookies:
+        jar.set(cookie.name, cookie.value, domain=cookie.domain, path=cookie.path)
+
+    headers = {"User-Agent": profile.user_agent} if profile.user_agent else {}
+    try:
+        async with httpx.AsyncClient(
+            cookies=jar, headers=headers, follow_redirects=True, timeout=20.0
+        ) as client:
+            response = await client.get(str(profile.verify_url))
+    except httpx.HTTPError as exc:
+        return {"ok": False, "reason": f"could not reach {profile.verify_url}: {exc}", "status": 0}
+
+    verdict = interstitial.looks_blocked(response.content[: 512 * 1024], str(response.url))
+    ok = response.status_code < 400 and verdict.ok
+    if response.status_code >= 400:
+        reason = f"the site answered {response.status_code}"
+    elif verdict.blocked:
+        reason = f"still the interstitial — {verdict.reason}"
+    else:
+        reason = f"real content from {response.url}"
+    return {
+        "ok": ok,
+        "reason": reason,
+        "status": response.status_code,
+        "final_url": str(response.url),
+        "bytes": len(response.content),
+    }
+
+
 def summary(profile: AccessProfile) -> dict[str, Any]:
     """The API shape — metadata only, never material (docs/06)."""
     meta: dict[str, Any] = profile.cookie_meta or {}
@@ -370,6 +468,10 @@ def summary(profile: AccessProfile) -> dict[str, Any]:
         "sensitive": meta.get("sensitive", []),
         "warnings": meta.get("warnings", []),
         "has_material": profile.cookies_enc is not None or profile.script_enc is not None,
+        "has_cookies": profile.cookies_enc is not None,
+        "has_script": profile.script_enc is not None,
+        "has_storage": profile.storage_enc is not None,
+        "script": meta.get("script"),
         "minted_at": profile.minted_at,
         "expires_at": profile.expires_at,
         "fingerprint": profile.fingerprint,

@@ -23,6 +23,7 @@ from cairn.api.routers import captures as captures_router
 from cairn.api.routers import discovery as discovery_router
 from cairn.api.routers import engines as engines_router
 from cairn.api.routers import health as health_router
+from cairn.api.routers import interactive as interactive_router
 from cairn.api.routers import jobs as jobs_router
 from cairn.api.routers import maintenance as maintenance_router
 from cairn.api.routers import organization as organization_router
@@ -49,6 +50,7 @@ from cairn.engines.registry import EngineRegistry
 from cairn.logging import configure_logging, get_logger
 from cairn.services.auth import purge_expired_sessions
 from cairn.services.events import EventBus
+from cairn.services.interactive import SessionRegistry as InteractiveRegistry
 from cairn.services.jobs import JobSupervisor
 
 log = get_logger(__name__)
@@ -115,6 +117,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     bus = EventBus()
     supervisor = JobSupervisor(settings, factory, bus, registry, sealer)
+    sessions = InteractiveRegistry()
 
     app.state.engine = engine
     app.state.sessionmaker = factory
@@ -122,6 +125,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.registry = registry
     app.state.bus = bus
     app.state.supervisor = supervisor
+    app.state.interactive = sessions
 
     # Started last: it reconciles jobs left running by a previous process and
     # begins dispatching, so nothing may be half-initialised behind it.
@@ -135,6 +139,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         await supervisor.stop()
+        # Before disposing the engine: a live session owns a Chromium and a
+        # Node process, and dropping the reference would leave both running
+        # for as long as the container does.
+        await sessions.shutdown()
         engine.dispose()
         log.info("cairn stopped")
 
@@ -168,6 +176,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(discovery_router.router, prefix="/api")
     app.include_router(jobs_router.router, prefix="/api")
     app.include_router(profiles_router.router, prefix="/api")
+    app.include_router(interactive_router.router, prefix="/api")
     app.include_router(engines_router.router, prefix="/api")
     app.include_router(replay_router.router, prefix="/api")
 

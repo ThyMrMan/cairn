@@ -72,12 +72,37 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         """
         return self.settings.replay_origin_for(request.url.scheme, request.url.hostname) or "'none'"
 
+    @staticmethod
+    def _connect_src_for(request: Request) -> str:
+        """Where the page may open connections, including the WebSocket.
+
+        CSP3 says `'self'` covers the `ws:`/`wss:` forms of the same origin,
+        and current browsers implement that — but the interactive profile is a
+        canvas fed entirely by that socket, so a browser that disagrees shows
+        an empty box whose only explanation is in the console. That is exactly
+        how the replay tab failed in M3. Naming the origin costs nothing and
+        removes the whole class.
+        """
+        host = request.url.hostname
+        if not host:  # pragma: no cover — a request with no Host
+            return "'self'"
+        port = f":{request.url.port}" if request.url.port else ""
+        scheme = "wss" if request.url.scheme == "https" else "ws"
+        return f"'self' {scheme}://{host}{port}"
+
     def _csp_for(self, request: Request) -> str:
         frame_src = self._frame_src_for(request)
-        cached = self._csp_by_frame_src.get(frame_src)
+        connect_src = self._connect_src_for(request)
+        key = f"{frame_src}|{connect_src}"
+        cached = self._csp_by_frame_src.get(key)
         if cached is None:
-            cached = self._build_csp(self.settings, self._script_hashes, frame_src=frame_src)
-            self._csp_by_frame_src[frame_src] = cached
+            cached = self._build_csp(
+                self.settings,
+                self._script_hashes,
+                frame_src=frame_src,
+                connect_src=connect_src,
+            )
+            self._csp_by_frame_src[key] = cached
         return cached
 
     @staticmethod
@@ -86,8 +111,10 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         script_hashes: list[str] | None = None,
         *,
         frame_src: str | None = None,
+        connect_src: str | None = None,
     ) -> str:
         frame_src = frame_src or settings.replay_origin or "'none'"
+        connect_src = connect_src or "'self'"
         script_src = " ".join(["'self'", *(script_hashes or [])])
         directives = [
             "default-src 'self'",
@@ -98,7 +125,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "img-src 'self' data: blob:",
             "font-src 'self' data:",
             f"frame-src {frame_src}",
-            "connect-src 'self'",
+            f"connect-src {connect_src}",
             "frame-ancestors 'none'",
             "base-uri 'none'",
             "form-action 'self'",
@@ -108,9 +135,9 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             # Vite's dev server needs websockets for HMR and eval for the
             # module runner. Never in production.
             directives = [
-                d.replace("connect-src 'self'", "connect-src 'self' ws: wss:").replace(
-                    f"script-src {script_src}", f"script-src {script_src} 'unsafe-eval'"
-                )
+                d.replace(
+                    f"connect-src {connect_src}", f"connect-src {connect_src} ws: wss:"
+                ).replace(f"script-src {script_src}", f"script-src {script_src} 'unsafe-eval'")
                 for d in directives
             ]
         return "; ".join(directives)

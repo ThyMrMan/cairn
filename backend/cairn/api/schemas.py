@@ -482,6 +482,26 @@ class CoverageResponse(BaseModel):
     warnings: list[str]
 
 
+class InteractiveStart(BaseModel):
+    url: str | None = Field(default=None, max_length=2048)
+
+
+class InteractiveSession(BaseModel):
+    """Where to connect, and the size the frames will be.
+
+    The viewport goes to the client because it has to map a click on its
+    canvas back to a coordinate in the page, and guessing that from the first
+    frame would be wrong until a frame arrived — which, on a settled page,
+    could be never.
+    """
+
+    session_id: str
+    profile_id: int
+    url: str
+    width: int
+    height: int
+
+
 # ── engines ──────────────────────────────────────────────────────────────
 
 
