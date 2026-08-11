@@ -47,6 +47,48 @@ def _cmd_migrate(_args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_replay_init(_args: argparse.Namespace) -> int:
+    """Write pywb's config and make the collection tree match the database.
+
+    Runs before pywb starts, and by hand when a restore, a folder move or a
+    recreated volume has left the tree disagreeing with the archives.
+    """
+    from cairn.services import replay
+
+    settings = get_settings()
+    ensure_directories(settings)
+    config = replay.write_config(settings)
+
+    engine = get_engine(settings.db_url)
+    with sessionmaker_for(engine)() as session:
+        linked, removed = replay.sync_collections(session, settings)
+
+    print(f"Wrote {config}")
+    print(f"Collections: {linked} linked, {removed} removed.")
+    return 0
+
+
+def _cmd_reindex(args: argparse.Namespace) -> int:
+    from cairn.db.models import Site
+    from cairn.services import replay
+
+    settings = get_settings()
+    engine = get_engine(settings.db_url)
+    with sessionmaker_for(engine)() as session:
+        query = select(Site).where(Site.deleted_at.is_(None))
+        if args.slug:
+            query = query.where(Site.slug == args.slug)
+        sites = session.scalars(query).all()
+        if not sites:
+            print("No matching site." if args.slug else "No sites yet.")
+            return 1
+        for site in sites:
+            result = replay.build_index(settings, site.archive_path)
+            replay.link_collection(settings, site.id, site.archive_path)
+            print(f"{site.slug}: {result.records} record(s) from {result.warcs} WARC(s)")
+    return 0
+
+
 def _read_new_password(from_stdin: bool) -> str | None:
     """Prompt for a password, or read one line from stdin.
 
@@ -229,6 +271,14 @@ def main(argv: list[str] | None = None) -> int:
     serve.set_defaults(func=_cmd_serve)
 
     sub.add_parser("migrate", help="Apply database migrations").set_defaults(func=_cmd_migrate)
+
+    sub.add_parser(
+        "replay-init", help="Write pywb's config and rebuild the collection tree"
+    ).set_defaults(func=_cmd_replay_init)
+
+    reindex = sub.add_parser("reindex", help="Rebuild the replay index for one site or all sites")
+    reindex.add_argument("slug", nargs="?", help="Site slug; omit for every site")
+    reindex.set_defaults(func=_cmd_reindex)
 
     reset = sub.add_parser(
         "reset-password", help="Reset a user's password (also clears any lockout)"

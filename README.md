@@ -52,9 +52,11 @@ Read in order for a full picture; each is standalone if you're looking for one t
 
 ## Status
 
-**M0 (foundation & auth), M1 (capture core) and M2 (discovery & scoping) are complete** — see the [roadmap](docs/12-roadmap.md).
+**M0 (foundation & auth), M1 (capture core), M2 (discovery & scoping) and M3 (replay) are complete** — see the [roadmap](docs/12-roadmap.md).
 
 You can run the container, create an account, add a site, upload a `cookies.txt` for a blog behind a content warning, and press **Index** — it reads the sitemap and feeds, works out which domains the site pulls from, and shows you a table with two checkboxes per host: crawl its pages, and fetch its files. On a Blogger blog the answer arrives already correct, including the `?m=1` reject that otherwise archives every post twice. Then press **Capture** and watch URLs stream past in a live log, ending with a WARC on disk, checksums, a `manifest.json`, and the failures listed and greppable.
+
+Then **Browse the archive** on the site page puts the captured site back on screen, served from the WARCs by pywb on its own origin — click through it, type a different archived URL, and switch between captures of the same page from the dropdown. The controls live outside the iframe on purpose: archived CSS cannot restyle a capture selector it never receives, and archived JavaScript cannot fake one it cannot reach.
 
 Confirmed against a real Blogger blog behind an interstitial: the cookie bypass works and the archived pages contain the actual content.
 
@@ -64,7 +66,7 @@ The running build is shown at the bottom of the sidebar and in **Settings → Ab
 docker build --build-arg CAIRN_BUILD=$(git rev-parse --short HEAD) -t cairn:local .
 ```
 
-What is not there yet: browsing the archive in the UI (M3), and folders and tags (M4).
+What is not there yet: folders and tags (M4), and feeds and scheduling (M6).
 
 ## Running it
 

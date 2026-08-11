@@ -218,11 +218,19 @@ Served by pywb on the replay origin, not by this API:
 {REPLAY_ORIGIN}/site-{id}/                                 collection root
 {REPLAY_ORIGIN}/site-{id}/{timestamp}/{url}                specific capture
 {REPLAY_ORIGIN}/site-{id}/*/{url}                          all versions
-{REPLAY_ORIGIN}/site-{id}/cdx?url=…&output=json            CDX API — drives the UI chrome
+{REPLAY_ORIGIN}/site-{id}/cdx?url=…&output=json            CDX API — pywb's own
 ```
 
-The app exposes one helper on its own origin:
+The chrome does **not** use that CDX API. It reads the app's own copy of the index instead:
 
 | Method | Path | Notes |
 |---|---|---|
-| `GET` | `/api/captures/{id}/record?url=…&ts=…` | Raw WARC record: headers + metadata as JSON; payload only as an `attachment` download |
+| `GET` | `/api/sites/{id}/replay` | Collection name, record count, and the replay origin to frame |
+| `GET` | `/api/sites/{id}/replay/versions?url=…` | Every capture of one URL — the capture selector's data |
+| `GET` | `/api/sites/{id}/replay/record?url=…&timestamp=…` | Raw WARC record: headers and metadata as JSON |
+| `GET` | `…/record?…&download=true` | The payload, always `application/octet-stream` as an `attachment` |
+| `POST` | `/api/sites/{id}/reindex` | Rebuild the index from the WARCs |
+
+Reading our own index rather than proxying pywb keeps the URL bar, the capture selector and the version count working when pywb is down — one failure then looks like one failure, instead of an empty frame with no explanation. It also means no replayed byte is ever served from the app's origin, which is the point of running pywb on its own.
+
+`replay` returns the origin it computed from the request, and the CSP's `frame-src` is computed by the same function. If those two ever disagree the browser blocks the iframe and the only clue is in the console, so they share one implementation rather than two that look alike.

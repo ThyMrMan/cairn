@@ -211,6 +211,7 @@ def ensure_directories(settings: Settings) -> None:
         settings.tmp_dir,
         settings.trash_dir,
         settings.by_tag_dir,
+        settings.collections_dir,
     ):
         directory.mkdir(parents=True, exist_ok=True)
 

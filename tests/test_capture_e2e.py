@@ -14,10 +14,7 @@ from __future__ import annotations
 
 import os
 import shutil
-import threading
 import time
-from collections.abc import Iterator
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
@@ -43,77 +40,6 @@ pytestmark = [
 
 CAPTURE_TIMEOUT_S = 120
 POLL_S = 0.25
-
-PAGES: dict[str, tuple[str, bytes]] = {
-    "/": (
-        "text/html",
-        b"""<html><body><h1>Index</h1>
-        <a href="/post-1.html">one</a>
-        <a href="/post-2.html">two</a>
-        <a href="/missing.html">gone</a>
-        <img src="/logo.png">
-        </body></html>""",
-    ),
-    "/post-1.html": (
-        "text/html",
-        b"<html><head><style>"
-        # Exactly how a Blogger skin writes its theme image. wget does not
-        # decode CSS escapes, so it requests this against the blog and 404s.
-        rb"body{background:url(https\:\/\/themes.example.test\/image?id=abc)}"
-        b"</style></head><body><h1>Post One</h1><p>UNIQUE-CONTENT-MARKER-ONE</p>"
-        b'<img data-src="/lazy.png"></body></html>',
-    ),
-    "/post-2.html": (
-        "text/html",
-        b"<html><body><h1>Post Two</h1><p>UNIQUE-CONTENT-MARKER-TWO</p></body></html>",
-    ),
-    "/logo.png": ("image/png", b"\x89PNG\r\n\x1a\n" + b"LOGO" * 32),
-}
-
-
-class _Handler(BaseHTTPRequestHandler):
-    protocol_version = "HTTP/1.1"
-
-    def do_GET(self) -> None:
-        path = self.path.split("?")[0]
-        if path == "/robots.txt":
-            body = b"User-agent: *\nAllow: /\n"
-            self.send_response(200)
-            self.send_header("Content-Type", "text/plain")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-            return
-        hit = PAGES.get(path)
-        if hit is None:
-            body = b"<html><body>not found</body></html>"
-            self.send_response(404)
-            self.send_header("Content-Type", "text/html")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-            return
-        ctype, body = hit
-        self.send_response(200)
-        self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def log_message(self, *_args: object) -> None:
-        pass
-
-
-@pytest.fixture
-def site_server() -> Iterator[str]:
-    server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
-        yield f"http://127.0.0.1:{server.server_address[1]}/"
-    finally:
-        server.shutdown()
-        server.server_close()
 
 
 def wait_for_job(client: TestClient, job_id: int) -> dict[str, Any]:

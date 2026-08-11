@@ -4,6 +4,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 
 import { DomainPicker } from "../components/DomainPicker";
 import { LiveLog } from "../components/LiveLog";
+import { Replay } from "../components/Replay";
 import { Alert, EmptyState, Spinner } from "../components/ui";
 import { ApiError, endpoints } from "../lib/api";
 import { bytes, dateTime, relative } from "../lib/format";
@@ -131,6 +132,8 @@ export default function SiteDetail() {
         onChanged={() => void client.invalidateQueries({ queryKey: ["site", siteId] })}
       />
 
+      <ReplaySection siteId={siteId} captureCount={data.capture_count} />
+
       <section className="space-y-3">
         <h2 className="text-sm font-medium">Captures</h2>
         {captures.data && captures.data.length > 0 ? (
@@ -171,6 +174,32 @@ export default function SiteDetail() {
         </div>
       </section>
     </div>
+  );
+}
+
+function ReplaySection({ siteId, captureCount }: { siteId: number; captureCount: number }) {
+  // Collapsed until there is something to see: an iframe that loads pywb on
+  // every visit to a site nobody has captured yet is pure noise.
+  const [open, setOpen] = useState(captureCount > 0);
+
+  return (
+    <section className="card p-5">
+      <button
+        className="flex w-full items-center justify-between text-left"
+        onClick={() => setOpen((v) => !v)}
+      >
+        <div>
+          <h2 className="text-sm font-medium">Browse the archive</h2>
+          <p className="hint mt-0.5">The site as it was, served from the WARCs.</p>
+        </div>
+        <span className="text-xs text-muted">{open ? "Hide" : "Show"}</span>
+      </button>
+      {open && (
+        <div className="mt-4">
+          <Replay siteId={siteId} />
+        </div>
+      )}
+    </section>
   );
 }
 

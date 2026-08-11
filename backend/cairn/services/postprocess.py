@@ -32,7 +32,7 @@ from cairn.config import Settings
 from cairn.db.models import Capture, CaptureUrl, Site
 from cairn.db.types import utcnow
 from cairn.logging import get_logger
-from cairn.services import htmlrefs, storage
+from cairn.services import htmlrefs, replay, storage
 from cairn.services.scope import Scope, ScopeError, build_reject_patterns
 
 log = get_logger(__name__)
@@ -166,6 +166,29 @@ def step_manifest(ctx: Context) -> None:
         warc_files=ctx.artifacts,
     )
     storage.write_json(ctx.output_dir / storage.MANIFEST_FILE, payload)
+
+
+def step_cdxj_index(ctx: Context) -> None:
+    """Rebuild the site's replay index across every capture it has.
+
+    Across all captures, not just this one: the index is what gives replay its
+    time dimension, so a page captured five times has five versions to switch
+    between. Rebuilding the lot is fast and removes any chance of the index
+    disagreeing with the archive about a capture that was deleted.
+
+    Not required. A capture whose index failed is still a complete, valid
+    archive — the index is derived data, regenerable at any time from the
+    Rebuild index action, and failing the capture over it would be a lie
+    about what is on disk.
+    """
+    result = replay.build_index(ctx.settings, ctx.site.archive_path)
+    ctx.stats["index_records"] = result.records
+    try:
+        replay.link_collection(ctx.settings, ctx.site.id, ctx.site.archive_path)
+    except replay.ReplayError as exc:
+        # Most likely a filesystem without symlink permission — a Windows dev
+        # box. The archive is intact; only replay is unavailable.
+        ctx.warnings.append(f"the archive is complete, but replay could not be set up: {exc}")
 
 
 def step_asset_audit(ctx: Context) -> None:
@@ -363,6 +386,7 @@ CHAIN: list[Step] = [
     Step("checksum", 20, True, step_checksum),
     Step("stats", 30, True, step_stats),
     Step("manifest", 35, True, step_manifest),
+    Step("cdxj-index", 40, False, step_cdxj_index),
     Step("asset-audit", 60, False, step_asset_audit),
 ]
 

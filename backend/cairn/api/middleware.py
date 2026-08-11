@@ -54,14 +54,40 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     def __init__(self, app: ASGIApp, settings: Settings, static_dir: Path | None = None) -> None:
         super().__init__(app)
         self.settings = settings
-        script_hashes = inline_script_hashes(
+        self._script_hashes = inline_script_hashes(
             (static_dir or Path(__file__).resolve().parent.parent / "static") / "index.html"
         )
-        self._csp = self._build_csp(settings, script_hashes)
+        self._csp = self._build_csp(settings, self._script_hashes)
+        self._csp_by_frame_src: dict[str, str] = {}
+
+    def _frame_src_for(self, request: Request) -> str:
+        """Where replayed pages may be framed from.
+
+        Without this, `frame-src` falls back to 'none' on every install that
+        has no `replay_public_url` — which is every default LAN install — and
+        the browser blanks the replay tab with the reason only in the console.
+
+        The Host header is client-controlled, but all it can do here is widen
+        what *that same client's own* page is allowed to frame.
+        """
+        return self.settings.replay_origin_for(request.url.scheme, request.url.hostname) or "'none'"
+
+    def _csp_for(self, request: Request) -> str:
+        frame_src = self._frame_src_for(request)
+        cached = self._csp_by_frame_src.get(frame_src)
+        if cached is None:
+            cached = self._build_csp(self.settings, self._script_hashes, frame_src=frame_src)
+            self._csp_by_frame_src[frame_src] = cached
+        return cached
 
     @staticmethod
-    def _build_csp(settings: Settings, script_hashes: list[str] | None = None) -> str:
-        frame_src = settings.replay_origin or "'none'"
+    def _build_csp(
+        settings: Settings,
+        script_hashes: list[str] | None = None,
+        *,
+        frame_src: str | None = None,
+    ) -> str:
+        frame_src = frame_src or settings.replay_origin or "'none'"
         script_src = " ".join(["'self'", *(script_hashes or [])])
         directives = [
             "default-src 'self'",
@@ -94,7 +120,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     ) -> Response:
         response = await call_next(request)
         headers = response.headers
-        headers.setdefault("Content-Security-Policy", self._csp)
+        headers.setdefault("Content-Security-Policy", self._csp_for(request))
         headers.setdefault("X-Content-Type-Options", "nosniff")
         headers.setdefault("X-Frame-Options", "DENY")
         headers.setdefault("Referrer-Policy", "same-origin")

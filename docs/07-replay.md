@@ -52,8 +52,10 @@ The key is a SURT (sort-friendly reversed URL) plus a timestamp, which is what m
 
 **Rules.**
 - The index is always fully rebuilt, never appended. Full rebuilds are fast (a few seconds for tens of thousands of records) and eliminate a whole class of drift bugs.
-- Written to a temp file and renamed. A half-written index is a broken site.
+- Written to a temp file and renamed, as bytes rather than text so the line endings are identical on every platform. A half-written index is a broken site; a rebuild that differs only in newlines makes "did the index change?" unanswerable.
 - `filename` is stored **relative to the site directory**, so moving a site between folders doesn't invalidate the index. Get this wrong and every folder move silently breaks replay.
+
+  This one has a trap with teeth. `cdxj-indexer` records `os.path.basename(filename)` unless it is given `dir_root`, and **every capture writes `warc/part-00000.warc.gz`** — so the default makes all of a site's captures index to the same name. The symptom is not a wrong page, it is a **503**, and it cannot appear until the second capture, because the first has nothing to collide with. Measured both ways against pywb 2.9.1: with `dir_root`, two captures of one URL return their own bodies; without it, both return 503. The index builder refuses to write an index whose filenames are not the site-relative paths it passed in.
 - The index is derived data — deletable and regenerable from the WARCs at any time. A **Rebuild index** button on every site is a cheap, effective support tool.
 
 Because the index spans every capture, replay naturally gets a **time dimension**: a page captured in five different runs has five versions, browsable via pywb's timeline.
@@ -62,33 +64,31 @@ Because the index spans every capture, replay naturally gets a **time dimension*
 
 ## pywb configuration
 
-Generated and rewritten whenever collections change:
+The config carries global settings only. **Collections are not listed in it** — they are discovered from a tree of symlinks:
 
 ```yaml
-# /config/pywb/config.yaml — GENERATED, do not hand-edit
-collections:
-  site-42:
-    index_paths: /data/archives/Blogs/Photography/example-blog/index/
-    archive_paths: /data/archives/Blogs/Photography/example-blog/
-  site-43:
-    index_paths: /data/archives/Blogs/Tech/another-blog/index/
-    archive_paths: /data/archives/Blogs/Tech/another-blog/
-
+# /data/replay/config.yaml — GENERATED, do not hand-edit
+collections_root: collections
 framed_replay: true
-enable_memento: true
 enable_cdx_api: true
+enable_memento: true
 enable_content_security_policy: true
-
-collections_root: ''
 port: 8081
-
-ui:
-  banner_html: cairn_banner.html
 ```
 
-**Collections are keyed by site ID (`site-42`), never by slug or path.** Renaming or moving a site must not change its replay URL — bookmarks and iframe state depend on it. Map ID → path in the config; keep the human-readable name in the banner.
+```
+/data/replay/collections/site-42/
+    indexes  ->  /data/archives/Blogs/Photography/example-blog/index
+    archive  ->  /data/archives/Blogs/Photography/example-blog
+```
 
-`archive_paths` points at the *site* directory so the relative `filename` values in the CDXJ resolve correctly across all captures.
+This replaced an earlier design that listed `collections:` explicitly, because **pywb picks up a collection created while it is running** — verified against 2.9.1: a collection is a 404 before the symlinks exist and a 200 immediately after, with no restart. Listing them would have meant bouncing the replay service every time a site was added, and giving the app a way to reach into the service supervisor to do it. The directory tree is the whole interface between the two processes instead.
+
+**Collections are keyed by site ID (`site-42`), never by slug or path.** Renaming or moving a site must not change its replay URL — bookmarks and iframe state depend on it. Moving a site re-points one symlink.
+
+`archive` points at the *site* directory, so the relative `filename` values in the CDXJ resolve across every capture.
+
+The tree is derived data: `cairn replay-init` rebuilds it and the config from the database, runs at every boot, and is what repairs a tree after a restore, a folder move, or a recreated volume.
 
 ---
 
@@ -207,3 +207,6 @@ pywb also serves WACZ directly, so an exported file stays replayable in place.
 | Replay shows the content warning | Cookies expired or didn't cover the host | Re-mint the profile, recapture ([06](06-access-profiles.md)) |
 | Links leave the archive | Rewriting missed a URL form (JS-constructed, usually) | Expected with non-browser capture; the banner should make "you left the archive" obvious |
 | pywb won't start | Generated config invalid — usually a path with unescaped characters | Validate generated YAML before writing; keep the previous config as `.bak` and fall back |
+| pywb won't start, `ModuleNotFoundError: pkg_resources` | pywb 2.9.1 still imports it; setuptools removed it in 81 | The image pins `setuptools<81`. Nothing else in the container notices, so the only symptom is that replay is silently absent |
+| Replay tab blank, CSP violation in the console | `frame-src` did not match the iframe's origin | Both come from `Settings.replay_origin_for`; if they ever diverge this is what it looks like |
+| 503 on one capture but not another | Index filenames are basenames, not site-relative | Rebuild the index — and see the `dir_root` note under Indexing |

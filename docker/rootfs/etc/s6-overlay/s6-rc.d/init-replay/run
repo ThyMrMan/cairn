@@ -1,0 +1,11 @@
+#!/command/with-contenv sh
+# pywb reads a generated config and discovers its collections from a symlink
+# tree. Both are derived data, so they are rebuilt at every boot rather than
+# persisted — which is also what repairs a tree after a restore, a folder
+# move, or a volume that was recreated underneath the database.
+#
+# Never fatal. A container that will not start because replay could not be
+# set up would be trading the whole archive for one feature.
+cd /app
+s6-setuidgid abc /opt/venv/bin/cairn replay-init || \
+  echo "[init-replay] could not prepare replay; the archive is unaffected."

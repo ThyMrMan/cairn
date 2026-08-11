@@ -19,6 +19,17 @@ COPY pyproject.toml ./
 COPY backend/cairn/__init__.py backend/cairn/__init__.py
 RUN pip install --no-cache-dir .
 
+# pywb serves replay. It is installed only in the image, not declared as a
+# dependency of the package: the app never imports it, it only generates
+# pywb's config and writes the index it reads, so a development checkout
+# stays installable without it.
+#
+# The setuptools pin is not cosmetic. pywb 2.9.1 — the newest release — still
+# does `import pkg_resources`, which setuptools removed in 81. Without the
+# pin, `wayback` dies at startup with ModuleNotFoundError and replay is simply
+# absent, while everything else in the image works perfectly.
+RUN pip install --no-cache-dir "pywb>=2.9,<3" "setuptools<81"
+
 
 # ── runtime ──────────────────────────────────────────────────────────────
 FROM python:3.12-slim AS runtime

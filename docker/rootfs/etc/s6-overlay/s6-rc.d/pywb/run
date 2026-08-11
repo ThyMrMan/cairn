@@ -1,0 +1,27 @@
+#!/command/with-contenv sh
+umask "${UMASK:-022}"
+
+# pywb replays archived pages, which means it executes untrusted JavaScript in
+# the viewer's browser. It runs on its own port so that code lands on a
+# different origin from the app (docs/07, docs/11) — and on a different
+# hostname too, if this instance is reachable from the internet, because ports
+# do not isolate cookies.
+#
+# Started from the replay directory: `collections_root` in the generated
+# config is relative, so pywb's working directory is what makes the collection
+# tree findable.
+REPLAY_DIR="${CAIRN_DATA_DIR:-/data}/replay"
+if [ ! -f "$REPLAY_DIR/config.yaml" ]; then
+  echo "[pywb] $REPLAY_DIR/config.yaml is missing; init-replay did not run."
+  # Sleep rather than exit-loop: s6 would otherwise restart this as fast as it
+  # can and bury the reason in an endless log.
+  sleep 30
+  exit 1
+fi
+
+cd "$REPLAY_DIR"
+exec s6-setuidgid abc \
+  /opt/venv/bin/wayback \
+    --port "${CAIRN_REPLAY_PORT:-8081}" \
+    --bind 0.0.0.0 \
+    --threads 8

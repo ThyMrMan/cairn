@@ -105,18 +105,26 @@ Also worth doing: run `--warc-dedup` against a second capture and verify you get
 
 ---
 
-## M3 — Replay
+## M3 — Replay ✅
 
 **Ships:** browsing the archive in the UI. The payoff milestone.
 
-- `cdxj-index` post-processor; site-relative paths; atomic index swap
-- pywb sidecar, generated config, collection-per-site keyed by ID, reload on change
-- Iframe embed with app-supplied chrome: URL bar, capture selector, version count via the CDX API
-- Origin separation, CSP, sandbox attributes, same-host startup warning
-- Raw record inspector
-- Rebuild-index action
+- [x] `cdxj-index` post-processor; site-relative paths; atomic index swap
+- [x] pywb sidecar, generated config, collection-per-site keyed by ID, discovered without a restart
+- [x] Iframe embed with app-supplied chrome: URL bar, capture selector, version count
+- [x] Origin separation, CSP, sandbox attributes, same-host startup warning
+- [x] Raw record inspector
+- [x] Rebuild-index action
 
-**Done when:** you click through a fully archived blog inside the UI — pagination, images, CSS — and can switch between captures of the same page.
+**Done when:** you click through a fully archived blog inside the UI — pagination, images, CSS — and can switch between captures of the same page. *Asserted end to end in `test_replay_e2e.py`: a real capture, a real pywb, the page read back out of the iframe's own URL, both captures of one page reachable, and subresources rewritten into the archive rather than fetched from the live site.*
+
+**Five corrections from building it, all found by running the thing:**
+
+1. **`collections_root` beats an explicit collection list.** pywb picks up a collection created while it is running, so adding a site needs no restart and the app never has to reach into the service supervisor. docs/07 had specified the explicit form.
+2. **`cdxj-indexer` records basenames unless given `dir_root`,** and every capture writes `part-00000.warc.gz`. Without it, switching captures — this milestone's exit criterion — returns 503, and only from the second capture onwards. The builder now refuses an index whose filenames are not the paths it passed in.
+3. **`frame-src` fell back to `'none'`** on every install without `CAIRN_REPLAY_PUBLIC_URL`, which is every default LAN install: our own CSP blanked the replay tab. The iframe URL and the policy now come from one function.
+4. **pywb 2.9.1 imports `pkg_resources`,** removed in setuptools 81. Unpinned, replay is simply absent while everything else works.
+5. **pywb ships a top-level `tests` package,** and a regular package beats a namespace directory wherever it sits on the path. Every `from tests.conftest import …` resolved to pywb's tests inside the container while passing on a development machine. `tests/__init__.py` settles it.
 
 ---
 

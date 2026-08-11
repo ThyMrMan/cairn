@@ -319,6 +319,37 @@ export type Engine = {
   error: string | null;
 };
 
+// ── replay ───────────────────────────────────────────────────────────────
+
+export type ReplayStatus = {
+  collection: string;
+  records: number;
+  indexed_at: number | null;
+  origin: string;
+  /** Empty when the origin could not be determined; the tab says so. */
+  base_url: string;
+  seed_url: string;
+  shares_host_with_app: boolean;
+};
+
+export type CdxVersion = {
+  timestamp: string;
+  url: string;
+  mime: string | null;
+  status: string | null;
+  digest: string | null;
+  filename: string;
+  offset: number;
+  length: number;
+};
+
+export type RecordDetail = CdxVersion & {
+  record_type: string;
+  http_status: string | null;
+  http_headers: Record<string, string>;
+  warc_headers: Record<string, string>;
+};
+
 // ── discovery ────────────────────────────────────────────────────────────
 
 export type DiscoveredHost = {
@@ -460,6 +491,19 @@ export const endpoints = {
   scopePreview: (id: number) => api.post<ScopePreview>(`/sites/${id}/scope/preview`),
   applyPreset: (id: number, preset: string) =>
     api.post<Scope>(`/sites/${id}/scope/apply-preset`, { preset }),
+
+  // ── replay ─────────────────────────────────────────────────────────────
+  replayStatus: (id: number) => api.get<ReplayStatus>(`/sites/${id}/replay`),
+  replayVersions: (id: number, url: string) =>
+    api.get<{ url: string; count: number; versions: CdxVersion[] }>(
+      `/sites/${id}/replay/versions?url=${encodeURIComponent(url)}`,
+    ),
+  replayRecord: (id: number, url: string, timestamp?: string) =>
+    api.get<RecordDetail>(
+      `/sites/${id}/replay/record?url=${encodeURIComponent(url)}` +
+        (timestamp ? `&timestamp=${timestamp}` : ""),
+    ),
+  reindex: (id: number) => api.post<{ records: number; warcs: number }>(`/sites/${id}/reindex`),
 
   // ── engines ────────────────────────────────────────────────────────────
   engines: () => api.get<Engine[]>("/engines"),

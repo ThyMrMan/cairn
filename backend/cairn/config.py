@@ -103,6 +103,20 @@ class Settings(BaseSettings):
         return self.data_dir / "by-tag"
 
     @property
+    def replay_dir(self) -> Path:
+        """Everything pywb reads: its generated config and the collection tree.
+
+        Under `data_dir` rather than `config_dir` because it is derived — the
+        whole tree can be deleted and rebuilt from the archives and the
+        database, and nothing in it is worth backing up.
+        """
+        return self.data_dir / "replay"
+
+    @property
+    def collections_dir(self) -> Path:
+        return self.replay_dir / "collections"
+
+    @property
     def backups_dir(self) -> Path:
         return self.config_dir / "backups"
 
@@ -123,10 +137,28 @@ class Settings(BaseSettings):
 
     @property
     def replay_origin(self) -> str:
-        """External origin for replayed content, used for CSP frame-src."""
+        """Configured origin for replayed content, or empty if there is none."""
         if self.replay_public_url:
             return self.replay_public_url.rstrip("/")
         return ""
+
+    def replay_origin_for(self, scheme: str, hostname: str | None) -> str:
+        """The origin a browser at `scheme://hostname` should use for replay.
+
+        `replay_public_url` is only set once somebody has put this behind a
+        reverse proxy. Until then the honest answer is "the host you are
+        already talking to, on the replay port", which follows the instance
+        from localhost to a LAN IP without anyone editing config.
+
+        Both the CSP's `frame-src` and the iframe's `src` come from here. They
+        must agree exactly — a mismatch is a blank replay tab whose only
+        explanation is in the browser console.
+        """
+        if self.replay_public_url:
+            return self.replay_public_url.rstrip("/")
+        if not hostname:
+            return ""
+        return f"{scheme}://{hostname}:{self.replay_port}"
 
     def replay_shares_host_with_app(self) -> bool:
         """True when replay is not isolated from the app by hostname.
