@@ -7,7 +7,7 @@ services:
     restart: unless-stopped
     ports:
       - "8080:8080"   # web UI
-      - "8081:8081"   # archive replay (pywb) — arrives in M3
+      - "8081:8081"   # archive replay (pywb), deliberately a separate origin
     volumes:
       - ./config:/config          # database + settings. Put this on an SSD.
       - ./data:/data              # WARC storage. Bulk; an array is fine.
@@ -31,7 +31,9 @@ services:
       - PGID=1000
       - UMASK=022
       - TZ=${TZ:-Etc/UTC}
-    # Chromium (cookie minting, M5) crashes on the default 64MB /dev/shm.
+    # Chromium crashes on Docker's default 64MB /dev/shm. It is used by
+    # userscript and interactive profiles, browser-based discovery, and site
+    # thumbnails; everything else works without it.
     shm_size: 2gb
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8080/api/health"]

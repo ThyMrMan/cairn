@@ -213,7 +213,7 @@ Selections become a **resolved scope object** — engine-independent, stored on 
 
 `--reject-regex` uses POSIX ERE by default, which has **no lookahead** — the pattern above fails with *"Invalid preceding regular expression"*. Pass `--regex-type=pcre`.
 
-**Verified on Debian's wget 1.25.0 (the container base):** `--regex-type=pcre` works and honours lookahead correctly. Note that the version banner reports **neither** `+pcre` nor `-pcre` — that flag only ever described PCRE1, while Debian links PCRE2 and doesn't advertise it. Grepping the banner therefore rejects a perfectly good wget; the image's build-time check compiles an actual lookahead pattern instead ([10](10-deployment-unraid.md#build)).
+**Verified on Debian's wget 1.25.0 (the container base):** `--regex-type=pcre` works and honours lookahead correctly. Note that the version banner reports **neither** `+pcre` nor `-pcre` — that flag only ever described PCRE1, while Debian links PCRE2 and doesn't advertise it. Grepping the banner therefore rejects a perfectly good wget; the image's build-time check compiles an actual lookahead pattern instead ([10](10-deployment-unraid.md#dockerfile-sketch)).
 
 ### What running it actually established
 

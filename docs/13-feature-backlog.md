@@ -4,11 +4,15 @@ Ideas beyond the stated requirements, drawn from the tools in the original evalu
 
 Nothing here is required. The point is to have the good ideas written down before you're deep enough in the build to stop noticing them.
 
+Status sits on its own line under each heading — ✅ built, ⚠️ reshaped, ❌ measured and rejected — rather than in the heading itself, so that a link to a section keeps working when the status changes. Where something was built, an **As built** note records what the idea above it got wrong.
+
 ---
 
 ## Tier 1 — High value, clearly worth building
 
-### Full-text search across all archives ✅ *built in M8*
+### Full-text search across all archives
+
+✅ *built in M8*
 
 SQLite FTS5 over text extracted from captured HTML (`trafilatura` or `readability-lxml` to strip navigation and boilerplate), with results linking straight into replay at the right capture.
 
@@ -16,13 +20,17 @@ SQLite FTS5 over text extracted from captured HTML (`trafilatura` or `readabilit
 
 **Effort:** medium. Text extraction is a post-processor; FTS5 is built into SQLite; the UI is one search page. Budget ~10–15% additional storage for the text index.
 
-### WACZ export + shareable replay ✅ *built in M8*
+### WACZ export + shareable replay
+
+✅ *built in M8*
 
 Package a site as a single `.wacz` and hand it to anyone — it opens in [ReplayWeb.page](https://replayweb.page/) with no server. Also the best offsite backup format, since it's self-describing and tool-independent.
 
 **Effort:** low. `wacz create` over existing WARCs, plus a download button.
 
-### Archive integrity verification ✅ *built in M8*
+### Archive integrity verification
+
+✅ *built in M8*
 
 Weekly job re-checksumming every WARC against `manifest.json`, reporting mismatches and missing files.
 
@@ -30,7 +38,9 @@ Weekly job re-checksumming every WARC against `manifest.json`, reporting mismatc
 
 **Effort:** low. A scheduled job and a status page. Pair with an "archive health" dashboard: total size, growth trend, oldest unverified capture, last successful backup.
 
-### Capture diffing ✅ *built in M8*
+### Capture diffing
+
+✅ *built in M8*
 
 Show what changed between two captures of a page — rendered text diff plus a list of added/removed/changed resources.
 
@@ -40,7 +50,9 @@ Show what changed between two captures of a page — rendered text diff plus a l
 
 > **As built.** The work was not UI, it was deciding what to diff. Markup changes on every fetch of a page with a visit counter or a rotating advert, so the diff reads the extracted text that search already produces — measured: three fetches of one unchanged post, three body hashes, one text hash.
 
-### `yt-dlp` media capture ✅ *built in M8*
+### `yt-dlp` media capture
+
+✅ *built in M8*
 
 Post-processor scanning captured HTML for YouTube/Vimeo/etc. embeds, with per-site opt-in to download the media into `derived/media/`.
 
@@ -50,7 +62,9 @@ Post-processor scanning captured HTML for YouTube/Vimeo/etc. embeds, with per-si
 
 > **As built.** No ffmpeg in the image: it is 481 MB across 200 packages and merges streams that a single-file format does not need. And the URLs are the one genuinely attacker-controlled fetch target here — they come out of archived HTML — so they get the private-range block docs/11 specifies.
 
-### Notification integration ✅ *built in M6*
+### Notification integration
+
+✅ *built in M6*
 
 ntfy, Apprise, and generic webhooks. Detailed in [08](08-feeds-and-scheduling.md#notifications).
 
@@ -60,7 +74,9 @@ ntfy, Apprise, and generic webhooks. Detailed in [08](08-feeds-and-scheduling.md
 
 ## Tier 2 — Strong ideas, more work
 
-### Retention policies ✅ *built in M8*
+### Retention policies
+
+✅ *built in M8*
 
 Per-site rules: keep N full captures, keep one per month beyond that, never prune a capture containing URLs that no longer exist upstream, never prune the first capture.
 
@@ -70,7 +86,9 @@ Per-site rules: keep N full captures, keep one per month beyond that, never prun
 
 > **As built.** The exception clauses are the feature; the counts are the leftovers. One protection was not on this list and is the one that bites: a capture that a later incremental capture deduplicated against cannot be pruned either, because a revisit record is a pointer with no payload — verified by pruning one and watching a real pywb answer 503 for a page whose own capture was entirely intact.
 
-### Import from ArchiveBox ✅ *built in M8*
+### Import from ArchiveBox
+
+✅ *built in M8*
 
 Read an existing ArchiveBox `index.sqlite3` + `archive/` directory, group snapshots by domain into sites, index their WARCs into a collection, carry tags across.
 
@@ -80,7 +98,9 @@ Read an existing ArchiveBox `index.sqlite3` + `archive/` directory, group snapsh
 
 > **As built.** The schema came from running a real ArchiveBox 0.7.4 against a fixture site and reading the tables back, rather than from memory — and the first import against that real output found two things a hand-made fixture would not have: `ArchiveBox.conf` holds a Django `SECRET_KEY` and no version, and one snapshot with an unusable host killed the whole import.
 
-### Browser-based discovery ✅ *built after M8*
+### Browser-based discovery
+
+✅ *built after M8*
 
 Once Chromium is in the image (M5), run discovery through a real browser to catch hosts referenced only from JavaScript and content behind infinite scroll.
 
@@ -96,7 +116,9 @@ Signed, expiring, optionally password-protected links to a single archived page 
 
 **Effort:** high, and it's the feature most likely to introduce a security hole — it deliberately punches a hole in the auth boundary, on the origin that replays untrusted JavaScript ([11](11-security.md)). If built: separate origin, no session cookies, tokens scoped to one collection, rate limited, revocable, off by default.
 
-### Scheduled report digest ✅ *built after M8*
+### Scheduled report digest
+
+✅ *built after M8*
 
 Weekly email or notification: sites captured, new posts found, failures, storage growth, upcoming credential expiries, integrity results.
 
@@ -104,7 +126,9 @@ Weekly email or notification: sites captured, new posts found, failures, storage
 
 > **As built.** That last sentence turned out to be the specification. The list above is all *activity*, and activity is what the app already shows; the report is built around **absence** instead — sites nothing has captured in a month, feeds that poll successfully and return nothing because the URL now serves a login page, credentials expiring next week. It is also readable on demand rather than only pushed, because a digest nobody has configured a webhook for is a digest nobody ever reads, and the dashboard is silent when there is nothing to say.
 
-### Multi-seed sites ✅ *built after M8*
+### Multi-seed sites
+
+✅ *built after M8*
 
 Some blogs span domains (a custom domain plus the blogspot original, or a site that migrated). Allow multiple seeds under one site with one scope, one index, and one replay collection.
 
@@ -116,37 +140,49 @@ Some blogs span domains (a custom domain plus the blogspot original, or a site t
 
 ## Tier 3 — Worth knowing about
 
-### Personas beyond cookies ✅ *built after M8*
+### Personas beyond cookies
+
+✅ *built after M8*
 
 ArchiveBox's "personas" bundle cookies + user agent + browser profile. This design already has profiles carrying cookies and UA; extending to full browser profiles (localStorage, IndexedDB, service workers) makes them work with `browsertrix-crawler --profile` directly.
 
 > **As built, and the rationale corrected.** The last clause is false, and M7 already measured why: browsertrix runs **Brave** while this image ships Chrome for Testing, so a profile built with one is accepted and silently ignored by the other. What full browser state *is* good for is every browser path inside this application — the re-mint, the profile test, browser-based discovery — and the mint now saves it so a refresh no longer quietly downgrades a profile. The genuinely new thing is one sentence in the UI: wget takes `--load-cookies` and nothing else, so a login kept in localStorage produces "the test passes and the capture gets the sign-in page", which had no explanation anywhere.
 
-### Site health monitoring ✅ *built after M8*
+### Site health monitoring
+
+✅ *built after M8*
 
 Periodically check whether archived sites are still live. Surfacing *"3 archived sites are now returning 404"* is both interesting and a strong argument for the tool's existence.
 
 > **As built.** All of the work is in not crying wolf. A blog is briefly 502 and a container is briefly without DNS, so a state change is believed only after two checks agree; a 500 is the site failing rather than ending; a DNS failure says more about this end than theirs; a 403 is about our user agent; and a redirect off the registrable domain is a *move*, which is actionable — add the new address as a second seed. The first check of a site announces nothing at all, because a blog that was already gone when it was added was archived precisely because it was disappearing.
 
-### Bookmarklet / browser extension ✅ *built after M8*
+### Bookmarklet / browser extension
+
+✅ *built after M8*
 
 One-click "archive this page" from the browser. Karakeep and Linkwarden both have one and it's the most-used feature in both.
 
 > **As built.** A bookmarklet rather than an extension: no store, no review, no second codebase. It carries no credential, and cannot — a `javascript:` bookmark runs on *somebody else's* origin, so an authenticated call would need a token in a URL, which is a token in browser history, in the referrer and in every proxy log on the way. It opens a Cairn page instead and lets the session cookie already in that browser do the work; somebody not signed in gets the sign-in page, which is the correct answer. Server-side it is the URL importer with one URL, so it needed no new endpoint and inherits "archive this page, do not crawl the site".
 
-### Bulk URL import ✅ *built after M8*
+### Bulk URL import
+
+✅ *built after M8*
 
 Paste or upload a list of URLs; group into sites by host automatically. Useful for migrations and for one-off collections.
 
 > **As built.** Three things that look obvious and are wrong. A pasted URL is a *page*, not a site — seeding a site at `blog/2019/03/some-post.html` gives an archive whose identity is one post — so the site is seeded at the origin and the pasted URLs become the capture's seeds. Which means the capture must not crawl: fifty bookmarks across fifty domains, each triggering a full crawl, is a plausible way to get an IP address blocked, so `only_extra_seeds` is the default and crawling is a tick box. And grouping by registrable domain means a group can *span hosts*, so every host in it goes into the scope or the capture silently drops half the list. The parser takes every http(s) URL out of whatever was pasted, which makes a Netscape bookmarks export, a markdown list and a CSV column all work with no format selector.
 
-### Archive annotations ✅ *built after M8*
+### Archive annotations
+
+✅ *built after M8*
 
 Notes and highlights on archived pages. Turns an archive into a research tool. Substantial work (anchoring annotations to replayed content is genuinely hard) but it's what people actually want from a personal archive.
 
 > **As built.** Anchoring to replayed content is not hard here, it is *unavailable*: replay is a separate origin precisely so archived JavaScript cannot reach the app, which means the app cannot read a selection out of the iframe either. So annotations live on the reader view and anchor to a **quotation** — which is the better anchor anyway, since re-extraction rewrites every byte offset and a later capture has different ones again. One trap, found by the test written for it: the context either side of a quote must be whitespace-collapsed and not *stripped*, or the disambiguation pass never matches and every ambiguous quote silently falls through to the first occurrence.
 
-### Storage tiering ❌ *not built — measured, and it does not fit*
+### Storage tiering
+
+❌ *not built — measured, and it does not fit*
 
 Move captures older than N months to a slower or cheaper tier (array-only, or an rclone remote), keeping the index local so replay still resolves. Fetch on demand.
 
@@ -160,17 +196,23 @@ Move captures older than N months to a slower or cheaper tier (array-only, or an
 >
 > **And on the target platform it is already solved better.** Unraid's shfs presents one path whatever device a file is on, and a share's cache setting moves files between pool and array transparently, with no index to keep in step. An application doing it too would be fighting the filesystem for the same result. For an archive that should leave the machine entirely, M8's WACZ export is the self-describing, tool-independent answer.
 
-### Prometheus metrics ✅ *built in M8*
+### Prometheus metrics
+
+✅ *built in M8*
 
 `/metrics` with job counts, capture durations, error rates, storage. Easy, and Unraid users often already run Grafana.
 
-### Read-only "reader" view ✅ *built after M8*
+### Read-only "reader" view
+
+✅ *built after M8*
 
 Extracted article text rendered cleanly, no CSS, no JS. Fast, accessible, and immune to broken replay — and it's what you actually want when reading rather than verifying.
 
 > **As built.** Nearly free, because M8's extraction already put the text on disk with the sidebar removed. Two things it deliberately is not: a fallback that hides a broken replay — it is offered beside replay and names the capture it read — and a copy, since nothing is stored for it. Extraction gained one field: what each block *was*, so a heading renders as a heading. Text in which every heading is a paragraph is markedly harder to read than the page it came from.
 
-### Federated/mirror sync ⚠️ *reshaped and built — the useful half*
+### Federated/mirror sync
+
+⚠️ *reshaped and built — the useful half*
 
 Sync archives to a second instance. Real 3-2-1 for archives that matter.
 

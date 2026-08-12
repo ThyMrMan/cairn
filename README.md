@@ -1,118 +1,57 @@
-# Cairn — Self-Hosted Website Archiver
+<!--
+  Badges go here once this repository has a URL. The CI workflow is
+  .github/workflows/ci.yml; the badge is
+  ![CI](https://github.com/OWNER/REPO/actions/workflows/ci.yml/badge.svg)
+-->
 
-> **Name is a placeholder.** A cairn is a stack of stones that marks a trail — rename freely (`docs/` uses `cairn` as the package/image/DB name throughout).
+# Cairn
 
-A single-user, web-UI-driven website archiving tool that runs as a Docker container on Unraid. It crawls whole domains to WARC, replays them in the browser, organizes them into folders and tags, and keeps them current from RSS/Atom feeds.
+**A self-hosted website archiver with a web UI. Crawls whole domains to WARC,
+replays them in your browser, and keeps them current from RSS.**
 
-Built after evaluating ArchiveBox and finding its data model and organization a poor fit — see [archivebox-notes-and-alternatives.md](archivebox-notes-and-alternatives.md) for that evaluation, which drove most of the decisions here.
+Point it at a blog. It works out which domains that blog actually pulls from,
+shows you the list, and lets you tick the ones worth keeping. Then it crawls
+them to WARC, indexes them, and puts the site back on screen — pages, images,
+CSS, pagination — as it was on the day it was captured. Add a feed and new
+posts arrive on their own.
+
+Built for a NAS. One Docker container, one SQLite database, and an archive tree
+on disk you can browse over SMB without the application running at all.
+
+> [!NOTE]
+> **Single-user by design.** One account, and no roles, sharing or per-user
+> quotas — this is one person archiving their own reading, and the design says
+> so everywhere. See [scope boundaries](docs/01-requirements.md).
 
 ---
 
-## What it does
+## Highlights
 
 | | |
 |---|---|
-| **Index first, then choose** | Point it at a seed URL. It reads sitemaps, feeds, and a shallow crawl, then shows you every domain the site touches — grouped, counted, role-guessed — and you tick the ones to include. |
-| **Whole-domain capture** | One capture job covers `example.com/page1`, `/page2`, … as a single unit with one merged index, not hundreds of disconnected snapshots. |
-| **Gets past Blogger interstitials** | Import a `cookies.txt` **or** a Tampermonkey userscript, per site, selected in the UI. Later: log in interactively in an embedded browser and save the session as a reusable profile. |
-| **Browse the archive in the UI** | Full replay of the captured site through pywb, in an iframe, on an isolated origin. Click through the site as it was. |
-| **Real organization** | Nested folders, tags, saved filters — and a generated symlink tree so the folder/tag structure exists on disk too, not just in a database. |
-| **Stays current** | Associate RSS/Atom feeds (or sitemap diffs) with a site; new posts get captured into that site's folder automatically. |
-| **Pluggable engines** | v1 ships wget→WARC. A documented addon contract lets you drop in browsertrix-crawler, SingleFile, yt-dlp, or your own without touching core. |
+| **Index first, then choose** | Reads sitemaps, feeds and a shallow crawl, then shows every domain the site touches — grouped, counted, role-guessed — with two checkboxes each: crawl its pages, fetch its files. On a Blogger blog the answer arrives already correct. |
+| **Whole-domain capture** | One capture job covers a site as a single unit with one merged index, not hundreds of disconnected page snapshots. |
+| **Gets past content warnings** | Import a `cookies.txt`, run a Tampermonkey userscript, or sign in yourself in an embedded Chromium and save the session. Per site, selected in the UI. |
+| **Replay in the browser** | Full pywb replay in an iframe on an isolated origin. Click through the archived site; switch between captures of the same page. |
+| **Full-text search** | One query across every archived page, with the boilerplate stripped, opening the version that matched. |
+| **Real organisation** | Nested folders and tags that exist as actual directories and symlinks under `/data`, not just rows in a database. |
+| **Stays current** | Watch a feed, a sitemap, or a page's text. New posts are captured incrementally at a fraction of a full crawl. |
+| **Tells you when it breaks** | Notifications, a digest of what quietly *stopped* happening, live-site health checks, and a weekly checksum pass over every archived byte. |
+| **Pluggable engines** | Ships wget→WARC and browsertrix-crawler. A documented NDJSON contract lets you add your own in any language. |
+| **Portable output** | Standard WARC, a CDXJ index, and one-file `.wacz` export that [ReplayWeb.page](https://replayweb.page/) opens with no server. |
 
-## Documentation
+A longer walk through every feature, and what each one deliberately does not
+do, is in the **[feature tour](docs/15-feature-tour.md)**.
 
-Read in order for a full picture; each is standalone if you're looking for one thing.
+---
 
-| Doc | What's in it |
-|---|---|
-| [00 — Decisions](docs/00-decisions.md) | Every significant technical choice, with rationale and what was rejected |
-| [01 — Requirements](docs/01-requirements.md) | Your requirements traced to concrete design responses, plus scope boundaries |
-| [02 — Architecture](docs/02-architecture.md) | Components, processes, data flow, tech stack |
-| [03 — Data model & storage](docs/03-data-model-and-storage.md) | SQL schema, on-disk layout, naming, retention |
-| [04 — Discovery & scoping](docs/04-discovery-and-scoping.md) | How the initial index works and how domain selection maps to crawl scope |
-| [05 — Capture engines](docs/05-capture-engines.md) | The addon contract, engine protocol, and the full wget/WARC engine spec |
-| [06 — Access profiles](docs/06-access-profiles.md) | Cookies, userscripts, the Blogger interstitial, credential storage |
-| [07 — Replay](docs/07-replay.md) | pywb integration, indexing strategy, WACZ, replay security |
-| [08 — Feeds & scheduling](docs/08-feeds-and-scheduling.md) | RSS/Atom watching, sitemap diffing, the scheduler |
-| [09 — API](docs/09-api.md) | REST surface + SSE event stream |
-| [10 — Deployment (Unraid)](docs/10-deployment-unraid.md) | Image build, compose, CA template, Unraid-specific gotchas |
-| [11 — Security](docs/11-security.md) | Threat model and hardening for an internet-exposed instance |
-| [12 — Roadmap](docs/12-roadmap.md) | M0–M8 milestones with exit criteria |
-| [13 — Feature backlog](docs/13-feature-backlog.md) | Ideas borrowed from other tools, ranked by value/effort |
-| [14 — Tooling landscape](docs/14-tooling-landscape.md) | Every relevant tool, what it's good at, whether to use it |
+## Quick start
 
-## Stack at a glance
+### Docker Compose
 
-- **Backend** — Python 3.12, FastAPI, SQLite (WAL), in-process async job runner
-- **Frontend** — React + Vite + TypeScript, Tailwind + shadcn/ui, TanStack Query
-- **Capture** — GNU wget → WARC (v1); addon engines beyond that
-- **Replay** — pywb, sidecar process on a separate port
-- **Packaging** — one Docker image, s6-overlay, `linuxserver`-style `PUID`/`PGID`
-
-## Status
-
-**M0–M7 are complete** — foundation & auth, capture core, discovery & scoping, replay, organization, access profiles, feeds & scheduling, and the engine SDK with a second engine. See the [roadmap](docs/12-roadmap.md).
-
-You can run the container, create an account, add a site, upload a `cookies.txt` for a blog behind a content warning, and press **Index** — it reads the sitemap and feeds, works out which domains the site pulls from, and shows you a table with two checkboxes per host: crawl its pages, and fetch its files. On a Blogger blog the answer arrives already correct, including the `?m=1` reject that otherwise archives every post twice. Then press **Capture** and watch URLs stream past in a live log, ending with a WARC on disk, checksums, a `manifest.json`, and the failures listed and greppable.
-
-Then **Browse the archive** on the site page puts the captured site back on screen, served from the WARCs by pywb on its own origin — click through it, type a different archived URL, and switch between captures of the same page from the dropdown. The controls live outside the iframe on purpose: archived CSS cannot restyle a capture selector it never receives, and archived JavaScript cannot fake one it cannot reach.
-
-Once there are more than a few, **Folders** and tags are how you find them again. The folder tree in the UI *is* the directory tree under `/data/archives`, so the structure you build there is the structure you browse over SMB — renaming or dragging a folder moves one directory and carries everything under it. Tags cut across folders and get their own tree of relative symlinks under `/data/by-tag`, so the same grouping works from a file manager. The filter bar combines folders, tags, status, errors and dates, and any filter can be saved as a named view; a view is nothing more than the query string, which is why the URL of a filtered list is shareable.
-
-For a site behind a content warning or a login there are now three ways to get a cookie jar, and they all end in the same place — the crawler never runs JavaScript, so every mode produces cookies and nothing else. Upload a `cookies.txt`; or upload a **Tampermonkey userscript**, which runs once in a real browser and keeps whatever it earns; or press **Open a browser and sign in** and click through it yourself in a live Chromium streamed into the page. **Test** then fetches the gated URL exactly the way the crawler will, so a jar that has stopped working is a five-second check rather than a six-hour one.
-
-Confirmed against a real Blogger blog behind an interstitial: the cookie bypass works and the archived pages contain the actual content.
-
-Once a site is captured, **Feeds and watchers** keeps it current. Add a feed — or press *Find feeds* and pick from what the site actually publishes — and new posts are archived into that same site's folder, seeded from the feed alone and deduplicated against everything already stored, so a new post costs a few hundred kilobytes rather than another full crawl. The first poll is deliberately a baseline: it records what the blog already has and captures none of it, because watching a blog should not mean re-fetching its archive one post at a time.
-
-A sitemap can be watched too, and it is the only thing that will tell you a page **disappeared** — which is the moment the archive paid for itself, and the one notification that is on by default. Notifications go to ntfy, any webhook, or any Apprise URL.
-
-Every poll is recorded: what it fetched, what it parsed, what was new, and what it did about it. That is the whole point. The evaluation this project started from found a tool whose scheduler was less trustworthy than `curl | grep` on a cron — not because the cron was better, but because you could see what it produced.
-
-> **An archive contains the cookies that fetched it.** A WARC records requests as well as responses, `Cookie:` header included. That is unavoidable and worth knowing before sharing one — use a jar holding only what the gate needs, and Cairn warns before any capture whose profile carries full account session cookies.
-
-The running build is shown at the bottom of the sidebar and in **Settings → About**. The version on its own is not enough — it reads `0.1.0` on every commit — so the build id beside it is what answers "am I testing the update?". Images stamp themselves; pass the commit if you want it named:
-
-```bash
-docker build --build-arg CAIRN_BUILD=$(git rev-parse --short HEAD) -t cairn:local .
-```
-
-wget cannot run JavaScript, which on a modern blog theme means it misses a gallery built by script, images whose `src` is set when they scroll into view, and links that only exist after the page runs. So there is a second engine: **browsertrix**, chosen per site, which runs a real browser. Pick it in **Capture engine** on the site page — the form under it is generated from the engine's own schema, and the engine says what it cannot do before you use it rather than after. browsertrix genuinely cannot use a cookie jar, so a site behind a content warning still wants wget; the picker says so.
-
-It runs as a container beside cairn, which needs the Docker socket mounted. **That grants root-equivalent control of the host** — read [docs/11](docs/11-security.md) before you do it. Without the socket the engine simply shows as unavailable, and everything else works as before.
-
-Both engines write into the same site folder and the same replay collection, so switching engines does not fork the archive.
-
-Writing your own is two files: copy [`examples/engine-template/`](examples/engine-template/), then `cairn engines test ./my-engine` runs it against a fixture site and checks it honours the protocol. Cairn never imports engine code — it spawns a command and reads NDJSON — so an engine can be written in anything.
-
-Once there are more archives than you can browse, **Search** is how you use the tool. It reads the text extracted from every captured page, so "which of my archives mentioned this?" is one query — and results open the archived page at the version that matched, not the live web.
-
-The hard part of that is not the search engine. A blog's sidebar lists every post title on every page, so indexing what was served makes one post title match the whole blog. Cairn drops the furniture two ways: by recognising what templates call their nav, sidebar and footer, and — for a template that names nothing usefully — by noticing which blocks of text appear on most of a capture's pages. Nothing but the standard library does the parsing.
-
-**Export** packages a site into a single `.wacz`: WARCs, index, page list and checksums in one file that [ReplayWeb.page](https://replayweb.page/) opens with no server at all. It is the format for sending an archive to somebody and for an offsite copy that outlives this tool.
-
-**Archive health** re-reads every archived byte and compares it to the checksum taken when it was written, weekly by default. Bit rot on an array is real and WARCs are cold data nobody opens for years; the difference between noticing in a week and noticing never is a job that actually reads them. It never repairs anything — a WARC cannot be corrected, only restored or captured again — so it names the file, the capture and the site, and leaves the decision to you.
-
-**Changes and retention** answers the question that decides how much disk this costs: was the last full recapture worth it? The diff names the pages that changed and, inside them, the sentences — from the extracted text, so a visit counter or a rotating advert in the page furniture does not report the whole site as changed every month.
-
-For a site with no feed at all, watch a **page** instead. It is fetched on a schedule and captured when its readable text changes, on the same machinery as the feeds, with the same poll history.
-
-**Retention** is off by default and its dry run works before you switch it on, because that is how you decide whether to. It never deletes the first capture, the newest ones, the last capture holding a page that is gone from the live site, or a capture that a later one deduplicates against — the last of which matters more than it sounds: prune it and the newer capture replays 503 for a page whose own files are perfectly intact.
-
-Neither wget nor a browser captures a **video stream**, so an archived post with a YouTube embed is a page with a dead rectangle in it. Switch media download on for a site and `yt-dlp` goes back for what the page embedded, bounded per item, per capture and by count — off by default, because it is the one thing here that turns a megabyte capture into a gigabyte one. The image carries no ffmpeg: it is 481 MB and only merges separate video and audio streams, so the default asks for a single file instead.
-
-Already running **ArchiveBox**? Mount its data directory and Cairn reads the index, brings each domain across as a site, carries the tags, and indexes the WARCs it already made. Your archive is copied, never moved or written to — the index is opened read-only.
-
-**Prometheus** can scrape `/api/metrics`, off by default. It carries counts and nothing else: no site name, URL, host, folder or tag appears in it, because a scraper cannot log in and an exporter tends to be reachable more widely than the app.
-
-Not built, and unlikely to be without a good reason: `single-file-cli` as a third engine, and public share links.
-
-The image carries Chromium for the userscript and interactive modes, which puts it at roughly **1.7 GB**. Everything except those two modes works without it.
-
-## Running it
-
-With Docker. Generate a master key first — compose reads `.env` and refuses to start without one, because a generated-per-restart key would silently orphan every stored credential:
+Generate a master key first. Compose reads `.env` and refuses to start without
+one, because a key regenerated per restart would silently orphan every stored
+credential:
 
 ```bash
 cp .env.example .env && echo "CAIRN_SECRET_KEY=$(openssl rand -base64 48)" >> .env
@@ -122,18 +61,130 @@ cp .env.example .env && echo "CAIRN_SECRET_KEY=$(openssl rand -base64 48)" >> .e
 docker compose up -d
 ```
 
-Then open http://127.0.0.1:8080. Back up that key.
+Open <http://127.0.0.1:8080> and create your account. **Back up that key** —
+losing it makes stored cookie jars unrecoverable.
 
-Or with plain `docker run` — the `-p` flags are not optional, without them the container starts, reports `healthy`, and is unreachable:
+### Plain Docker
+
+The `-p` flags are not optional. Without them the container starts, reports
+`healthy`, and is unreachable — the healthcheck runs inside it.
 
 ```bash
 docker run -d --name cairn -p 8080:8080 -p 8081:8081 -v cairn-config:/config -v cairn-data:/data -e CAIRN_SECRET_KEY="$(openssl rand -base64 48)" --shm-size=2g ghcr.io/you/cairn:latest
 ```
 
-For local development (Python 3.12+, Node 22+):
+### Unraid
+
+A Community Applications template is in [`unraid/`](unraid/). Put `/config` on
+the cache pool and `/data` on the array — see
+[10 — Deployment](docs/10-deployment-unraid.md).
+
+### First login
+
+**There is no default username or password**, and the setup page has no URL of
+its own. The app picks between three states from `GET /api/health`: no account
+yet → setup; account but no session → sign-in; signed in → the app. Whatever
+you enter on the setup screen becomes the account, and that endpoint returns
+`409 Conflict` forever afterwards, so it cannot be used to add a second one.
+
+Username 3–64 characters (letters, digits, `.`, `-`, `_`); password at least 12
+characters and not a well-known one. Turn on two-factor authentication straight
+afterwards, in Settings.
+
+Something wrong? → **[16 — Troubleshooting](docs/16-troubleshooting.md)**.
+
+---
+
+## Configuration
+
+Everything a person can change while it runs lives in **Settings**. These are
+the environment variables, which need a restart.
+
+| Variable | Default | What it does |
+|---|---|---|
+| `CAIRN_SECRET_KEY` | — | **Required.** Seals cookie jars, 2FA secrets and recovery codes at rest. Generate with `openssl rand -base64 48`. Back it up. |
+| `CAIRN_CONFIG_DIR` | `/config` | Database, settings, engines, backups. Small and hot — put it on an SSD. |
+| `CAIRN_DATA_DIR` | `/data` | The archive tree. Large and cold — an array is fine. |
+| `CAIRN_PORT` | `8080` | The app. |
+| `CAIRN_REPLAY_PORT` | `8081` | pywb, on its own origin. |
+| `CAIRN_APP_PUBLIC_URL` | — | Set when behind a reverse proxy. |
+| `CAIRN_REPLAY_PUBLIC_URL` | — | Likewise — and it **must differ from the app in hostname**, not merely in port. Ports do not isolate cookies. |
+| `CAIRN_MAX_CONCURRENT_JOBS` | `2` | Parallel captures. Per-host serialisation applies regardless. |
+| `CAIRN_TRUSTED_PROXY` | — | CIDR allowed to set `X-Forwarded-For`. Without it the header is ignored, which is what keeps the login rate limiter honest. |
+| `CAIRN_LOG_LEVEL` / `CAIRN_LOG_JSON` | `INFO` / `true` | Structured logs to stdout, with secrets redacted. |
+| `PUID` / `PGID` / `UMASK` | `1000`/`1000`/`022` | `linuxserver`-style. Files on the share are written as this user. |
+
+`--shm-size=2g` is not optional if you want the browser-backed features:
+Chromium crashes on Docker's default 64 MB `/dev/shm`.
+
+---
+
+## How it works
+
+```
+seed URL ──► discovery ──► domain picker ──► scope ──► capture engine ──► WARC
+                (robots,        (you tick)     (wget      (wget or         │
+                 sitemaps,                      args)      browsertrix)    │
+                 feeds, sample)                                            ▼
+                                                              post-processing
+   replay ◄── CDXJ index ◄────────────────────────────────  checksum, stats,
+   (pywb)                                                    index, text,
+      │                                                      thumbnail, media
+      └──► search · reader view · diffs · WACZ export · integrity checks
+```
+
+- **Discovery** decides *what* gets captured. Getting it wrong means
+  recapturing everything later, which is why it comes before anything else.
+- **The engine** is a subprocess that speaks NDJSON on stdout. Cairn never
+  imports engine code.
+- **The index** spans every capture a site has ever had, which is where
+  replay's time dimension comes from — not the directory a WARC sits in.
+- **Everything derived** — index, extracted text, search, thumbnails — is
+  regenerable from the WARCs, and is never the only copy of anything.
+
+Full detail in [02 — Architecture](docs/02-architecture.md).
+
+---
+
+## Documentation
+
+Design documents, written before the code and corrected from it. Every one
+carries what the implementation taught us it got wrong.
+
+| Doc | What is in it |
+|---|---|
+| [00 — Decisions](docs/00-decisions.md) | Every significant technical choice, with rationale and what was rejected |
+| [01 — Requirements](docs/01-requirements.md) | Requirements traced to concrete design responses, plus scope boundaries |
+| [02 — Architecture](docs/02-architecture.md) | Components, processes, data flow, tech stack |
+| [03 — Data model & storage](docs/03-data-model-and-storage.md) | SQL schema, on-disk layout, naming, retention |
+| [04 — Discovery & scoping](docs/04-discovery-and-scoping.md) | How the initial index works and how domain selection becomes crawl scope |
+| [05 — Capture engines](docs/05-capture-engines.md) | The addon contract, the engine protocol, the wget/WARC engine, post-processors |
+| [06 — Access profiles](docs/06-access-profiles.md) | Cookies, userscripts, interactive login, credential storage |
+| [07 — Replay](docs/07-replay.md) | pywb integration, indexing strategy, WACZ, replay security |
+| [08 — Feeds & scheduling](docs/08-feeds-and-scheduling.md) | RSS/Atom watching, sitemap diffing, the scheduler, notifications |
+| [09 — API](docs/09-api.md) | REST surface and the SSE event stream |
+| [10 — Deployment (Unraid)](docs/10-deployment-unraid.md) | Image build, compose, CA template, Unraid-specific gotchas |
+| [11 — Security](docs/11-security.md) | Threat model and hardening for an internet-exposed instance |
+| [12 — Roadmap](docs/12-roadmap.md) | Milestones with exit criteria, and what each one got wrong |
+| [13 — Feature backlog](docs/13-feature-backlog.md) | Ideas from other tools, ranked, plus the anti-features |
+| [14 — Tooling landscape](docs/14-tooling-landscape.md) | Every relevant tool, what it is good at, whether to use it |
+| [15 — Feature tour](docs/15-feature-tour.md) | What using it is actually like, feature by feature |
+| [16 — Troubleshooting](docs/16-troubleshooting.md) | Recovery, lockouts, broken symlink trees, replay 404s |
+
+Cairn exists because [ArchiveBox](https://archivebox.io/) was evaluated first
+and its data model and organisation were a poor fit for whole-domain archiving.
+That evaluation is in
+[archivebox-notes-and-alternatives.md](archivebox-notes-and-alternatives.md)
+and it drove most of the decisions above.
+
+---
+
+## Development
+
+Python 3.12+ and Node 22+.
 
 ```bash
-python -m venv .venv && .venv/Scripts/pip install -e ".[dev]"
+python -m venv .venv && .venv/bin/pip install -e ".[dev]"
 ```
 
 ```bash
@@ -141,139 +192,50 @@ cd frontend && npm install && npm run build
 ```
 
 ```bash
-cp .env.example .env
+cp .env.example .env && .venv/bin/python -m uvicorn cairn.app:app --factory --port 8080
+```
+
+On Windows the venv scripts live in `.venv/Scripts/` rather than `.venv/bin/`.
+
+What CI runs:
+
+```bash
+pytest -q
 ```
 
 ```bash
-.venv/Scripts/python -m uvicorn cairn.app:app --factory --port 8080
+ruff check . && ruff format --check . && mypy
 ```
 
-Then open http://localhost:8080 and create your account.
-
-## First login
-
-**There is no default username or password, and the setup page has no URL of its own.** The app decides between three states from `GET /api/health`: no account yet → setup screen; account exists but no session → sign-in; signed in → the app. Every path renders the right one, so `/`, `/setup` and `/anything` all behave the same.
-
-Whatever you enter on the setup screen becomes the account. The endpoint behind it returns `409 Conflict` forever once any account exists, so it cannot be used to add a second one later.
-
-### The page doesn't load at all
-
-Check the container's state first — this failure has two very different shapes:
+The end-to-end tests need GNU wget, pywb and Chromium, and are skipped when any
+is missing — so running them on a bare development machine silently tests less
+than it appears to. They are skipped on Windows outright: Git for Windows ships
+a mingw32 wget whose WARC temp files hit the 260-character path limit inside
+pytest's temp directories. Run them in the container instead:
 
 ```bash
-docker ps -a --filter name=cairn --format "{{.Names}} {{.Status}} {{.Ports}}"
-```
-
-**Read the `PORTS` column first — it is the single clearest tell:**
-
-| `PORTS` shows | Meaning |
-|---|---|
-| `8080-8081/tcp` | **Not published.** The ports are only exposed inside Docker's network; nothing on your machine reaches them. The container still reports `healthy`, because the healthcheck runs *inside* it. Re-run with `-p 8080:8080 -p 8081:8081`, or in Docker Desktop expand **Optional settings** and fill in the host ports — it leaves them blank by default. |
-| `0.0.0.0:8080->8080/tcp` | Published correctly. If it still fails, look at `STATUS` below. |
-
-| `STATUS` shows | Meaning |
-|---|---|
-| `Exited (78)` | Configuration error the app cannot fix itself. The logs print a banner naming the problem and the fix — most often a `CAIRN_SECRET_KEY` that doesn't match the one the database was created with. |
-| `Up (healthy)` with ports published | The app is serving. Check the URL and any reverse proxy in front of it. |
-| `Exited (0)` / restarting | Check the logs for the startup banner. |
-
-Note that `docker run` without `--name` assigns a random one like `optimistic_brahmagupta`, and the `docker exec cairn …` commands below need that actual name. Pass `--name cairn` to keep them working.
-
-If you set `CAIRN_SECRET_KEY` in Docker Desktop, note it takes **Name** and **Value** as two fields — the name is `CAIRN_SECRET_KEY` and the value is the key alone, not `CAIRN_SECRET_KEY=…`.
-
-Changing the key is only fatal once something has actually been sealed under the old one (2FA secrets, recovery codes, cookie jars). Before that, the new key is simply adopted and logged. To see which key is in use:
-
-```bash
-docker exec cairn cairn key-info
-```
-
-If you lost the old key and accept losing what it sealed:
-
-```bash
-docker exec cairn cairn reset-key --force
-```
-
-### Seeing Sign In instead of the setup screen
-
-That means an account already exists — the app never skips setup on a genuinely empty instance. Almost always the `/config` volume carries over from a previous run. Confirm it:
-
-```bash
-docker exec cairn cairn users
-```
-
-`No account exists yet` means you are talking to a different process than you think — check nothing else is bound to that port. Otherwise use the recovery commands below, or point the container at an empty config directory to start fresh.
-
-Requirements: username 3–64 characters (letters, digits, `.`, `-`, `_`); password at least 12 characters, not a well-known one. Turn on two-factor authentication right after, in Settings.
-
-### If you get locked out
-
-All of these need shell access to the container, which is the recovery boundary — there is no email reset and no forgot-password link.
-
-Check the state of the account:
-
-```bash
-docker exec cairn cairn users
-```
-
-Reset the password (also clears any lockout, and signs out every session):
-
-```bash
-docker exec -it cairn cairn reset-password admin
-```
-
-If your console has no TTY (Unraid's browser terminal, or `docker exec` without `-it`), pipe it instead:
-
-```bash
-docker exec -i cairn sh -c 'echo "your-new-passphrase" | cairn reset-password admin --stdin'
-```
-
-Locked out by failed attempts but you *do* know the password — just clear the lockout:
-
-```bash
-docker exec cairn cairn unlock admin
-```
-
-Lost your authenticator and your recovery codes:
-
-```bash
-docker exec cairn cairn disable-totp admin
-```
-
-### The folder or tag tree on the share looks wrong
-
-Both are derived from the database and both rebuild from it. They also rebuild at every boot, so this is only needed between restarts:
-
-```bash
-docker exec cairn cairn rebuild-symlinks
-```
-
-That is a real repair, not just a refresh — it remakes every link rather than trusting the ones that look right. If a site under `by-tag` shows as a **0 KB file** instead of a folder, this is the fix. It means the link was written before its target directory existed, which types it as a file link; Linux resolves it either way, so only a Windows client sees the difference.
-
-If replay 404s after a restore or after rearranging things on the share, re-point the collections — pywb picks up the change on the next request, with no restart:
-
-```bash
-docker exec cairn cairn replay-init
-```
-
-Deleted sites keep their archive until they are purged, and the sweep only runs at boot. To reclaim the space now:
-
-```bash
-docker exec cairn cairn purge-trash
-```
-
-Starting completely over wipes the archives too, so prefer the commands above. If you truly want a clean slate, stop the container and delete `cairn.db` from your config volume.
-
-The checks CI runs:
-
-```bash
-.venv/Scripts/python -m pytest -q
+docker build -t cairn:latest . && docker build -t cairn:dev -f docker/Dockerfile.dev .
 ```
 
 ```bash
-.venv/Scripts/ruff check . && .venv/Scripts/ruff format --check . && .venv/Scripts/mypy
+docker run --rm -v "$PWD:/app" -w /app cairn:dev pytest -q
 ```
 
-## Repository layout
+Use `cairn:dev` for this and not `cairn:latest`. The runtime image's entrypoint
+is s6, so anything run through it starts the app and pywb alongside the tests —
+which is not a neutral environment, and its failure mode is a test passing
+against the wrong server rather than erroring.
+
+Rebuild `cairn:dev` whenever you rebuild `cairn:latest`. A stale one keeps
+whatever tooling the runtime image had when it was built, and a suite that
+skips because a tool is missing looks exactly like one you opted out of. `-rs`
+prints the reason for every skip.
+
+Container-engine tests additionally need the Docker socket **and**
+`CAIRN_TEST_CONTAINERS=1` — a deliberate opt-in, because they pull most of a
+gigabyte.
+
+### Repository layout
 
 ```
 backend/cairn/      FastAPI app, services, models, migrations, CLI
@@ -282,12 +244,84 @@ backend/cairn/      FastAPI app, services, models, migrations, CLI
 frontend/           React + Vite SPA (builds into backend/cairn/static)
 docker/rootfs/      s6-overlay service definitions
 unraid/             Community Applications template
+examples/           engine-template — copy this to write your own
 tests/              pytest suite
 docs/               design documentation — read 00-decisions.md first
 ```
 
-The end-to-end capture tests need GNU wget and are skipped on Windows: Git for Windows ships a mingw32 build whose WARC temp files hit the 260-character path limit inside pytest's temp directories. Run them in the container or in CI.
+### Stack
 
-## A note on responsible use
+Python 3.12 · FastAPI · SQLite (WAL) · React + Vite + TypeScript · Tailwind ·
+TanStack Query · GNU wget → WARC · pywb · Playwright/Chromium · s6-overlay.
 
-This is a personal archiving tool. Default behavior respects `robots.txt`, rate-limits requests, and sends an identifying user agent. The UI exposes overrides (Blogger's `robots.txt` blocks `/search`, which is where label pages live) — use them on sites you own or have permission to archive, and keep the concurrency and rate limits polite regardless.
+---
+
+## Project status
+
+**Working end to end and in use.** M0–M8 are complete, along with everything in
+the backlog worth building: browser-based discovery, multi-seed sites, the
+digest, reader view, site health, bulk import, the bookmarklet, annotations,
+backup verification and site thumbnails. See the
+[roadmap](docs/12-roadmap.md) for the milestone-by-milestone record.
+
+742 tests pass in the container with 3 skipped — the container-engine suites,
+which need the Docker socket and a deliberate opt-in. Lint, format and strict
+type checks are clean.
+
+The image carries Chromium for the userscript, interactive-login, discovery and
+thumbnail paths, which puts it at roughly **1.7 GB**. Everything else works
+without it.
+
+Not built, deliberately, each with the reasoning recorded: public share links,
+storage tiering, a third capture engine, and multi-user.
+
+> **The name is a placeholder.** A cairn is a stack of stones that marks a
+> trail. Rename freely — `cairn` is used consistently as the package, image and
+> database name, so it is a global find-and-replace.
+
+---
+
+## Security
+
+Three properties shape the whole design, and they are worth knowing before you
+expose this to anything:
+
+- **Replay executes untrusted JavaScript.** Every archived page contains code
+  that runs in your browser when you view it. Replay is therefore served from a
+  separate origin, and behind a proxy that must be a separate *hostname* —
+  ports do not isolate cookies.
+- **The app fetches arbitrary URLs by design.** SSRF is the feature. Media URLs
+  extracted from archived HTML — the one genuinely attacker-controlled target —
+  are checked against private ranges after DNS resolution.
+- **It stores session cookies.** They are sealed at rest with
+  `CAIRN_SECRET_KEY`, never returned by the API, and never logged.
+
+The full threat model is [11 — Security](docs/11-security.md). The short
+version: **do not expose it directly if you can avoid it.** Tailscale or a
+Cloudflare Tunnel removes the internet-facing surface entirely, which is better
+advice than any amount of in-app hardening.
+
+Found a vulnerability? [SECURITY.md](SECURITY.md) says how to report it and
+what is in scope.
+
+---
+
+## Responsible use
+
+This is a personal archiving tool. Default behaviour respects `robots.txt`,
+rate-limits requests, serialises per host, and sends an identifying user agent.
+
+The UI exposes overrides — Blogger's `robots.txt` blocks `/search`, which is
+where label pages live — and they are there for sites you own or have
+permission to archive. Keep the concurrency and rate limits polite regardless;
+two simultaneous crawls of one blog is what gets an archiver blocked, whoever
+started them.
+
+Cairn does not circumvent paywalls or CAPTCHAs and will not grow the ability
+to. Access profiles let *you* supply credentials you already have.
+
+---
+
+## License
+
+MIT. See [LICENSE](LICENSE).

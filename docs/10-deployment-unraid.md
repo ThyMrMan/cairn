@@ -143,7 +143,7 @@ It must stay a *functional* check. The obvious `wget --version | grep +pcre` is 
 </Container>
 ```
 
-`--shm-size=2g` is set from the start even though M1 doesn't need it. Chromium (cookie minting, M5) crashes with cryptic renderer errors on the default 64 MB `/dev/shm`, and changing a template variable after installation is a support-thread generator.
+`--shm-size=2g` was set from the very first template, before anything in the image needed it. Chromium crashes with cryptic renderer errors on Docker's default 64 MB `/dev/shm`, and changing a template variable after installation is a support-thread generator — so the room was made before the thing that needs it arrived. It is now used by userscript and interactive profiles, browser-based discovery, and site thumbnails; everything else works without it.
 
 ---
 

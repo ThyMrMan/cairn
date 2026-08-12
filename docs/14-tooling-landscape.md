@@ -46,7 +46,7 @@ The professional-grade option. Full platform wants Kubernetes/microk8s; `browser
 
 **Gap:** the full platform is far heavier than "one Docker container on Unraid." The bare crawler has no scheduling, no feed watching, no organization, no UI.
 
-**Verdict:** **`browsertrix-crawler` is the planned second engine** ([M7](12-roadmap.md#m7--engine-sdk--second-engine)), and its profile concept is directly borrowed for the `interactive` access-profile mode ([06](06-access-profiles.md#mode-3--interactive-m5)). The full platform is not used.
+**Verdict:** **`browsertrix-crawler` is the planned second engine** ([M7](12-roadmap.md#m7--engine-sdk--second-engine-)), and its profile concept is directly borrowed for the `interactive` access-profile mode ([06](06-access-profiles.md#mode-3--interactive)). The full platform is not used.
 
 ### Conifer (formerly Webrecorder.io)
 
