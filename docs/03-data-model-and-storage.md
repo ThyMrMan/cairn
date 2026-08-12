@@ -524,3 +524,39 @@ This document originally called for a debounced incremental refresh of `/data/by
 Naming inside a tag directory is computed from the database, never from what is already on disk. Site slugs are unique within a folder, not globally, so two sites can both be `example`; when that happens inside one tag, **both** get their id appended rather than the newcomer alone. A name that depends on which row arrived first cannot be recomputed, and a tree that cannot be recomputed cannot be checked.
 
 Pruning only ever removes symlinks and the empty directories that held them. A real directory under `by-tag` was put there by hand over the share, and deleting it because it is not in the database would be this tool destroying something it never owned.
+
+---
+
+## Why there is no storage tiering
+
+docs/13 asked for captures older than N months to move to a slower tier, with
+the index staying local so replay resolves and the bytes fetched on demand.
+Probed against the pinned pywb before writing any of it, and the probe settled
+it three ways:
+
+**Replay does not care where the bytes are.** A WARC moved out of the
+collection and replaced by a symlink replayed identically to the control —
+same 200, same archived body. So the replay half is free.
+
+**Every other reader refuses it.** `storage.resolve_within` resolves symlinks
+*before* checking containment, deliberately: a symlink planted inside a capture
+directory must not be usable to record a file outside it (docs/05). Measured, a
+symlink out of the site directory raises `StoragePathError` and one inside it
+resolves. So integrity verification, WACZ export and text extraction would all
+refuse a file replay serves perfectly — and making them accept it means
+removing the control that keeps an engine inside the archive tree.
+
+**A tier that can go away is an unexplained 503.** With the symlink's target
+renamed, replay answered 503 — indistinguishable from the pruned-dedup-source
+503 M8 documented. Fetching on demand would require sitting in front of pywb,
+and nothing here ever proxies replayed bytes (docs/07).
+
+Satisfying the second point means the tier has to live inside each site's own
+directory, which is a move within one directory tree and therefore usually no
+move at all.
+
+**And the platform already does it better.** Unraid's shfs presents one path
+whatever device a file is on; a share's cache setting moves files between pool
+and array transparently, with no index to keep in step. An archive that should
+leave the machine altogether has the WACZ export, which is self-describing and
+needs nothing here to read it.

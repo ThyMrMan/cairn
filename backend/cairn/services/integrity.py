@@ -80,6 +80,9 @@ class Report:
     files: int = 0
     bytes_read: int = 0
     findings: list[Finding] = field(default_factory=list)
+    # Set when the pass ran against a copy of the archive rather than the
+    # archive. A mirror's report must never be mistaken for the live one.
+    root: str = ""
 
     @property
     def ok(self) -> bool:
@@ -94,6 +97,7 @@ class Report:
             "files": self.files,
             "bytes_read": self.bytes_read,
             "ok": self.ok,
+            "root": self.root,
             "findings": [f.to_dict() for f in self.findings],
         }
 
@@ -105,14 +109,22 @@ def verify(
     site_id: int | None = None,
     deep: bool = False,
     progress: Callable[[int, int, str], None] | None = None,
+    root: Path | None = None,
 ) -> Report:
     """Walk the archive and check every recorded artifact.
 
     `deep` additionally parses each WARC end to end. That reads every byte
     twice — once to hash, once to parse — so it is the deliberate slow pass
     rather than what the weekly run does.
+
+    `root` points the same walk at a *copy* of the archive tree — a mounted
+    backup, an rclone remote, the other end of an rsync. The database stays
+    the one here, which is the whole point: the copy is checked against what
+    this instance recorded when the bytes were written, which is a question
+    rsync cannot answer. It reports that it copied bytes; it does not know
+    whether the archive is complete or unmodified.
     """
-    report = Report(started_at=utcnow())
+    report = Report(started_at=utcnow(), root=str(root) if root else "")
     sites = list(
         session.scalars(
             select(Site)
@@ -131,8 +143,12 @@ def verify(
             if progress is not None:
                 progress(done, total, f"{site.title} / {capture.dir_name}")
             report.captures += 1
-            _check_capture(settings, site, capture, report, deep=deep)
-        _check_index(settings, site, report)
+            _check_capture(settings, site, capture, report, deep=deep, mirror_root=root)
+        if root is None:
+            # The replay index is derived data and belongs to the instance
+            # that serves replay. A mirror that does not carry one is not a
+            # mirror with a problem.
+            _check_index(settings, site, report)
 
     report.finished_at = utcnow()
     return report
@@ -153,10 +169,21 @@ def _captures_for(session: Session, site_ids: list[int]) -> dict[int, list[Captu
 
 
 def _check_capture(
-    settings: Settings, site: Site, capture: Capture, report: Report, *, deep: bool
+    settings: Settings,
+    site: Site,
+    capture: Capture,
+    report: Report,
+    *,
+    deep: bool,
+    mirror_root: Path | None = None,
 ) -> None:
     try:
-        capture_dir = storage.site_dir(settings, site.archive_path) / storage.CAPTURES_DIR
+        site_root = (
+            storage.site_dir_under(mirror_root, settings, site.archive_path)
+            if mirror_root
+            else storage.site_dir(settings, site.archive_path)
+        )
+        capture_dir = site_root / storage.CAPTURES_DIR
         root = storage.resolve_within(capture_dir, capture.dir_name)
     except storage.StoragePathError as exc:  # pragma: no cover — dir_name is ours
         report.findings.append(

@@ -802,19 +802,29 @@ class JobSupervisor:
                 return {"status": "failed", "error": "the job vanished"}
             spec = job.spec or {}
             deep = bool(spec.get("deep"))
-            say(
-                "Re-reading every archived file and comparing it to the checksum taken when "
-                "it was written." + (" Parsing each WARC as well." if deep else "")
-            )
+            # A mirror path turns this into "is the copy any good", which is
+            # the same walk against a different root and the same database.
+            from pathlib import Path as _Path
+
+            mirror = _Path(str(spec["root"])) if spec.get("root") else None
+            if mirror is not None:
+                say(f"Checking the copy at {mirror} against what this instance recorded.")
+            else:
+                say(
+                    "Re-reading every archived file and comparing it to the checksum taken "
+                    "when it was written." + (" Parsing each WARC as well." if deep else "")
+                )
             report = integrity.verify(
                 session,
                 self._settings,
                 site_id=job.site_id,
                 deep=deep,
                 progress=lambda done, total, label: step(done, total, label),
+                root=mirror,
             )
-            # Only a whole-archive pass may claim to be the archive's state.
-            if job.site_id is None:
+            # Only a whole-archive pass over *this* archive may claim to be
+            # the archive's state. A mirror's report is about somewhere else.
+            if job.site_id is None and mirror is None:
                 integrity.save(self._settings, report)
 
             if report.ok:

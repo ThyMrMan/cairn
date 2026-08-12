@@ -19,6 +19,7 @@ export default function Settings() {
       <NotificationsSection />
       <IntegritySection />
       <StorageSection />
+      <MirrorSection />
       <BookmarkletSection />
       <UrlImportSection />
       <ImportSection />
@@ -30,6 +31,102 @@ export default function Settings() {
       <SessionsSection />
       <AuditSection />
     </div>
+  );
+}
+
+/**
+ * Checking a copy of the archive.
+ *
+ * Not a sync — making the copy is rsync's job, or restic's, and both are
+ * years ahead of anything worth writing here. What this instance has and they
+ * do not is the checksum taken when each file was written, so it can answer
+ * the question they cannot: is the copy *complete*, and are its bytes still
+ * the bytes.
+ *
+ * The listing runs first because it is instant and catches the common failure
+ * — a sync that skipped a directory and reported success. Re-checksumming
+ * reads every byte of the copy and is therefore a job.
+ */
+function MirrorSection() {
+  const [path, setPath] = useState("");
+  const [queued, setQueued] = useState<string | null>(null);
+
+  const survey = useMutation({ mutationFn: () => endpoints.surveyMirror(path.trim()) });
+  const verify = useMutation({
+    mutationFn: () => endpoints.verifyMirror(path.trim()),
+    onSuccess: (result) =>
+      setQueued(`Queued as job #${result.job_id}. Nothing is written to the copy.`),
+  });
+
+  const found = survey.data;
+
+  return (
+    <Section
+      title="Check a backup copy"
+      description="Point this at a mounted copy of /data made with rsync, restic or anything else. It reports which captures the copy is missing, and can re-checksum every file against what was recorded when it was written."
+    >
+      <div className="flex flex-wrap gap-2">
+        <input
+          className="input min-w-0 flex-1 font-mono text-sm"
+          placeholder="/backup"
+          value={path}
+          onChange={(e) => {
+            setPath(e.target.value);
+            survey.reset();
+            setQueued(null);
+          }}
+          aria-label="Path to the copy"
+        />
+        <button
+          className="btn-ghost"
+          disabled={!path.trim() || survey.isPending}
+          onClick={() => survey.mutate()}
+        >
+          {survey.isPending && <Spinner />}
+          Look
+        </button>
+      </div>
+      <p className="hint mt-2">
+        The path as <em>this container</em> sees it — mount the backup read-only, for example{" "}
+        <code>-v /mnt/backup/cairn:/backup:ro</code>, then type <code>/backup</code>.
+      </p>
+
+      {survey.error && <Alert kind="error">{(survey.error as ApiError).message}</Alert>}
+
+      {found && (
+        <div className="mt-4 space-y-2 text-sm">
+          <p className={found.complete ? "text-ok" : "text-warn"}>
+            {found.present.toLocaleString()} of {found.captures.toLocaleString()} capture(s)
+            are in the copy
+            {found.complete ? "." : `, ${found.missing.toLocaleString()} missing.`}
+          </p>
+          {found.sites.length > 0 && (
+            <ul className="space-y-1 text-xs text-muted">
+              {found.sites.slice(0, 10).map((site) => (
+                <li key={site.site_id}>
+                  {site.title} — {site.present}/{site.captures} captures
+                </li>
+              ))}
+            </ul>
+          )}
+          {found.unknown_dirs.length > 0 && (
+            <p className="hint">
+              {found.unknown_dirs.length} site director(ies) in the copy are not sites here.
+              Usually sites you have since deleted — or the copy belongs to a different
+              instance.
+            </p>
+          )}
+          <button className="btn-ghost" onClick={() => verify.mutate()} disabled={verify.isPending}>
+            {verify.isPending && <Spinner />}
+            Re-checksum the copy
+          </button>
+          {queued && <p className="text-xs text-muted">{queued}</p>}
+          {verify.error && (
+            <p className="text-xs text-danger">{(verify.error as ApiError).message}</p>
+          )}
+        </div>
+      )}
+    </Section>
   );
 }
 

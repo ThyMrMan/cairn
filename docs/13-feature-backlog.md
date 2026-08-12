@@ -146,9 +146,19 @@ Notes and highlights on archived pages. Turns an archive into a research tool. S
 
 > **As built.** Anchoring to replayed content is not hard here, it is *unavailable*: replay is a separate origin precisely so archived JavaScript cannot reach the app, which means the app cannot read a selection out of the iframe either. So annotations live on the reader view and anchor to a **quotation** — which is the better anchor anyway, since re-extraction rewrites every byte offset and a later capture has different ones again. One trap, found by the test written for it: the context either side of a quote must be whitespace-collapsed and not *stripped*, or the disambiguation pass never matches and every ambiguous quote silently falls through to the first occurrence.
 
-### Storage tiering
+### Storage tiering ❌ *not built — measured, and it does not fit*
 
 Move captures older than N months to a slower or cheaper tier (array-only, or an rclone remote), keeping the index local so replay still resolves. Fetch on demand.
+
+> **Probed before building, and the probe settled it.** Three measurements against the pinned pywb, with a real capture, a real index and a real symlink:
+>
+> 1. **Replay does not care where the bytes are.** A WARC moved out of the collection entirely and replaced by a symlink replayed identically to the control — same 200, same archived body. So "keep the index, move the bytes" needs no replay changes at all.
+> 2. **Every other reader in the system refuses it.** `storage.resolve_within` resolves symlinks *before* checking containment, deliberately (docs/05: a symlink planted in a capture directory must not record a file outside it). Measured: a symlink out of the site directory raises `StoragePathError`, one inside it resolves. So integrity verification, WACZ export and text extraction would all refuse a WARC that replay serves perfectly — and the fix would be removing the control that stops an engine escaping the archive tree.
+> 3. **A tier that can go away is a 503 with no explanation.** With the target renamed away, replay answered 503 — the same 503 M8 documented for a pruned dedup source. "Fetch on demand" would need us in front of pywb, and we deliberately never proxy replayed bytes (docs/07).
+>
+> Which leaves the tier having to live *inside each site's own directory* to satisfy (2) — a move within one directory tree, which on any ordinary setup is the same filesystem and therefore moves nothing.
+>
+> **And on the target platform it is already solved better.** Unraid's shfs presents one path whatever device a file is on, and a share's cache setting moves files between pool and array transparently, with no index to keep in step. An application doing it too would be fighting the filesystem for the same result. For an archive that should leave the machine entirely, M8's WACZ export is the self-describing, tool-independent answer.
 
 ### Prometheus metrics ✅ *built in M8*
 
@@ -160,9 +170,13 @@ Extracted article text rendered cleanly, no CSS, no JS. Fast, accessible, and im
 
 > **As built.** Nearly free, because M8's extraction already put the text on disk with the sidebar removed. Two things it deliberately is not: a fallback that hides a broken replay — it is offered beside replay and names the capture it read — and a copy, since nothing is stored for it. Extraction gained one field: what each block *was*, so a heading renders as a heading. Text in which every heading is a paragraph is markedly harder to read than the page it came from.
 
-### Federated/mirror sync
+### Federated/mirror sync ⚠️ *reshaped and built — the useful half*
 
 Sync archives to a second instance. Real 3-2-1 for archives that matter.
+
+> **Making the copy is not ours to build.** WARCs are immutable (D2), so a copy is append-only — exactly what `rsync`, `restic` and `rclone` are for, with resumption, bandwidth limits, encryption and deduplication a bespoke sync would spend years catching up to. This document already names restic as ideal for the tree. A second, worse rsync that also needed a protocol between two instances and an auth scheme between them is a great deal of work to end up behind `rsync -a`.
+>
+> **Knowing the copy is good is ours, and nothing else can do it.** rsync reports that it transferred bytes; it cannot say that every capture this instance knows about is present, or that each file still hashes to what was recorded when it was written. That information is in `manifest.json` and the integrity verifier. So: make the copy however you like, mount it read-only, and point Cairn at it — a directory listing for "is it complete" and the full integrity pass, against the same database, for "are the bytes still the bytes".
 
 ---
 

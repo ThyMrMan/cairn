@@ -379,6 +379,22 @@ Also worth doing: run `--warc-dedup` against a second capture and verify you get
 
 ---
 
+## After M8 — the last two, one of them not built ✅
+
+**Ships:** a way to know a backup is good, and a recorded reason not to build storage tiering.
+
+- [x] Mirror sync — **reshaped**: check the copy, do not make it ([13](13-feature-backlog.md#federatedmirror-sync))
+- [ ] Storage tiering — **not built**, measured ([13](13-feature-backlog.md#storage-tiering))
+
+**Done when:** a byte flipped in a mounted backup is named, and the live archive is still reported as fine. *Asserted in `test_mirror.py`, including the distinction that matters — a mirror's report is never saved as the archive's own state, or a bad backup would show on the archive health page as a problem with the archive.*
+
+**Two decisions, both about not building the thing as asked:**
+
+1. **Storage tiering does not fit, and the probe said so before any of it was written.** Replay serves a WARC through a symlink perfectly — measured, identical to the control. But `storage.resolve_within` resolves symlinks before checking containment, deliberately (docs/05), so integrity verification, WACZ export and text extraction all refuse a file replay is happy with; making them accept it means removing the control that keeps an engine inside the archive tree. And a tier that can go away answers 503 with no explanation, because fetching on demand would need us in front of pywb, which docs/07 forbids. Satisfying the containment rule leaves the tier inside each site's own directory — a move within one tree, which usually moves nothing. On Unraid the share's cache setting already does this transparently, with no index to keep in step.
+2. **Making a copy is rsync's job; knowing the copy is good is ours.** WARCs are immutable, so a copy is append-only — precisely what rsync, restic and rclone are built for. What none of them can say is that every capture this instance knows about is present, or that each file still hashes to what was recorded when it was written. That is in `manifest.json` and the integrity verifier, and it is the same walk against a different root and the same database.
+
+---
+
 ## Sequencing notes
 
 **Why discovery before replay.** Discovery determines *what gets captured*; getting it wrong means recapturing everything later. Replay is read-only over whatever exists and can be built against any archive.

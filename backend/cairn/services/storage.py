@@ -213,6 +213,18 @@ def site_dir(settings: Settings, archive_path: str) -> Path:
     return resolve_within(settings.archives_dir, archive_path)
 
 
+def site_dir_under(root: Path, settings: Settings, archive_path: str) -> Path:
+    """A site's directory inside a *copy* of the data directory.
+
+    `root` is somebody's backup of `/data`, so the archives sit at the same
+    place under it that they do here. Derived from the settings rather than
+    written out, so an install that moves `archives_dir` does not silently
+    check the wrong half of its own backup.
+    """
+    relative = settings.archives_dir.relative_to(settings.data_dir)
+    return resolve_within(root / relative, archive_path)
+
+
 def ensure_site_dirs(settings: Settings, archive_path: str) -> Path:
     root = site_dir(settings, archive_path)
     for sub in (CAPTURES_DIR, INDEX_DIR, DERIVED_DIR, EXPORTS_DIR):

@@ -125,6 +125,70 @@ def verify_archive(
     return JobAccepted(job_id=job.id)
 
 
+# ── the copy ─────────────────────────────────────────────────────────────
+#
+# Making the copy is rsync's job, or restic's. Knowing the copy is good is
+# this instance's, because it holds the checksums taken when the bytes were
+# written — see `services/mirror.py`.
+
+
+@router.get("/mirror")
+def survey_mirror(
+    db: DbSession,
+    settings: AppSettings,
+    _user: CurrentUser,
+    path: Annotated[str, Query(min_length=1, max_length=1024)],
+) -> dict[str, Any]:
+    """Which captures the copy has, and which it does not. A listing, not a read."""
+    from cairn.services import mirror
+
+    try:
+        root = mirror.require_root(settings, path)
+    except mirror.MirrorError as exc:
+        raise ApiError("bad_path", str(exc), status_code=400) from exc
+    return mirror.survey(db, settings, root).to_dict()
+
+
+@router.post(
+    "/mirror/verify", response_model=JobAccepted, status_code=status.HTTP_202_ACCEPTED
+)
+def verify_mirror(
+    db: DbSession,
+    settings: AppSettings,
+    user: CurrentUser,
+    ip: ClientIp,
+    supervisor: Annotated[Any, Depends(_supervisor)],
+    path: Annotated[str, Query(min_length=1, max_length=1024)],
+    deep: Annotated[bool, Query()] = False,
+) -> JobAccepted:
+    """Re-checksum the copy against what each capture recorded here.
+
+    The expensive question, and the one rsync cannot answer: it reports that
+    it transferred bytes, not that the archive in the copy is complete and
+    unmodified.
+    """
+    from cairn.services import mirror
+
+    try:
+        root = mirror.require_root(settings, path)
+    except mirror.MirrorError as exc:
+        raise ApiError("bad_path", str(exc), status_code=400) from exc
+
+    job = supervisor.enqueue(
+        db,
+        job_type="verify",
+        site_id=None,
+        spec={"deep": deep, "root": str(root)},
+        priority=200,
+    )
+    audit.record(
+        db, "maintenance.verify-mirror", actor=user.username, target=str(root), ip=ip
+    )
+    db.commit()
+    supervisor.notify()
+    return JobAccepted(job_id=job.id)
+
+
 @router.get("/maintenance/integrity")
 def integrity_report(db: DbSession, settings: AppSettings, _user: CurrentUser) -> dict[str, Any]:
     """Archive health: what was verified, when, and what is still unchecked."""

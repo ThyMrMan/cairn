@@ -566,6 +566,26 @@ export type ScheduleSettings = {
   digest_every_days: number;
 };
 
+/** What a copy of the archive has, and what it is missing. */
+export type MirrorSurvey = {
+  root: string;
+  captures: number;
+  present: number;
+  missing: number;
+  complete: boolean;
+  complete_sites: number;
+  sites: {
+    site_id: number;
+    title: string;
+    archive_path: string;
+    captures: number;
+    present: number;
+    missing: string[];
+    complete: boolean;
+  }[];
+  unknown_dirs: string[];
+};
+
 /** Whether the live sites behind the archives are still there. */
 export type SiteHealthProblem = {
   site_id: number;
@@ -1016,6 +1036,12 @@ export const endpoints = {
   storage: () => api.get<Storage>("/storage"),
   digest: (days = 7) => api.get<DigestReport>(`/digest?days=${days}`),
   siteHealth: () => api.get<SiteHealthSummary>("/site-health"),
+  surveyMirror: (path: string) =>
+    api.get<MirrorSurvey>(`/mirror?path=${encodeURIComponent(path)}`),
+  verifyMirror: (path: string, deep = false) =>
+    api.post<{ job_id: number }>(
+      `/mirror/verify?path=${encodeURIComponent(path)}&deep=${deep}`,
+    ),
   checkSiteHealth: (id: number) =>
     api.post<SiteHealthCheck>(`/sites/${id}/health-check`),
   version: () => api.get<Version>("/version"),

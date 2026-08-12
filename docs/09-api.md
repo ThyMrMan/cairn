@@ -264,6 +264,8 @@ The interactive session is a **CDP screencast over a WebSocket**, not the `vnc_u
 | `GET` | `/api/digest?days=` | The periodic report: what happened, and what quietly did not |
 | `GET` | `/api/site-health` | Which archived sites are still live, and which are not |
 | `POST` | `/api/sites/{id}/health-check` | Probe one site's live counterpart now |
+| `GET` | `/api/mirror?path=` | Which captures a mounted copy of /data has |
+| `POST` | `/api/mirror/verify?path=&deep=` | Re-checksum the copy against what was recorded here |
 | `POST` | `/api/import/urls/survey` | `{text}` → what a pasted list would become |
 | `POST` | `/api/import/urls` | Create or reuse a site per domain and archive the listed pages |
 | `GET` | `/api/trash` | Deleted sites, their size, and days until purge |

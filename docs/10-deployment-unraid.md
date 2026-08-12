@@ -294,3 +294,24 @@ wget's memory grows with the visited-URL set and the WARC dedup index — that's
 - pywb config is regenerated on start, so upgrades that change its format self-heal.
 - WARC files are never touched by an upgrade. Archives are forward-compatible by construction.
 - Pin the image tag (`:1.2.0`) rather than `:latest` if the instance matters — Unraid auto-update on `:latest` combined with an unattended migration is how weekend outages happen.
+
+---
+
+## Backups, and checking them
+
+The archive tree is the thing worth backing up: WARCs are immutable ([D2](00-decisions.md#d2--index-across-warcs-never-merge-or-concatenate-them)), so a copy is append-only and every incremental run is cheap. Use whatever you already run — `rsync -a`, restic, rclone. Cairn does not sync, and deliberately: those tools have resumption, bandwidth limits, encryption and deduplication that a bespoke implementation would spend years catching up to.
+
+What Cairn has that they do not is the checksum taken when each file was written. So mount the copy read-only:
+
+```
+-v /mnt/backup/cairn:/backup:ro
+```
+
+and in **Settings → Check a backup copy**, type `/backup`. Two questions, in increasing cost:
+
+- **Is it complete?** A directory listing, instant, and the one that catches the failure a sync reports success for — a directory that was skipped.
+- **Are the bytes still the bytes?** The full integrity pass against the copy, using this instance's recorded checksums. It reads every byte of the backup, so it is a job.
+
+A path inside `/data` is refused: checking the archive against itself would pass and mean nothing. Site directories in the copy that this instance has never heard of are reported and not treated as an error — an old backup holding sites you have since deleted is often the point of having one.
+
+Cairn never writes to the copy.
