@@ -117,6 +117,10 @@ Anything a filter can express must survive a round trip through both serializati
 | `GET` | `/api/sites/{id}/reader?url=&capture=` | One archived page as clean text |
 | `GET` | `/api/sites/{id}/reader/versions?url=` | Captures whose text holds that URL |
 | `GET` | `/api/sites/{id}/reader/index` | Every readable page of a site |
+| `GET` | `/api/sites/{id}/annotations?url=` | Notes on one page, or all of a site's |
+| `POST` | `/api/sites/{id}/annotations` | `{url, quote, note?, prefix?, suffix?, block_index?}` |
+| `PATCH` | `/api/annotations/{id}` | Edit the note or its colour |
+| `DELETE` | `/api/annotations/{id}` | Remove one |
 | `GET` | `/api/sites/{id}/scope` | Current resolved scope |
 | `PUT` | `/api/sites/{id}/scope` | Host selections, patterns, limits, politeness |
 | `POST` | `/api/sites/{id}/scope/preview` | Dry-run estimate — no fetching |

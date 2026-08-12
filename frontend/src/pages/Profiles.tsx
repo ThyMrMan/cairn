@@ -334,6 +334,20 @@ function ProfileCard({ profile }: { profile: Profile }) {
 
       {actionError && <Alert kind="error">{actionError}</Alert>}
 
+      {/*
+        The gap nothing else in the app would show. A login kept in
+        localStorage works everywhere a browser is involved — the mint, this
+        page's test, browser-based discovery — and nowhere wget is, because
+        wget is handed `--load-cookies` and nothing else. Without this line,
+        "the test passes and the capture gets the sign-in page" has no
+        explanation anywhere.
+      */}
+      {profile.storage_note && (
+        <Alert kind="info" title="This profile is more than a cookie jar">
+          {profile.storage_note}
+        </Alert>
+      )}
+
       {profile.script && (
         <div className="rounded-md border border-border p-3 text-xs">
           <p className="font-medium">

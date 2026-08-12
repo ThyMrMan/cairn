@@ -5,6 +5,7 @@ import Layout from "./components/Layout";
 import { Spinner } from "./components/ui";
 import { endpoints } from "./lib/api";
 import { useAuth } from "./lib/auth";
+import AddPage from "./pages/AddPage";
 import Dashboard from "./pages/Dashboard";
 import Folders from "./pages/Folders";
 import Jobs from "./pages/Jobs";
@@ -44,6 +45,9 @@ export default function App() {
 
   return (
     <Routes>
+      {/* Outside the layout: this arrives in a popup from the bookmarklet, and
+          a sidebar in a 520-pixel window is furniture nobody asked for. */}
+      <Route path="add" element={<AddPage />} />
       <Route element={<Layout />}>
         <Route index element={<Dashboard />} />
         <Route path="search" element={<Search />} />

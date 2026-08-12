@@ -44,6 +44,10 @@ class MintResult:
     reason: str = ""
     final_url: str = ""
     cookies_text: str | None = None
+    # The whole browser state, not only the jar. A login that keeps its token
+    # in localStorage is invisible in `cookies_text`, and a re-mint that
+    # discarded it would silently downgrade the profile on every refresh.
+    storage_state: dict[str, Any] | None = None
     cookie_count: int = 0
     hosts: list[str] = field(default_factory=list)
     screenshot: bytes | None = None
@@ -60,6 +64,7 @@ class MintResult:
             "console": self.console,
             "warnings": self.warnings,
             "has_screenshot": self.screenshot is not None,
+            "storage": self.storage_state is not None,
         }
 
 
@@ -148,12 +153,25 @@ async def mint(
 
         result.ok = True
         result.cookies_text = browser.to_netscape(cookies)
+        # Captured while the browser still has it. Nothing about the wget
+        # capture changes; what changes is that a re-mint, the profile test
+        # and browser-based discovery all get the same state the script
+        # actually finished in.
+        with suppress_storage_errors():
+            result.storage_state = await ctx.storage_state()
         result.reason = f"got real content from {page.url} with {len(cookies)} cookie(s)"
         log.info(
             "mint succeeded",
             extra={"url": page.url, "cookies": len(cookies), "status": with_status},
         )
         return result
+
+
+def suppress_storage_errors() -> Any:
+    """Reading the state must never fail a mint that already succeeded."""
+    from contextlib import suppress
+
+    return suppress(Exception)
 
 
 async def _settle(page: Any) -> None:

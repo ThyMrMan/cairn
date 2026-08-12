@@ -261,3 +261,42 @@ repetition filter drops blocks and kinds together — filtering two positional
 lists separately would give every heading after a dropped block the kind of the
 one before it, which is a page whose text is right and whose structure is
 quietly wrong.
+
+---
+
+## Annotations
+
+Notes and highlights on archived pages. docs/13 calls anchoring them to
+replayed content "genuinely hard"; against this architecture it is not hard, it
+is **unavailable**. Replay runs on a separate origin exactly so archived
+JavaScript cannot reach the application — which means the application cannot
+reach into the iframe either. No `getSelection`, no injected script, no
+coordinates. Any of those would mean handing the replay frame our origin, which
+is the single thing this document and docs/11 exist to prevent.
+
+So annotations live on the **reader view**, which is our own origin rendering
+our own extraction. And they anchor to a *quotation* rather than a position,
+which turns out to be the better choice regardless: re-extracting a capture
+rewrites `derived/text/` and every byte offset with it, and a later capture of
+the same page has different offsets again — so a byte range would orphan every
+annotation on the archive's first maintenance pass. The interesting case for an
+annotation is precisely the page that changed.
+
+Placement is three passes, cheapest first: the block it was made in, then any
+block where the surrounding context also matches, then any block at all. The
+context pass is what keeps a note on the right occurrence of a phrase that
+appears twice.
+
+**The trap, found by the test written for it:** the context either side of a
+quote must be whitespace-*collapsed* and not stripped. The space between
+"mentions" and the quotation belongs to the context; strip it and
+`before.endswith(prefix)` is false for the very text the annotation was made
+in — so the context pass never matches, every ambiguous quote falls through to
+"the first occurrence", and notes move silently to the wrong sentence. Exactly
+the failure the context was added to prevent.
+
+**A note whose sentence is gone is kept and reported, never moved.** The reader
+lists it separately with its quotation: an annotation that quietly attaches
+itself to the nearest surviving text is worse than one that admits it is lost,
+because the second is a fact about the page and the first is a quotation
+nobody made.

@@ -431,6 +431,12 @@ class JobSupervisor:
                     options["cookies_file"] = str(material.cookies_file)
                     if material.user_agent:
                         options["user_agent"] = material.user_agent
+                    # Only the browser path can use this, and only it is given
+                    # it: a site whose login lives in localStorage renders as
+                    # the sign-in page from cookies alone, and a rendered
+                    # discovery would then describe the sign-in page.
+                    if material.storage_state:
+                        options["storage_state"] = material.storage_state
 
             site.status = "capturing" if site.status == "new" else site.status
             session.commit()
@@ -598,6 +604,14 @@ class JobSupervisor:
                 profile_service.store_cookies(
                     session, self._sealer, profile, result.cookies_text, mode="userscript"
                 )
+                # Stored after the cookies, because `store_cookies` rewrites
+                # `cookie_meta` and this adds to it. A re-mint that dropped the
+                # browser state would silently downgrade the profile every
+                # time it refreshed itself.
+                if result.storage_state:
+                    profile_service.store_storage_state(
+                        session, self._sealer, profile, result.storage_state
+                    )
             profile.last_verified_at = utcnow()
             profile.last_verify_result = "ok" if result.ok else "failed"
             session.commit()

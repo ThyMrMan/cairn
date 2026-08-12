@@ -59,6 +59,9 @@ class DiscoveryOptions:
     # it finds exactly the same thing (see `discovery/render.py`).
     use_browser: bool = False
     scroll_passes: int = 3
+    # A profile's full browser state, when it has one. Only the browser path
+    # can use it; `cookies_file` remains what the HTTP client and wget get.
+    storage_state: dict[str, Any] | None = None
 
 
 @dataclass(slots=True)
@@ -230,6 +233,7 @@ async def discover(
             async with render.Renderer(
                 user_agent=options.user_agent,
                 cookies_file=options.cookies_file,
+                storage_state=options.storage_state,
                 scroll_passes=options.scroll_passes,
                 wait_s=options.wait_s,
             ) as renderer:

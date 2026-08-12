@@ -19,6 +19,7 @@ export default function Settings() {
       <NotificationsSection />
       <IntegritySection />
       <StorageSection />
+      <BookmarkletSection />
       <UrlImportSection />
       <ImportSection />
       <MetricsSection />
@@ -29,6 +30,77 @@ export default function Settings() {
       <SessionsSection />
       <AuditSection />
     </div>
+  );
+}
+
+/**
+ * The bookmarklet.
+ *
+ * A `javascript:` bookmark, not a browser extension: no store, no review, no
+ * second codebase to keep in step, and it works in every browser that has a
+ * bookmarks bar. It carries no credential of any kind — it opens a Cairn page
+ * and lets the session cookie already in that browser do the work.
+ *
+ * The address is read from the window rather than configured, because the
+ * window is by definition an address that reaches this instance. An install
+ * behind a reverse proxy therefore gets the proxy's address, which is the one
+ * that will work from a bookmarks bar.
+ */
+function BookmarkletSection() {
+  const origin = window.location.origin;
+  // Assembled rather than written as a template literal so the `javascript:`
+  // URL is one line with no newlines — several browsers refuse a bookmark
+  // whose URL contains them.
+  const code =
+    "javascript:(function(){window.open('" +
+    origin +
+    "/add?url='+encodeURIComponent(location.href)+'&title='+encodeURIComponent(document.title)," +
+    "'cairn','width=560,height=520')})()";
+
+  return (
+    <Section
+      title="Archive this page"
+      description="A bookmarklet. Drag it to your bookmarks bar, then press it on any page to archive that page — only that page, not the whole site."
+    >
+      <p className="text-sm">
+        <a
+          // Set on the element rather than passed as a prop: React warns
+          // about a `javascript:` href and will one day refuse it, and an
+          // anchor with a real href is the only thing a browser will let you
+          // drag into a bookmarks bar. Nothing here executes on this page —
+          // the click handler stops that — it exists to be dragged.
+          ref={(el) => el?.setAttribute("href", code)}
+          className="btn-ghost inline-block"
+          onClick={(e) => e.preventDefault()}
+          title="Drag me to the bookmarks bar"
+        >
+          Archive to Cairn
+        </a>
+      </p>
+      <p className="hint mt-2">
+        Dragging is the only way to install it — clicking it here does nothing. It opens a small
+        Cairn window that asks before archiving anything, and it carries no password or token: if
+        you are not signed in, you get the sign-in page.
+      </p>
+      <details className="mt-3">
+        <summary className="cursor-pointer text-xs text-muted">
+          If your browser will not let you drag it
+        </summary>
+        <p className="hint mt-2">
+          Make a new bookmark by hand and paste this as its address:
+        </p>
+        <textarea
+          readOnly
+          className="field mt-2 h-24 w-full font-mono text-[11px]"
+          value={code}
+          onFocus={(e) => e.currentTarget.select()}
+        />
+        <p className="hint mt-2">
+          It points at <code>{origin}</code> — the address this page is open at. If you reach
+          Cairn by a different name from another machine, edit that part.
+        </p>
+      </details>
+    </Section>
   );
 }
 

@@ -389,6 +389,10 @@ export type Profile = {
   has_cookies: boolean;
   has_script: boolean;
   has_storage: boolean;
+  /** Counts only — never a key and never a value (docs/06). */
+  storage?: { cookies: number; origins: string[]; local_items: number };
+  /** Present when the profile holds more than the wget engine can use. */
+  storage_note?: string | null;
   script: ParsedScript | null;
   minted_at: string | null;
   expires_at: string | null;
@@ -765,6 +769,24 @@ export type ReaderArticle = {
   words: number;
   minutes: number;
   blocks: ReaderBlock[];
+  annotations: Annotation[];
+};
+
+/** A note or highlight, placed against the article it was asked about. */
+export type Annotation = {
+  id: number;
+  site_id: number;
+  url: string;
+  quote: string;
+  note: string | null;
+  color: string;
+  created_at: string | null;
+  updated_at: string | null;
+  block_index: number;
+  start: number;
+  end: number;
+  /** False when the quoted sentence is not in this capture any more. */
+  found: boolean;
 };
 
 export type ReaderVersion = {
@@ -1216,6 +1238,27 @@ export const endpoints = {
       `/sites/${id}/reader?url=${encodeURIComponent(url)}` +
         (capture ? `&capture=${encodeURIComponent(capture)}` : ""),
     ),
+  annotations: (id: number, url?: string) =>
+    api.get<{ annotations: Annotation[] }>(
+      `/sites/${id}/annotations${url ? `?url=${encodeURIComponent(url)}` : ""}`,
+    ),
+  addAnnotation: (
+    id: number,
+    body: {
+      url: string;
+      quote: string;
+      note?: string;
+      prefix?: string;
+      suffix?: string;
+      block_index?: number;
+      color?: string;
+    },
+  ) => api.post<Annotation>(`/sites/${id}/annotations`, body),
+  editAnnotation: (annotationId: number, body: { note?: string; color?: string }) =>
+    api.patch<Annotation>(`/annotations/${annotationId}`, body),
+  deleteAnnotation: (annotationId: number) =>
+    api.del<{ ok: boolean }>(`/annotations/${annotationId}`),
+
   readerVersions: (id: number, url: string) =>
     api.get<{ url: string; versions: ReaderVersion[] }>(
       `/sites/${id}/reader/versions?url=${encodeURIComponent(url)}`,

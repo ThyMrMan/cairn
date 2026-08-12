@@ -115,11 +115,13 @@ class Renderer:
         *,
         user_agent: str | None = None,
         cookies_file: str | None = None,
+        storage_state: dict[str, Any] | None = None,
         scroll_passes: int = DEFAULT_SCROLL_PASSES,
         wait_s: float = 0.0,
     ) -> None:
         self.user_agent = user_agent
         self.cookies_file = cookies_file
+        self.storage_state = storage_state
         self.scroll_passes = max(0, scroll_passes)
         self.wait_s = wait_s
         self._launch: Any = None
@@ -129,7 +131,12 @@ class Renderer:
         from cairn.services import browser
 
         self._launch = await browser.start()
-        storage = browser.storage_state_from_jar(self.cookies_file) if self.cookies_file else None
+        # A profile's full browser state wins over its cookie jar when it has
+        # one: a site whose login lives in localStorage renders as the sign-in
+        # page from cookies alone, and discovery would then describe *that*.
+        storage = self.storage_state or (
+            browser.storage_state_from_jar(self.cookies_file) if self.cookies_file else None
+        )
         self._context = await self._launch.browser.new_context(
             user_agent=self.user_agent
             or await browser.presentable_user_agent(self._launch.browser),

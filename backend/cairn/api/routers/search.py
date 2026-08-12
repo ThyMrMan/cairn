@@ -154,7 +154,15 @@ def read_page(
             "they can be read.",
             status_code=404,
         )
-    return article.to_dict()
+    from cairn.services import annotations as annotation_service
+
+    # Placed against *this* article rather than stored as positions, so a note
+    # made on one capture shows on another when the sentence survived — and
+    # says it is lost when it did not.
+    return {
+        **article.to_dict(),
+        "annotations": annotation_service.resolve(db, site.id, article),
+    }
 
 
 @router.get("/sites/{site_id}/reader/versions")
@@ -195,3 +203,81 @@ def _require_site(db: DbSession, site_id: int) -> Any:
     if site is None:
         raise ApiError("not_found", "That site does not exist.", status_code=404)
     return site
+
+
+# ── annotations ──────────────────────────────────────────────────────────
+#
+# On the reader rather than on replay, and not by preference: replay is a
+# separate origin so archived JavaScript cannot reach this application, which
+# means this application cannot read a selection out of it either. See
+# `services/annotations.py`.
+
+
+@router.get("/sites/{site_id}/annotations")
+def list_annotations(
+    site_id: int,
+    db: DbSession,
+    _user: CurrentUser,
+    url: Annotated[str | None, Query(max_length=4096)] = None,
+) -> dict[str, Any]:
+    from cairn.services import annotations as annotation_service
+
+    site = _require_site(db, site_id)
+    rows = (
+        annotation_service.for_page(db, site.id, url)
+        if url
+        else annotation_service.for_site(db, site.id)
+    )
+    return {"annotations": [annotation_service.to_dict(row) for row in rows]}
+
+
+@router.post("/sites/{site_id}/annotations", status_code=status.HTTP_201_CREATED)
+def create_annotation(
+    site_id: int, body: dict[str, Any], db: DbSession, user: CurrentUser, ip: ClientIp
+) -> dict[str, Any]:
+    from cairn.services import annotations as annotation_service
+
+    site = _require_site(db, site_id)
+    try:
+        row = annotation_service.create(
+            db,
+            site,
+            url=str(body.get("url") or ""),
+            quote=str(body.get("quote") or ""),
+            note=body.get("note"),
+            prefix=str(body.get("prefix") or ""),
+            suffix=str(body.get("suffix") or ""),
+            block_index=int(body.get("block_index") or 0),
+            color=str(body.get("color") or "yellow"),
+        )
+    except annotation_service.AnnotationError as exc:
+        raise ApiError("invalid_annotation", str(exc), status_code=422) from exc
+    audit.record(db, "annotation.create", actor=user.username, target=site.slug, ip=ip)
+    return annotation_service.to_dict(row)
+
+
+@router.patch("/annotations/{annotation_id}")
+def edit_annotation(
+    annotation_id: int, body: dict[str, Any], db: DbSession, _user: CurrentUser
+) -> dict[str, Any]:
+    from cairn.services import annotations as annotation_service
+
+    row = annotation_service.get(db, annotation_id)
+    if row is None:
+        raise ApiError("not_found", "That annotation does not exist.", status_code=404)
+    try:
+        annotation_service.update(db, row, note=body.get("note"), color=body.get("color"))
+    except annotation_service.AnnotationError as exc:
+        raise ApiError("invalid_annotation", str(exc), status_code=422) from exc
+    return annotation_service.to_dict(row)
+
+
+@router.delete("/annotations/{annotation_id}")
+def delete_annotation(annotation_id: int, db: DbSession, _user: CurrentUser) -> dict[str, bool]:
+    from cairn.services import annotations as annotation_service
+
+    row = annotation_service.get(db, annotation_id)
+    if row is None:
+        raise ApiError("not_found", "That annotation does not exist.", status_code=404)
+    annotation_service.remove(db, row)
+    return {"ok": True}

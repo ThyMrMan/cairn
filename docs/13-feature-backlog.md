@@ -116,9 +116,11 @@ Some blogs span domains (a custom domain plus the blogspot original, or a site t
 
 ## Tier 3 — Worth knowing about
 
-### Personas beyond cookies
+### Personas beyond cookies ✅ *built after M8*
 
 ArchiveBox's "personas" bundle cookies + user agent + browser profile. This design already has profiles carrying cookies and UA; extending to full browser profiles (localStorage, IndexedDB, service workers) makes them work with `browsertrix-crawler --profile` directly.
+
+> **As built, and the rationale corrected.** The last clause is false, and M7 already measured why: browsertrix runs **Brave** while this image ships Chrome for Testing, so a profile built with one is accepted and silently ignored by the other. What full browser state *is* good for is every browser path inside this application — the re-mint, the profile test, browser-based discovery — and the mint now saves it so a refresh no longer quietly downgrades a profile. The genuinely new thing is one sentence in the UI: wget takes `--load-cookies` and nothing else, so a login kept in localStorage produces "the test passes and the capture gets the sign-in page", which had no explanation anywhere.
 
 ### Site health monitoring ✅ *built after M8*
 
@@ -126,9 +128,11 @@ Periodically check whether archived sites are still live. Surfacing *"3 archived
 
 > **As built.** All of the work is in not crying wolf. A blog is briefly 502 and a container is briefly without DNS, so a state change is believed only after two checks agree; a 500 is the site failing rather than ending; a DNS failure says more about this end than theirs; a 403 is about our user agent; and a redirect off the registrable domain is a *move*, which is actionable — add the new address as a second seed. The first check of a site announces nothing at all, because a blog that was already gone when it was added was archived precisely because it was disappearing.
 
-### Bookmarklet / browser extension
+### Bookmarklet / browser extension ✅ *built after M8*
 
 One-click "archive this page" from the browser. Karakeep and Linkwarden both have one and it's the most-used feature in both.
+
+> **As built.** A bookmarklet rather than an extension: no store, no review, no second codebase. It carries no credential, and cannot — a `javascript:` bookmark runs on *somebody else's* origin, so an authenticated call would need a token in a URL, which is a token in browser history, in the referrer and in every proxy log on the way. It opens a Cairn page instead and lets the session cookie already in that browser do the work; somebody not signed in gets the sign-in page, which is the correct answer. Server-side it is the URL importer with one URL, so it needed no new endpoint and inherits "archive this page, do not crawl the site".
 
 ### Bulk URL import ✅ *built after M8*
 
@@ -136,9 +140,11 @@ Paste or upload a list of URLs; group into sites by host automatically. Useful f
 
 > **As built.** Three things that look obvious and are wrong. A pasted URL is a *page*, not a site — seeding a site at `blog/2019/03/some-post.html` gives an archive whose identity is one post — so the site is seeded at the origin and the pasted URLs become the capture's seeds. Which means the capture must not crawl: fifty bookmarks across fifty domains, each triggering a full crawl, is a plausible way to get an IP address blocked, so `only_extra_seeds` is the default and crawling is a tick box. And grouping by registrable domain means a group can *span hosts*, so every host in it goes into the scope or the capture silently drops half the list. The parser takes every http(s) URL out of whatever was pasted, which makes a Netscape bookmarks export, a markdown list and a CSV column all work with no format selector.
 
-### Archive annotations
+### Archive annotations ✅ *built after M8*
 
 Notes and highlights on archived pages. Turns an archive into a research tool. Substantial work (anchoring annotations to replayed content is genuinely hard) but it's what people actually want from a personal archive.
+
+> **As built.** Anchoring to replayed content is not hard here, it is *unavailable*: replay is a separate origin precisely so archived JavaScript cannot reach the app, which means the app cannot read a selection out of the iframe either. So annotations live on the reader view and anchor to a **quotation** — which is the better anchor anyway, since re-extraction rewrites every byte offset and a later capture has different ones again. One trap, found by the test written for it: the context either side of a quote must be whitespace-collapsed and not *stripped*, or the disambiguation pass never matches and every ambiguous quote silently falls through to the first occurrence.
 
 ### Storage tiering
 

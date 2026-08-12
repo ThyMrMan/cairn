@@ -685,6 +685,39 @@ class SiteHealth(Base):
     pending_state: Mapped[str | None] = mapped_column(String(16), default=None)
 
 
+class Annotation(Base):
+    """A note or a highlight on an archived page.
+
+    Anchored to a **quotation**, not to an offset and not to an element. The
+    text it points into is derived data: re-extracting a capture rewrites the
+    JSONL, a later capture of the same page has different offsets, and either
+    would orphan every annotation stored as a byte range. A quote plus a little
+    context either side survives both, and when it genuinely cannot be found
+    the reader says so rather than highlighting the wrong sentence.
+
+    `block_index` is a hint, not the anchor: it makes the common case one
+    string search instead of a scan, and being wrong costs only speed.
+    """
+
+    __tablename__ = "annotations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    site_id: Mapped[int] = mapped_column(ForeignKey("sites.id", ondelete="CASCADE"), nullable=False)
+    url: Mapped[str] = mapped_column(Text, nullable=False)
+    quote: Mapped[str] = mapped_column(Text, nullable=False)
+    prefix: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    suffix: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    block_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    note: Mapped[str | None] = mapped_column(Text, default=None)
+    color: Mapped[str] = mapped_column(String(16), nullable=False, default="yellow")
+    created_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        UtcDateTime, nullable=False, default=utcnow, onupdate=utcnow
+    )
+
+    __table_args__ = (Index("ix_annotations_page", "site_id", "url"),)
+
+
 class SavedView(Base):
     __tablename__ = "saved_views"
 
@@ -696,6 +729,7 @@ class SavedView(Base):
 
 __all__ = [
     "AccessProfile",
+    "Annotation",
     "AuditLog",
     "Capture",
     "CaptureUrl",

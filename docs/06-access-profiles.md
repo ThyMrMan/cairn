@@ -243,3 +243,36 @@ Access profile   [ blogger-interstitial            ▾ ]  [Test with this site]
 ```
 
 That inline coverage check against the site's actual scope is the single highest-value piece of UI in this area. It converts the most common failure — a jar that doesn't cover the hosts being crawled — from a silent six-hour waste into a warning before you start.
+
+---
+
+## Beyond the cookie jar
+
+A profile has always carried a user agent alongside its cookies. Interactive
+mode has, since M5, also saved Playwright's full `storage_state` — cookies plus
+localStorage per origin — and the userscript mint now saves it too, so a
+re-mint no longer quietly downgrades a profile every time it refreshes itself.
+
+**What can use it, and what cannot.** Every browser path in this application
+does: the re-mint, the profile test, browser-based discovery. wget does not,
+and cannot: it takes `--load-cookies` and there is nothing else to hand it.
+
+That gap is invisible without being told, and it produces the most confusing
+possible symptom — *the profile test passes and the capture gets the sign-in
+page* — so the profile page says it outright when a profile holds localStorage
+items:
+
+> This profile also holds 12 localStorage item(s) from 2 origin(s). The browser
+> engines and the profile test use them; the wget engine cannot.
+
+Counts and origins only. A key name is as much a secret as its value, and
+docs/06's rule that a profile never serializes its material does not have an
+exception for the interesting half of it.
+
+**docs/13 hoped this would also make a profile work with
+`browsertrix-crawler --profile`. It does not.** M7 measured why: browsertrix
+runs **Brave** while this image ships Chrome for Testing, and a profile tarball
+built with one is accepted and silently ignored by the other — verified against
+a gated fixture, which it archived the interstitial of. The value of storing
+full browser state is the browser paths *inside* this application, not a bridge
+to that one.

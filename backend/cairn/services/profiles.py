@@ -345,18 +345,83 @@ def load_script(sealer: Sealer, profile: AccessProfile) -> str | None:
 def store_storage_state(
     session: Session, sealer: Sealer, profile: AccessProfile, state: dict[str, Any]
 ) -> None:
-    """Keep the full browser state an interactive session ended with.
+    """Keep the full browser state a session ended with.
 
-    wget can only be handed cookies, so this changes nothing about capture
-    today. It is what lets the same profile drive a browser engine in M7, and
-    a login that keeps its token in localStorage cannot be rebuilt from
-    cookies alone — so it is captured now, while the browser still has it.
+    A login that keeps its token in localStorage cannot be rebuilt from
+    cookies alone, so it is captured while the browser still has it. What
+    reads it back is every browser path in the system — the re-mint, the
+    verification, browser-based discovery — and what does not is wget, which
+    takes `--load-cookies` and nothing else.
+
+    docs/13 hoped this would also make a profile work with
+    `browsertrix-crawler --profile`. It does not, and M7 measured why:
+    browsertrix runs **Brave** while this image ships Chrome for Testing, and
+    a profile tarball built with one is accepted and ignored by the other. The
+    value here is the browser paths inside this application, not a bridge to
+    that one.
     """
     import json
 
     profile.storage_enc = sealer.seal(json.dumps(state), context=STORAGE_CONTEXT)
+    profile.cookie_meta = {**(profile.cookie_meta or {}), "storage": describe_storage(state)}
     profile.updated_at = utcnow()
     session.flush()
+
+
+def load_storage_state(sealer: Sealer, profile: AccessProfile) -> dict[str, Any] | None:
+    """The saved browser state, or None. Never leaves the process."""
+    if profile.storage_enc is None:
+        return None
+    import json
+
+    try:
+        loaded = json.loads(sealer.unseal_text(profile.storage_enc, context=STORAGE_CONTEXT))
+    except (ValueError, TypeError):  # pragma: no cover — corrupted ciphertext
+        log.warning("stored browser state could not be read", extra={"profile": profile.id})
+        return None
+    return loaded if isinstance(loaded, dict) else None
+
+
+def describe_storage(state: dict[str, Any]) -> dict[str, Any]:
+    """What is in a storage state, without any of what is in it.
+
+    Metadata only, like everything else a profile exposes — counts and origins,
+    never a key and never a value. The count that matters is `local_items`: a
+    profile with plenty of those and few cookies is a login wget cannot use,
+    and nothing else in the system would say so.
+    """
+    origins = state.get("origins") or []
+    items = 0
+    hosts: list[str] = []
+    for origin in origins if isinstance(origins, list) else []:
+        if not isinstance(origin, dict):
+            continue
+        name = str(origin.get("origin") or "")
+        if name:
+            hosts.append(name)
+        entries = origin.get("localStorage") or []
+        items += len(entries) if isinstance(entries, list) else 0
+    cookies = state.get("cookies") or []
+    return {
+        "cookies": len(cookies) if isinstance(cookies, list) else 0,
+        "origins": sorted(set(hosts))[:20],
+        "local_items": items,
+    }
+
+
+def storage_note(meta: dict[str, Any] | None) -> str | None:
+    """The sentence to show when a profile holds more than wget can use."""
+    storage = (meta or {}).get("storage") or {}
+    items = int(storage.get("local_items") or 0)
+    if items <= 0:
+        return None
+    return (
+        f"This profile also holds {items} localStorage item(s) from "
+        f"{len(storage.get('origins') or [])} origin(s). The browser engines and the "
+        "profile test use them; the wget engine cannot — it is handed cookies and "
+        "nothing else. If a capture with this profile still gets the sign-in page while "
+        "the test passes, that is why."
+    )
 
 
 def clear_material(session: Session, profile: AccessProfile) -> None:
@@ -381,6 +446,10 @@ def load_cookies(sealer: Sealer, profile: AccessProfile) -> str | None:
 class Material:
     cookies_file: Path
     user_agent: str | None
+    # The full browser state, for the callers that can use one. Held in memory
+    # rather than written beside the jar: nothing outside this process reads
+    # it, and a second plaintext credential on disk is a second thing to leak.
+    storage_state: dict[str, Any] | None = None
 
 
 def materialize(
@@ -408,7 +477,11 @@ def materialize(
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         fh.write(text if text.endswith("\n") else text + "\n")
 
-    return Material(cookies_file=target, user_agent=profile.user_agent)
+    return Material(
+        cookies_file=target,
+        user_agent=profile.user_agent,
+        storage_state=load_storage_state(sealer, profile),
+    )
 
 
 async def verify(profile: AccessProfile, cookies_text: str) -> dict[str, Any]:
@@ -471,6 +544,8 @@ def summary(profile: AccessProfile) -> dict[str, Any]:
         "has_cookies": profile.cookies_enc is not None,
         "has_script": profile.script_enc is not None,
         "has_storage": profile.storage_enc is not None,
+        "storage": meta.get("storage") or {},
+        "storage_note": storage_note(meta),
         "script": meta.get("script"),
         "minted_at": profile.minted_at,
         "expires_at": profile.expires_at,

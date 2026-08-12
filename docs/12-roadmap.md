@@ -359,6 +359,26 @@ Also worth doing: run `--warc-dedup` against a second capture and verify you get
 
 ---
 
+## After M8 — one click in, notes on the way out ✅
+
+**Ships:** a bookmarklet, profiles that carry a whole browser session, and annotations.
+
+- [x] Bookmarklet ([13](13-feature-backlog.md#bookmarklet--browser-extension))
+- [x] Personas beyond cookies ([13](13-feature-backlog.md#personas-beyond-cookies))
+- [x] Archive annotations ([13](13-feature-backlog.md#archive-annotations))
+
+**Done when:** a bookmark on the bar archives the page you are reading and nothing else; a profile minted from a userscript keeps the localStorage half of a login and says which engines can use it; and a highlighted sentence is still highlighted in the next capture of that page. *Asserted in `test_annotations_personas.py`, including the two that matter most: a note whose sentence was deleted is reported rather than moved, and a note survives its block moving to a different index in a later capture.*
+
+**Three corrections from building them:**
+
+1. **The bookmarklet cannot carry a credential, and does not need one.** A `javascript:` bookmark runs on somebody else's origin, so an authenticated call to Cairn would need a token in the URL — in browser history, in the referrer, in every proxy log on the way. It opens a Cairn page instead and lets the session cookie already in that browser do the work. Server-side it is the URL importer with one URL, so it added no endpoint and inherited "this page only, do not crawl the site".
+2. **Anchoring an annotation to replayed content is not hard; it is unavailable.** Replay is a separate origin precisely so archived JavaScript cannot reach the app — which means the app cannot read a selection out of the iframe either, and giving it one would undo the isolation docs/07 and docs/11 exist for. Annotations therefore live on the reader view and anchor to a *quotation*, which is the more durable anchor anyway: re-extraction rewrites every byte offset, and a later capture of the same page has different ones again.
+3. **The context around a quote must be collapsed, not stripped.** The space between "mentions" and the quotation belongs to the context. Stripping it makes `before.endswith(prefix)` false for the very text the annotation was made in, so the disambiguation pass never matches and every ambiguous quote falls through to "the first occurrence" — silently moving notes to the wrong sentence, which is exactly what the context was added to prevent. Found by the test written for the feature, not by using it.
+
+**Also corrected, in docs/13:** full browser state does **not** make a profile work with `browsertrix-crawler --profile`. M7 had already measured why — browsertrix runs Brave, this image ships Chrome for Testing, and a profile built with one is accepted and ignored by the other. What it is actually good for is the browser paths inside this application, plus one sentence the UI had no way to say before: wget takes `--load-cookies` and nothing else, so a login kept in localStorage passes the profile test and fails the capture.
+
+---
+
 ## Sequencing notes
 
 **Why discovery before replay.** Discovery determines *what gets captured*; getting it wrong means recapturing everything later. Replay is read-only over whatever exists and can be built against any archive.
