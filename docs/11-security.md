@@ -218,17 +218,30 @@ They also run **weekly on a schedule**, which for this repository is the point:
 the code can go three months without a commit while the advisories keep
 arriving, and a scan that only runs on push is one that never runs.
 
-**What the first run found**, and it makes the case for both halves of that:
-one HIGH in the image, CVE-2024-34069 in Werkzeug 2.2.3, which is not our
-choice — pywb 2.9.1 requires it *exactly* (`Requires-Dist: werkzeug==2.2.3`)
-and 2.9.1 is the newest release. A blocking gate would have been red from the
-day it was added, on a finding no version bump of ours can clear. Measured
-since: pywb replays identically on Werkzeug 3.1.8 — same bytes on the bare
-content, the framed wrapper, the untimestamped redirect and the CDX API — so
-overriding the pin is available if the exposure is ever judged to matter. It
-has not been overridden, because the CVE is in Werkzeug's interactive debugger
-and pywb never enables it, and because overriding an upstream pin means owning
-every future pywb release that turns out to need it.
+### What the first scan found, and what was done about it
+
+One HIGH in the image: CVE-2024-34069 in Werkzeug 2.2.3, which was not our
+choice — pywb 2.9.1 requires it *exactly* (`Requires-Dist: werkzeug==2.2.3`),
+and 2.9.1 is the newest release there is. That single finding makes the case
+for both halves of the policy above. A blocking gate would have been red from
+the day it was added, on something no version bump of ours could clear; and a
+report nobody acts on is just a slower way of ignoring it.
+
+**It was acted on. The image now installs `werkzeug>=3.0.3` over pywb's pin**,
+and the scan reports zero HIGH or CRITICAL findings with fixes available.
+
+The override is measured rather than hoped. Against a real capture through a
+real `wayback`, pywb 2.9.1 replays byte-for-byte identically on 3.1.8 and on
+2.2.3 — same responses on the bare content (`mp_`), the framed wrapper, the
+untimestamped redirect and the CDX API. `pip` prints a dependency-conflict
+warning naming the pin every time the image builds, which is the intended
+paper trail rather than something to suppress.
+
+What makes it safe to keep is not the measurement, which ages. It is that
+`test_replay_e2e.py` and `test_thumbnail.py` drive a real pywb on every
+container run, so a future pywb that genuinely needs 2.2.3 semantics fails a
+test rather than somebody's replay tab. If that day comes, the honest response
+is to pin back and accept the finding, not to delete the test.
 
 ---
 

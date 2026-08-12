@@ -53,6 +53,25 @@ RUN pip install --no-cache-dir "apprise>=1.9"
 # merging fails with yt-dlp saying exactly that.
 RUN pip install --no-cache-dir "yt-dlp>=2025.1"
 
+# Werkzeug, deliberately above the version pywb asks for.
+#
+# pywb 2.9.1 declares `werkzeug==2.2.3` — an exact pin, not a floor — and 2.2.3
+# carries CVE-2024-34069, the only HIGH the image scan reports. There is no
+# pywb release that lifts it, so the choice is to override the pin or ship a
+# known-vulnerable dependency forever.
+#
+# Overridden, because it was measured rather than hoped: pywb replays
+# identically on 3.1.8 — byte-for-byte the same responses on the bare content
+# (`mp_`), the framed wrapper, the untimestamped redirect and the CDX API,
+# against a real capture through a real `wayback`. `test_replay_e2e.py` and
+# `test_thumbnail.py` exercise all of that on every container run, so a future
+# pywb that genuinely needs 2.2.3 fails a test rather than a user's replay tab.
+#
+# Last, after every other install, so nothing downstream can resolve it back
+# down. pip will print a dependency-conflict warning naming pywb's pin; that
+# warning is this comment.
+RUN pip install --no-cache-dir "werkzeug>=3.0.3"
+
 
 # ── runtime ──────────────────────────────────────────────────────────────
 FROM python:3.12-slim AS runtime
