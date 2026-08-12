@@ -113,10 +113,16 @@ module = ["warcio.*", "defusedxml.*", "feedparser.*", "cdxj_indexer.*", "surt.*"
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
-# Playwright is a dev extra, not a runtime dependency — the app imports it
-# lazily and reports its absence — so type-checking must not require it to be
-# installed. It does ship types; this only covers checkouts without it.
-module = ["playwright.*"]
+# Installed in the image and nowhere else. Both are imported lazily and report
+# their own absence, so a source checkout stays installable without a 650 MB
+# browser or a notification fan-out — and type-checking must not require what
+# the package deliberately does not depend on.
+#
+# `apprise` was missing from this list, which made `mypy` fail on every
+# environment that is not the Docker image: a fresh checkout, and the CI
+# runner. It was mistaken for a local quirk for a long time because the
+# development machine looks exactly like the runner here.
+module = ["playwright.*", "apprise.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import sys
 import tempfile
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -72,8 +73,36 @@ class BrowserUnavailableError(RuntimeError):
     """No usable browser. The message is written to be shown to a person."""
 
 
+def _browser_roots() -> list[Path]:
+    """Where Playwright keeps its browsers, in the order it looks.
+
+    `PLAYWRIGHT_BROWSERS_PATH` when set — the image sets it, because the
+    default is under the *building* user's home while the container runs as
+    `abc` with `HOME=/config` (see the Dockerfile). Otherwise Playwright's own
+    per-platform default, which is what a source checkout gets.
+    """
+    root = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
+    if root:
+        return [Path(root)]
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+        return [Path(base) / "ms-playwright"]
+    if sys.platform == "darwin":
+        return [Path.home() / "Library" / "Caches" / "ms-playwright"]
+    return [Path.home() / ".cache" / "ms-playwright"]
+
+
 def availability() -> tuple[bool, str]:
-    """Whether a browser can be launched, and if not, what to say about it."""
+    """Whether a browser can be launched, and if not, what to say about it.
+
+    The browser is checked for, not assumed. This used to look only inside
+    `PLAYWRIGHT_BROWSERS_PATH` and report "available" whenever that variable
+    was unset — which is every source checkout, and every CI runner, where
+    `pip install -e ".[dev]"` installs the *package* and nothing downloads the
+    *browser*. The result was the opposite of what this function is for: a
+    confident yes, followed by Playwright raising "Executable doesn't exist"
+    from somewhere with no advice attached.
+    """
     try:
         import playwright  # noqa: F401
     except ImportError:
@@ -83,13 +112,11 @@ def availability() -> tuple[bool, str]:
             '`pip install -e ".[dev]"` and `playwright install chromium`.'
         )
 
-    import os
-    from pathlib import Path
-
-    root = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
-    if root and not any(Path(root).glob("chromium-*")):
+    roots = _browser_roots()
+    if not any(root.is_dir() and any(root.glob("chromium*")) for root in roots):
+        where = ", ".join(str(root) for root in roots)
         return False, (
-            f"Playwright is installed but no Chromium was found in {root}. "
+            f"Playwright is installed but no Chromium was found in {where}. "
             "Run `playwright install chromium`."
         )
     return True, ""
