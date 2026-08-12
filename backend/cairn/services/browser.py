@@ -317,6 +317,48 @@ async def context(
         await created.close()
 
 
+def storage_state_from_jar(path: str | None) -> dict[str, Any] | None:
+    """A Netscape `cookies.txt` → the storage state a context is built from.
+
+    The inverse of `to_netscape`, and needed for the same reason discovery's
+    HTTP client loads the jar: a browser sent at a flagged blog without the
+    cookie renders the content warning, and everything downstream then
+    describes the warning rather than the blog.
+
+    `expires` inverts the same trap. Netscape spells a session cookie `0`;
+    Playwright spells it `-1`, and passing 0 through sets a cookie that expired
+    at the epoch — which Chromium drops on the way in, silently, leaving a
+    context that looks like it has the jar and does not.
+    """
+    if not path:
+        return None
+    from cairn.services import profiles
+
+    try:
+        text = Path(path).read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        log.warning("could not read cookies for the browser", extra={"err": str(exc)})
+        return None
+
+    report = profiles.parse_cookies(text)
+    cookies: list[dict[str, Any]] = [
+        {
+            "name": cookie.name,
+            "value": cookie.value,
+            "domain": cookie.domain,
+            "path": cookie.path or "/",
+            "expires": -1 if cookie.is_session else float(cookie.expires),
+            "httpOnly": cookie.http_only,
+            "secure": cookie.secure,
+            "sameSite": "Lax",
+        }
+        for cookie in report.cookies
+    ]
+    if not cookies:
+        return None
+    return {"cookies": cookies, "origins": []}
+
+
 def to_netscape(cookies: list[dict[str, Any]]) -> str:
     """Playwright cookies → the Netscape jar wget loads.
 

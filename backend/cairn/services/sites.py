@@ -27,6 +27,16 @@ log = get_logger(__name__)
 
 MAX_SITES_PER_FOLDER = 10_000
 
+# Seeds beyond the first live in `scope_settings` rather than a table of their
+# own. A seed is a scope decision and that is where the scope's non-per-host
+# decisions already live — and the alternative, a `site_seeds` table, would be
+# a migration and a join for a list that is one entry long on almost every
+# site (docs/13 predicted the data model would already stretch to this).
+SEEDS_KEY = "extra_seeds"
+# A ceiling rather than a limit anybody will reach. It exists so a paste
+# accident cannot turn one site into a thousand-origin crawl.
+MAX_SEEDS_PER_SITE = 20
+
 
 class SiteError(ValueError):
     """A site could not be created or updated as requested."""
@@ -219,7 +229,12 @@ def save_scope(session: Session, site: Site, scope: Scope) -> None:
         for pattern in patterns:
             session.add(ScopePattern(site_id=site.id, kind=kind, pattern=pattern))
 
+    # Merged onto what is there rather than replacing it. `scope_settings` also
+    # carries `user_edited` and the applied preset — flags this function knows
+    # nothing about — and a wholesale replacement quietly un-marks a scope the
+    # user picked by hand, so the next re-index overwrites their selection.
     site.scope_settings = {
+        **(site.scope_settings or {}),
         "max_bytes": scope.max_bytes,
         "max_pages": scope.max_pages,
         "max_depth": scope.max_depth,
@@ -228,15 +243,100 @@ def save_scope(session: Session, site: Site, scope: Scope) -> None:
         "seed_urls_from": scope.seed_urls_from,
         "path_prefix": scope.path_prefix,
         "politeness": scope.politeness,
+        # Carried forward from what is stored rather than taken from the scope
+        # being saved. The domain picker submits hosts and patterns and no
+        # seeds at all, so a wholesale rewrite that trusted `scope.seeds` would
+        # silently delete the second half of a site the moment anybody ticked
+        # a checkbox. Seeds are changed through `add_seed`/`remove_seed`.
+        SEEDS_KEY: extra_seeds(site),
     }
     site.updated_at = utcnow()
     session.flush()
 
 
+def extra_seeds(site: Site) -> list[str]:
+    """Seeds after the first, in the order they were added."""
+    stored = (site.scope_settings or {}).get(SEEDS_KEY) or []
+    return [str(url) for url in stored]
+
+
+def all_seeds(site: Site) -> list[str]:
+    """Everywhere this site starts from, primary first."""
+    return list(dict.fromkeys([site.seed_url, *extra_seeds(site)]))
+
+
+def add_seed(session: Session, settings: Settings, site: Site, raw: str) -> str:
+    """Add another starting point to this site.
+
+    Adding a seed also makes its host crawlable, because the alternative is a
+    seed the scope rejects on the first request — which looks exactly like a
+    site that is down, and is the failure this would otherwise ship with.
+    """
+    seed = normalize_seed_url(raw)
+    existing = all_seeds(site)
+    if seed in existing:
+        raise SiteError(f"{seed} is already a seed for this site.")
+    if len(existing) >= MAX_SEEDS_PER_SITE:
+        raise SiteError(f"A site can have at most {MAX_SEEDS_PER_SITE} seeds.")
+
+    other = session.scalar(
+        visible().where(Site.id != site.id, Site.seed_url == seed).limit(1)
+    )
+    if other is not None:
+        raise SiteError(
+            f"{seed} is already the seed of {other.title!r}. Two sites archiving the same "
+            "URL would each hold half its history."
+        )
+
+    settings_blob = dict(site.scope_settings or {})
+    settings_blob[SEEDS_KEY] = [*extra_seeds(site), seed]
+    site.scope_settings = settings_blob
+
+    host = (urlsplit(seed).hostname or "").lower()
+    scope = load_scope(session, site)
+    if not any(rule.host == host for rule in scope.hosts):
+        scope.hosts.append(HostRule(host=host, crawl_pages=True, fetch_assets=True))
+    else:
+        for rule in scope.hosts:
+            if rule.host == host:
+                rule.crawl_pages = True
+    save_scope(session, site, scope)
+
+    site.updated_at = utcnow()
+    session.flush()
+    write_site_yaml(session, settings, site)
+    log.info("seed added", extra={"site": site.id, "host": host})
+    return seed
+
+
+def remove_seed(session: Session, settings: Settings, site: Site, url: str) -> None:
+    """Drop a seed. The first one cannot go — it is the site's identity.
+
+    The host rule is left alone. Captures already made from that seed are still
+    in the archive and still replay, so removing the host from the scope would
+    make the next capture stop fetching subresources for pages that are there.
+    """
+    stored = extra_seeds(site)
+    if url == site.seed_url:
+        raise SiteError(
+            "The first seed is the site's own address and cannot be removed. "
+            "Delete the site instead, or add the replacement and move on."
+        )
+    if url not in stored:
+        raise SiteError(f"{url} is not a seed of this site.")
+
+    settings_blob = dict(site.scope_settings or {})
+    settings_blob[SEEDS_KEY] = [seed for seed in stored if seed != url]
+    site.scope_settings = settings_blob
+    site.updated_at = utcnow()
+    session.flush()
+    write_site_yaml(session, settings, site)
+
+
 def resolved_scope(session: Session, site: Site) -> Scope:
     """Scope as the engine will see it."""
     scope = load_scope(session, site)
-    scope.seeds = [site.seed_url]
+    scope.seeds = all_seeds(site)
     return scope
 
 

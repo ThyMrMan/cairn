@@ -107,10 +107,13 @@ Anything a filter can express must survive a round trip through both serializati
 
 | Method | Path | Notes |
 |---|---|---|
-| `POST` | `/api/sites/{id}/discover` | `{max_pages?, max_depth?, obey_robots?}` → `202 {job_id}` |
+| `POST` | `/api/sites/{id}/discover` | `?max_pages=&max_depth=&use_browser=` → `202 {job_id}` |
 | `GET` | `/api/sites/{id}/discoveries` | History |
 | `GET` | `/api/discoveries/{id}` | Full result: hosts, feeds, sitemaps, platform fingerprint |
 | `GET` | `/api/discoveries/{id}/diff?against={id}` | New/removed hosts and URLs |
+| `GET` | `/api/sites/{id}/seeds` | Every address this site starts from, primary first |
+| `POST` | `/api/sites/{id}/seeds` | `{url}` → adds a seed and makes its host crawlable |
+| `DELETE` | `/api/sites/{id}/seeds?url=` | Removes one; the first seed cannot go |
 | `GET` | `/api/sites/{id}/scope` | Current resolved scope |
 | `PUT` | `/api/sites/{id}/scope` | Host selections, patterns, limits, politeness |
 | `POST` | `/api/sites/{id}/scope/preview` | Dry-run estimate — no fetching |
@@ -251,6 +254,7 @@ The interactive session is a **CDP screencast over a WebSocket**, not the `vnc_u
 | `GET` | `/api/settings` | All DB-backed settings |
 | `PATCH` | `/api/settings` | Partial update |
 | `GET` | `/api/storage` | Per-folder and per-site usage, free space, trash size |
+| `GET` | `/api/digest?days=` | The periodic report: what happened, and what quietly did not |
 | `GET` | `/api/trash` | Deleted sites, their size, and days until purge |
 | `DELETE` | `/api/trash` | Purge everything in the trash now |
 | `POST` | `/api/maintenance/verify` | `?site_id=&deep=` → `202 {job_id}`. `deep` also parses every WARC |

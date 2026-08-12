@@ -127,10 +127,14 @@ def record_feeds(session: Session, site: Site, result: DiscoveryResult) -> int:
 
 
 def scope_from_result(
-    result: DiscoveryResult, *, seed_url: str, apply_preset: bool = True
+    result: DiscoveryResult,
+    *,
+    seed_url: str,
+    apply_preset: bool = True,
+    extra_seeds: list[str] | None = None,
 ) -> Scope:
     """Turn the picker's default selections into a resolved scope."""
-    scope = Scope(seeds=[seed_url])
+    scope = Scope(seeds=list(dict.fromkeys([seed_url, *(extra_seeds or [])])))
     for stat in result.hosts:
         if not (stat.crawl_pages or stat.fetch_assets):
             continue
@@ -143,12 +147,21 @@ def scope_from_result(
             )
         )
 
-    if not any(h.crawl_pages for h in scope.hosts):
-        # Discovery found nothing crawlable, which can happen when the landing
-        # page redirects to another host. The seed host is always crawlable —
-        # a scope with nothing to start from archives nothing at all.
-        seed_host = (urlsplit(seed_url).hostname or "").lower()
-        scope.hosts.insert(0, HostRule(seed_host, crawl_pages=True, fetch_assets=True))
+    # Every seed's host is crawlable, whatever the classifier decided. A seed
+    # the scope would refuse on the first request looks exactly like a site
+    # that is down, and discovery can classify a second domain as an asset host
+    # when the first one embeds its images — which is true and is not a reason
+    # to stop crawling the place the user asked us to start from.
+    by_host = {rule.host: rule for rule in scope.hosts}
+    for seed in scope.seeds:
+        host = (urlsplit(seed).hostname or "").lower()
+        if not host:
+            continue
+        rule = by_host.get(host)
+        if rule is None:
+            scope.hosts.insert(0, HostRule(host, crawl_pages=True, fetch_assets=True))
+        else:
+            rule.crawl_pages = True
 
     preset = result.fingerprint.preset if apply_preset else None
     if preset:
@@ -203,8 +216,10 @@ def seeds_for_capture(
     the complete URL set from sitemaps and feeds up front, so link-following is
     a supplement rather than the way content is found (docs/05).
     """
-    seeds = [site.seed_url]
-    counts = {"manual": 1, "sitemap": 0, "feed": 0, "css_escaped": 0}
+    from cairn.services import sites as site_service
+
+    seeds = site_service.all_seeds(site)
+    counts = {"manual": len(seeds), "sitemap": 0, "feed": 0, "css_escaped": 0}
 
     latest = session.scalars(
         select(Discovery)

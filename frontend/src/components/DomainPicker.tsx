@@ -93,7 +93,9 @@ export function DomainPicker({ siteId, onChanged }: { siteId: number; onChanged?
   if (discovery.isLoading) return <Spinner className="h-5 w-5 text-muted" />;
 
   if (!discovery.data?.discovery) {
-    return <NotYetDiscovered siteId={siteId} onDone={onChanged} />;
+    return (
+      <NotYetDiscovered siteId={siteId} onDone={onChanged} browser={discovery.data?.browser} />
+    );
   }
 
   const summary = discovery.data.discovery.summary;
@@ -228,7 +230,11 @@ export function DomainPicker({ siteId, onChanged }: { siteId: number; onChanged?
         </button>
         {dirty && !saved && <span className="text-xs text-warn">Unsaved changes</span>}
         {saved && <span className="text-xs text-ok">Saved</span>}
-        <Rediscover siteId={siteId} onDone={() => setDraft(null)} />
+        <Rediscover
+          siteId={siteId}
+          onDone={() => setDraft(null)}
+          browser={discovery.data.browser}
+        />
       </div>
 
       <Preview siteId={siteId} />
@@ -427,15 +433,37 @@ function Found({ summary }: { summary: DiscoverySummary }) {
         {summary.urls_from_feeds.toLocaleString()} from {summary.feeds.length} feed(s)
       </span>
       <span>{summary.pages_fetched} pages sampled</span>
+      {(summary.browser?.rendered_pages ?? 0) > 0 && (
+        <span>
+          <strong className="text-fg">{summary.browser?.rendered_pages} rendered</strong>,{" "}
+          {summary.browser?.requests_seen.toLocaleString()} requests seen
+        </span>
+      )}
     </div>
   );
 }
 
-function NotYetDiscovered({ siteId, onDone }: { siteId: number; onDone?: () => void }) {
+function NotYetDiscovered({
+  siteId,
+  onDone,
+  browser,
+}: {
+  siteId: number;
+  onDone?: () => void;
+  browser?: { available: boolean; reason: string };
+}) {
   return (
     <EmptyState
       title="Not indexed yet"
-      action={<Rediscover siteId={siteId} onDone={onDone} label="Index this site" primary />}
+      action={
+        <Rediscover
+          siteId={siteId}
+          onDone={onDone}
+          label="Index this site"
+          primary
+          browser={browser}
+        />
+      }
     >
       Indexing reads the sitemap, the feeds and a sample of pages to work out which domains this
       site pulls from. It writes nothing and can be re-run any time.
@@ -448,17 +476,21 @@ export function Rediscover({
   onDone,
   label = "Re-index",
   primary = false,
+  browser,
 }: {
   siteId: number;
   onDone?: () => void;
   label?: string;
   primary?: boolean;
+  /** Whether this install can render, so the option is only offered if it works. */
+  browser?: { available: boolean; reason: string };
 }) {
   const client = useQueryClient();
   const [jobId, setJobId] = useState<number | null>(null);
+  const [useBrowser, setUseBrowser] = useState(false);
 
   const start = useMutation({
-    mutationFn: () => endpoints.discover(siteId),
+    mutationFn: () => endpoints.discover(siteId, useBrowser),
     onSuccess: (result) => setJobId(result.job_id),
   });
 
@@ -482,13 +514,33 @@ export function Rediscover({
 
   const running = jobId !== null || start.isPending;
   return (
-    <button
-      className={primary ? "btn-primary" : "btn-ghost text-xs"}
-      onClick={() => start.mutate()}
-      disabled={running}
-    >
-      {running && <Spinner />}
-      {running ? "Indexing…" : label}
-    </button>
+    <span className="inline-flex flex-wrap items-center gap-2">
+      <button
+        className={primary ? "btn-primary" : "btn-ghost text-xs"}
+        onClick={() => start.mutate()}
+        disabled={running}
+      >
+        {running && <Spinner />}
+        {running ? "Indexing…" : label}
+      </button>
+      {browser?.available && (
+        <label
+          className="flex items-center gap-1 text-xs text-muted"
+          title={
+            "Loads each sampled page in a real browser and records every request it makes. " +
+            "Finds hosts that only JavaScript names, and pages behind infinite scroll — " +
+            "and takes seconds per page rather than milliseconds."
+          }
+        >
+          <input
+            type="checkbox"
+            checked={useBrowser}
+            onChange={(e) => setUseBrowser(e.target.checked)}
+            disabled={running}
+          />
+          in a browser
+        </label>
+      )}
+    </span>
   );
 }

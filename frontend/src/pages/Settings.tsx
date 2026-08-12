@@ -570,6 +570,7 @@ function ScheduleSection() {
       quiet_hours: quiet,
       per_host_serial: data.per_host_serial,
       full_recapture_days: data.full_recapture_days,
+      digest_every_days: data.digest_every_days,
       ...change,
     });
 
@@ -646,6 +647,28 @@ function ScheduleSection() {
             Off deliberately. A monthly full re-capture of a 3 GB archive is about 38 GB a year
             and mostly re-stores what you already have; feed capture covers new posts at a few
             percent of that. Turn this on only if you need to detect edits to existing pages.
+          </p>
+        </div>
+
+        <div>
+          <label className="flex items-center gap-2">
+            Send a summary of what happened every
+            <select
+              className="field w-auto py-1"
+              value={data.digest_every_days}
+              onChange={(e) => patch({ digest_every_days: Number(e.target.value) })}
+            >
+              <option value={0}>never</option>
+              <option value={1}>day</option>
+              <option value={7}>week</option>
+              <option value={30}>month</option>
+            </select>
+          </label>
+          <p className="hint mt-1.5">
+            Mostly a report of what has <em>not</em> happened: sites nothing has captured in a
+            month, feeds that are polling and returning nothing, credentials about to expire.
+            Goes to your notification targets; the same report is on the dashboard whether or
+            not you have any, so turning this off loses the push and nothing else.
           </p>
         </div>
       </div>

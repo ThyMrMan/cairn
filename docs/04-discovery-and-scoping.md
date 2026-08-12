@@ -289,3 +289,77 @@ Discovery on an established site diffs against the previous run and surfaces:
 That last category is the one worth a notification. It's the exact moment archiving justified itself, and it's also a signal to protect that capture from any retention policy that might prune it.
 
 Schedule discovery independently of capture (monthly is a reasonable default) so scope drift gets noticed without paying for a full recapture.
+
+---
+
+## Discovery through a browser
+
+Everything above reads HTML as the server sent it, which is fast, needs no
+dependencies, and is correct about everything a server sends. It is also
+structurally blind to anything a page decides at runtime, and there are three
+of those. Measured against a fixture built to expose each one:
+
+| | fetch | render |
+|---|---|---|
+| a host named only inside a script | not found | found |
+| a page behind a link the script appends | never sampled | sampled |
+| a page behind infinite scroll | never sampled | sampled |
+
+So discovery has a **browser mode**, off by default, reusing the Chromium that
+arrived in M5. It renders only the *sampling* phase: robots.txt, sitemaps and
+feeds are XML and text that no script rewrites, and putting a browser in front
+of them costs seconds per document to find nothing.
+
+**The network log is the evidence, not the rendered DOM.** This is the
+correction, and it matters because the obvious implementation — render the page
+and re-parse it — does not work. `new Image().src = "//cdn/pixel.gif"` fetches
+without ever entering the document, so the DOM re-parse misses precisely the
+host the feature exists to find. Measured on the fixture: the rendered DOM
+yielded two asset hosts, the browser's own request log yielded three, and the
+missing one was the JavaScript-only pixel. The log also carries each response's
+real content type, which is better data than the fetch path has — it only
+learns a MIME type for pages it fetched itself.
+
+**A run says whether it was worth it.** Every host the browser requested is
+compared against every host some page's *served* HTML named, and the difference
+is reported: either "3 host(s) were found only by rendering — nothing in the
+HTML names them" or "rendering 12 page(s) found no host the HTML did not
+already name. This site does not need the browser for discovery." The second
+sentence is the one that saves the next hour.
+
+Rendering is capped at 40 pages regardless of what was asked for. A browser
+takes seconds per page where a fetch takes milliseconds, and the sample only
+has to be big enough to see every host the template uses.
+
+---
+
+## Sites that span domains
+
+A blog that moved to a custom domain, or one that lives at two, is **one site
+with several seeds** — one scope, one index, one replay collection. Splitting
+it into two sites gives two half-histories and a capture selector that lies
+about which versions of a page exist.
+
+Seeds after the first live in `sites.scope_settings`, not a table of their own:
+a seed is a scope decision, that is where the scope's non-per-host decisions
+already live, and a `site_seeds` table would be a migration and a join for a
+list that is one entry long on almost every site.
+
+Three things follow from adding a seed, and each was a bug before it was a
+rule:
+
+1. **Its host becomes crawlable.** A seed the scope would refuse on its first
+   request reads in the capture report exactly like a site that is down.
+2. **Its origin is enumerated separately.** Each domain has its own robots.txt
+   and its own sitemap; enumerating the second against the first one's map of
+   itself would archive a site's new home from a list of its old one's pages.
+3. **It is sampled from scratch rather than reached by link-following.** A site
+   that migrated has a second landing page that nothing on the first one links
+   to, so waiting to arrive there means never arriving.
+
+**Saving the domain picker must not delete them.** The picker submits hosts and
+patterns and no seeds at all, so a wholesale rewrite of `scope_settings` drops
+everything after the first address the moment anybody ticks a checkbox. It also
+drops `user_edited`, which is what stops the next re-index overwriting a
+hand-picked scope. `save_scope` therefore merges onto what is stored rather
+than replacing it, and seeds are changed only through their own endpoints.

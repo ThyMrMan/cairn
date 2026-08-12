@@ -53,6 +53,8 @@ export default function Dashboard() {
         />
       </div>
 
+      {(sites.data?.total ?? 0) > 0 && <NeedsAttention />}
+
       {sites.data && sites.data.items.length > 0 ? (
         <section className="space-y-3">
           <div className="flex items-center justify-between">
@@ -104,6 +106,78 @@ export default function Dashboard() {
         </dl>
       </section>
     </div>
+  );
+}
+
+/**
+ * The periodic report, on the page rather than only in a notification.
+ *
+ * It answers the question no other view does: what has *not* happened. A feed
+ * that stopped returning entries, a site nothing has captured in six weeks and
+ * a profile whose cookies expire on Tuesday are all invisible everywhere else,
+ * because nothing failed — things merely stopped.
+ *
+ * Silent when there is nothing to say. A panel that says "all good" every day
+ * is a panel people stop reading, and then it is not there on the day it says
+ * something else.
+ */
+function NeedsAttention() {
+  const digest = useQuery({ queryKey: ["digest"], queryFn: () => endpoints.digest(30) });
+  const data = digest.data;
+  if (!data || !data.has_problems) return null;
+
+  const rows: { key: string; text: string; to?: string }[] = [
+    ...data.quiet_sites.map((s) => ({
+      key: `quiet-${s.site_id}`,
+      text: `${s.title} — nothing captured in ${s.days} days`,
+      to: `/sites/${s.site_id}`,
+    })),
+    ...data.stalled_feeds.map((f) => ({
+      key: `feed-${f.feed_id}`,
+      text: `${f.site} — a feed is being polled but has returned nothing`,
+      to: `/sites/${f.site_id}`,
+    })),
+    ...data.failed_jobs.map((j) => ({
+      key: `job-${j.job_id}`,
+      text: `${j.type} failed${j.site ? ` for ${j.site}` : ""}${j.error ? `: ${j.error}` : ""}`,
+      to: "/jobs",
+    })),
+    ...data.expiring_profiles.map((p) => ({
+      key: `profile-${p.profile_id}`,
+      text: `${p.name} — credentials ${p.expired ? "have expired" : "expire soon"}`,
+      to: "/profiles",
+    })),
+    ...(data.integrity.findings
+      ? [
+          {
+            key: "integrity",
+            text: `Integrity check found ${data.integrity.findings} problem(s)`,
+            to: "/settings",
+          },
+        ]
+      : []),
+  ];
+
+  return (
+    <section className="space-y-3">
+      <div className="flex items-center justify-between">
+        <h2 className="text-sm font-medium">Needs attention</h2>
+        <span className="text-xs text-muted">last {data.days} days</span>
+      </div>
+      <ul className="card divide-y divide-border">
+        {rows.slice(0, 8).map((row) => (
+          <li key={row.key} className="px-3.5 py-2.5 text-sm">
+            {row.to ? (
+              <Link to={row.to} className="hover:underline">
+                {row.text}
+              </Link>
+            ) : (
+              row.text
+            )}
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 

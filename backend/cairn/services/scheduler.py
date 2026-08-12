@@ -159,6 +159,12 @@ class Scheduler:
         report.deferred = deferred
         report.maintenance = await asyncio.to_thread(self._maintenance, now)
 
+        summary = await asyncio.to_thread(self._due_digest, now)
+        if summary is not None:
+            title, body = summary
+            await notify.send(self._sessions, notify.DIGEST, title=title, body=body)
+            report.maintenance.append("sent the periodic digest")
+
         low = await asyncio.to_thread(self._disk_shortfall, now)
         if low is not None:
             free, floor = low
@@ -170,6 +176,39 @@ class Scheduler:
                 priority="high",
             )
         return report
+
+    def _due_digest(self, now: datetime) -> tuple[str, str] | None:
+        """Build and stamp the periodic report, or nothing if it is not due.
+
+        Stamped here rather than after delivery, and deliberately: a target
+        that is down would otherwise make every tick rebuild and re-send the
+        report for the rest of the outage. A digest is a summary of a window —
+        missing one is a gap in the reporting, not a gap in the archive, and
+        the same information is on the dashboard either way.
+        """
+        from cairn.services import digest as digest_service
+
+        with self._sessions() as session:
+            if not digest_service.is_due(session, now=now):
+                session.commit()
+                return None
+            report = digest_service.build(
+                session,
+                self._settings,
+                since=digest_service.window_start(session, now=now),
+                now=now,
+                previous_total=digest_service.previous_total(session),
+            )
+            digest_service.mark_sent(session, report, now=now)
+            session.commit()
+
+        days = round(report.days) or 1
+        headline = (
+            f"Cairn: {len(report.failed_jobs) + len(report.quiet_sites)} thing(s) need attention"
+            if report.has_problems
+            else f"Cairn: {days} quiet day(s)"
+        )
+        return headline, digest_service.render_text(report)
 
     def _disk_shortfall(self, now: datetime) -> tuple[int, int] | None:
         """Free space against the floor, at most once a day.

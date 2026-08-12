@@ -53,6 +53,7 @@ INTEGRITY_MISMATCH = "integrity_mismatch"
 ITEMS_CAPTURED = "items_captured"
 NEW_HOSTS = "new_hosts"
 URLS_DISAPPEARED = "urls_disappeared"
+DIGEST = "digest"
 
 EVENTS: dict[str, tuple[str, bool]] = {
     CAPTURE_FAILED: ("A capture failed", True),
@@ -68,6 +69,10 @@ EVENTS: dict[str, tuple[str, bool]] = {
     # The one that matters. It is the moment the archive paid for itself, and
     # a reason to protect that capture from any retention policy.
     URLS_DISAPPEARED: ("Archived URLs disappeared from the site", True),
+    # On by default and the only *periodic* event here. Everything else fires
+    # when something happens; this one fires when nothing has, which is the
+    # failure an unattended archiver actually has (docs/13).
+    DIGEST: ("A periodic summary of what happened, and what quietly did not", True),
 }
 
 SETTING_PREFIX = "notify.on_"

@@ -559,6 +559,53 @@ export type ScheduleSettings = {
   per_host_serial: boolean;
   full_recapture_days: number;
   in_quiet_hours_now: boolean;
+  digest_every_days: number;
+};
+
+/** The periodic report: what happened, and what quietly did not. */
+export type DigestReport = {
+  since: string;
+  until: string;
+  days: number;
+  sites: number;
+  captures: { ok: number; partial: number; failed: number };
+  urls_archived: number;
+  bytes_archived: number;
+  new_items: number;
+  failed_jobs: {
+    job_id: number;
+    type: string;
+    site: string | null;
+    error: string;
+    finished_at: string | null;
+  }[];
+  quiet_sites: { site_id: number; title: string; last_capture_at: string | null; days: number }[];
+  stalled_feeds: {
+    feed_id: number;
+    url: string;
+    site_id: number;
+    site: string;
+    last_entry_at: string | null;
+  }[];
+  expiring_profiles: {
+    profile_id: number;
+    name: string;
+    mode: string;
+    expires_at: string | null;
+    expired: boolean;
+  }[];
+  integrity: {
+    captures: number;
+    verified: number;
+    oldest_unverified: { site_title: string } | null;
+    last_run_at: string | null;
+    findings: number;
+    due: boolean;
+  };
+  total_bytes: number;
+  growth_bytes: number | null;
+  has_problems: boolean;
+  text: string;
 };
 
 export type NotifyTarget = { url: string; enabled: boolean; label: string };
@@ -603,6 +650,9 @@ export type RecordDetail = CdxVersion & {
   warc_headers: Record<string, string>;
 };
 
+/** Where a site starts from. One entry unless it spans domains. */
+export type SeedList = { primary: string; seeds: string[]; max: number };
+
 // ── discovery ────────────────────────────────────────────────────────────
 
 export type DiscoveredHost = {
@@ -635,6 +685,11 @@ export type DiscoverySummary = {
   urls_from_sitemaps: number;
   urls_from_feeds: number;
   pages_fetched: number;
+  browser?: {
+    rendered_pages: number;
+    requests_seen: number;
+    hosts_only_a_browser_saw: string[];
+  };
   errors: string[];
   warnings: string[];
 };
@@ -651,6 +706,8 @@ export type DiscoveryResponse = {
   hosts: DiscoveredHost[];
   diff?: { new_hosts: string[]; gone_hosts: string[] };
   scope_user_edited?: boolean;
+  /** Whether this install can render pages, and why not when it cannot. */
+  browser?: { available: boolean; reason: string };
   message?: string;
 };
 
@@ -843,6 +900,7 @@ export const endpoints = {
   revokeOthers: () => api.del<{ ok: boolean }>("/auth/sessions"),
   audit: (page = 1) => api.get<Page<AuditEntry>>(`/audit?page=${page}`),
   storage: () => api.get<Storage>("/storage"),
+  digest: (days = 7) => api.get<DigestReport>(`/digest?days=${days}`),
   version: () => api.get<Version>("/version"),
 
   // ── organization ───────────────────────────────────────────────────────
@@ -1026,7 +1084,15 @@ export const endpoints = {
     api.get<Coverage>(`/profiles/${id}/coverage?site_id=${siteId}`),
 
   // ── discovery ──────────────────────────────────────────────────────────
-  discover: (id: number) => api.post<{ job_id: number }>(`/sites/${id}/discover`),
+  // ── seeds ──────────────────────────────────────────────────────────────
+  seeds: (id: number) => api.get<SeedList>(`/sites/${id}/seeds`),
+  addSeed: (id: number, url: string) =>
+    api.post<SeedList & { added: string; note: string }>(`/sites/${id}/seeds`, { url }),
+  removeSeed: (id: number, url: string) =>
+    api.del<{ ok: boolean }>(`/sites/${id}/seeds?url=${encodeURIComponent(url)}`),
+
+  discover: (id: number, useBrowser = false) =>
+    api.post<{ job_id: number }>(`/sites/${id}/discover?use_browser=${useBrowser}`),
   discovery: (id: number) => api.get<DiscoveryResponse>(`/sites/${id}/discovery`),
   scopePreview: (id: number) => api.post<ScopePreview>(`/sites/${id}/scope/preview`),
   applyPreset: (id: number, preset: string) =>

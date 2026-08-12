@@ -252,5 +252,50 @@ A target is one URL, and its scheme decides the transport: `ntfy://` or an ntfy.
 | New items captured | off (noisy) |
 | Discovery found new hosts | off |
 | **Discovery found URLs that disappeared from the site** | on |
+| A periodic summary of what happened, and what quietly did not | on |
 
 That last one is the interesting one — it's the notification that says *"a post you archived no longer exists upstream."* It's the moment the tool paid for itself, and it's also a signal to protect that capture from any retention policy.
+
+---
+
+## The periodic digest
+
+Every event above fires when something *happens*. An unattended archiver's
+characteristic failure is that nothing does: a feed that polls fine and returns
+no entries because the URL now serves a login page, a site whose captures
+stopped being scheduled after a scope edit, a cookie jar that expired last
+Tuesday. None of them raises anything at the moment it breaks, and every one is
+discovered weeks later by somebody looking for a post that was never archived.
+
+So there is one *periodic* event. Weekly by default, and built around absence:
+
+- sites nothing has captured in over 30 days
+- feeds that are enabled, are being polled, and whose newest entry is older
+  than that — distinct from a feed that was turned off, which already has its
+  own alert
+- jobs that failed, **named** rather than counted; a count only sends the
+  reader to the job list to find out what it was counting
+- access profiles expiring within three weeks
+- integrity findings, and how much of the archive is still unverified
+- and then the pleasant numbers: captures, URLs, new items, growth
+
+**Storage growth is the difference between two readings of the total**, stamped
+each time a digest goes out — not a sum over captures, which would count
+everything that arrived and nothing that retention removed.
+
+**It is readable on demand, not only pushed.** `GET /api/digest?days=N` builds
+the same report with no side effects, and the dashboard shows its problems
+under *Needs attention*. A digest that exists only as a notification is one
+nobody sees until they configure a webhook, and most people never will. The
+dashboard panel is silent when there is nothing to say, because a panel that
+says "all good" every day is a panel people stop reading — and then it is not
+there on the day it says something else.
+
+**The first digest waits a full period.** A report an hour after installation
+says nothing and teaches the reader that the next one is also worth ignoring,
+which is the only way this feature can really fail.
+
+**The window is stamped when the report is built, not when it is delivered.** A
+notification target that is down would otherwise make every tick rebuild and
+re-send for the length of the outage. Missing a digest is a gap in the
+reporting, not a gap in the archive.

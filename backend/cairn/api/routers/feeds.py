@@ -35,6 +35,7 @@ from cairn.api.schemas import (
 )
 from cairn.db.models import Feed, FeedItem, Site
 from cairn.services import audit, notify, settings_store
+from cairn.services import digest as digest_service
 from cairn.services import feeds as feed_service
 from cairn.services import scheduler as scheduler_service
 from cairn.services import sites as site_service
@@ -323,6 +324,7 @@ def read_schedule(db: DbSession, _user: CurrentUser) -> ScheduleSettings:
         per_host_serial=bool(settings_store.get(db, "jobs.per_host_serial", True)),
         full_recapture_days=settings_store.get_int(db, scheduler_service.RECAPTURE_SETTING, 0),
         in_quiet_hours_now=scheduler_service.in_quiet_hours(db),
+        digest_every_days=digest_service.every_days(db),
     )
 
 
@@ -333,6 +335,7 @@ def write_schedule(
     settings_store.put(db, scheduler_service.QUIET_HOURS_SETTING, body.quiet_hours.model_dump())
     settings_store.put(db, "jobs.per_host_serial", body.per_host_serial)
     settings_store.put(db, scheduler_service.RECAPTURE_SETTING, body.full_recapture_days)
+    settings_store.put(db, digest_service.EVERY_DAYS_SETTING, body.digest_every_days)
     audit.record(
         db,
         "settings.schedule",

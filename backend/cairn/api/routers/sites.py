@@ -452,7 +452,7 @@ def put_scope(
 ) -> ScopeResponse:
     site = _require_site(db, site_id)
     scope = Scope(
-        seeds=[site.seed_url],
+        seeds=site_service.all_seeds(site),
         hosts=[
             HostRule(
                 host=h.host.strip().lower(),
@@ -485,6 +485,73 @@ def put_scope(
     site_service.write_site_yaml(db, settings, site)
     audit.record(db, "site.scope", actor=user.username, target=site.slug, ip=ip)
     return _scope_response(db, site)
+
+
+# ── seeds ────────────────────────────────────────────────────────────────
+#
+# A site can start from more than one place: a blog that moved to a custom
+# domain, or one that spans two. All the seeds share one scope, one index and
+# one replay collection, because they are one site — splitting them into two
+# gives you two half-histories and a capture selector that lies about which
+# versions of a page exist (docs/13).
+
+
+@router.get("/sites/{site_id}/seeds")
+def list_seeds(site_id: int, db: DbSession, _user: CurrentUser) -> dict[str, Any]:
+    site = _require_site(db, site_id)
+    return {
+        "primary": site.seed_url,
+        "seeds": site_service.all_seeds(site),
+        "max": site_service.MAX_SEEDS_PER_SITE,
+    }
+
+
+@router.post("/sites/{site_id}/seeds", status_code=status.HTTP_201_CREATED)
+def add_seed(
+    site_id: int,
+    body: dict[str, str],
+    db: DbSession,
+    settings: AppSettings,
+    user: CurrentUser,
+    ip: ClientIp,
+) -> dict[str, Any]:
+    site = _require_site(db, site_id)
+    try:
+        added = site_service.add_seed(db, settings, site, body.get("url", ""))
+    except site_service.SiteError as exc:
+        raise ApiError("seed_invalid", str(exc), status_code=422) from exc
+
+    audit.record(db, "site.seed.add", actor=user.username, target=site.slug, ip=ip)
+    return {
+        "primary": site.seed_url,
+        "seeds": site_service.all_seeds(site),
+        "added": added,
+        # Said rather than done: re-indexing is a job, and doing it silently
+        # because somebody typed a URL is the sort of surprise that makes
+        # people afraid of a button.
+        "note": (
+            "Re-index the site so the picker sees this domain's asset hosts before "
+            "the next capture."
+        ),
+    }
+
+
+@router.delete("/sites/{site_id}/seeds", response_model=Ok)
+def delete_seed(
+    site_id: int,
+    db: DbSession,
+    settings: AppSettings,
+    user: CurrentUser,
+    ip: ClientIp,
+    url: str = Query(..., min_length=1, max_length=4096),
+) -> Ok:
+    site = _require_site(db, site_id)
+    try:
+        site_service.remove_seed(db, settings, site, url)
+    except site_service.SiteError as exc:
+        raise ApiError("seed_invalid", str(exc), status_code=422) from exc
+    audit.record(db, "site.seed.remove", actor=user.username, target=site.slug, ip=ip)
+    return Ok()
 
 
 # ── captures ─────────────────────────────────────────────────────────────

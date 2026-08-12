@@ -47,6 +47,7 @@ def start_discovery(
     supervisor: Annotated[Any, Depends(_supervisor)],
     max_pages: int = Query(100, ge=1, le=2000),
     max_depth: int = Query(3, ge=1, le=10),
+    use_browser: bool = Query(False),
 ) -> JobAccepted:
     site = _require_site(db, site_id)
 
@@ -65,7 +66,7 @@ def start_discovery(
         db,
         job_type="discovery",
         site_id=site.id,
-        spec={"max_pages": max_pages, "max_depth": max_depth},
+        spec={"max_pages": max_pages, "max_depth": max_depth, "use_browser": use_browser},
         # Discovery is short and gates everything else, so it jumps the queue
         # ahead of any capture waiting behind it.
         priority=50,
@@ -79,12 +80,21 @@ def start_discovery(
 @router.get("/sites/{site_id}/discovery")
 def latest_discovery(site_id: int, db: DbSession, _user: CurrentUser) -> dict[str, Any]:
     """The current picker state: what was found, and what is selected now."""
+    from cairn.services import browser
+
     site = _require_site(db, site_id)
+    available, reason = browser.availability()
+    # Offered by the picker rather than assumed: rendering is the answer to a
+    # domain list that looks too short, and the checkbox is useless if it is
+    # switched on in an install with no Chromium.
+    browser_state = {"available": available, "reason": reason}
+
     discovery = discovery_service.latest_discovery(db, site.id)
     if discovery is None:
         return {
             "discovery": None,
             "hosts": [],
+            "browser": browser_state,
             "message": "Discovery has not run for this site yet.",
         }
 
@@ -110,6 +120,7 @@ def latest_discovery(site_id: int, db: DbSession, _user: CurrentUser) -> dict[st
         "hosts": [discovery_service.stat_from_row(row, scope) for row in rows],
         "diff": discovery_service.diff_against(db, discovery, previous),
         "scope_user_edited": bool((site.scope_settings or {}).get("user_edited")),
+        "browser": browser_state,
     }
 
 

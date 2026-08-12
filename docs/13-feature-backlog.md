@@ -80,11 +80,13 @@ Read an existing ArchiveBox `index.sqlite3` + `archive/` directory, group snapsh
 
 > **As built.** The schema came from running a real ArchiveBox 0.7.4 against a fixture site and reading the tables back, rather than from memory — and the first import against that real output found two things a hand-made fixture would not have: `ArchiveBox.conf` holds a Django `SECRET_KEY` and no version, and one snapshot with an unusable host killed the whole import.
 
-### Browser-based discovery
+### Browser-based discovery ✅ *built after M8*
 
 Once Chromium is in the image (M5), run discovery through a real browser to catch hosts referenced only from JavaScript and content behind infinite scroll.
 
 **Effort:** medium. The discovery engine gains a browser variant; classification logic is unchanged.
+
+> **As built.** Classification was indeed unchanged, and the browser variant was not the obvious one. Rendering the page and re-parsing the resulting DOM — which is what "run discovery through a real browser" sounds like — misses the very thing this exists to find: `new Image().src = "//cdn/pixel.gif"` fetches without ever entering the document. Measured on a fixture built for it, the rendered DOM yielded two asset hosts and the browser's own **network log** yielded three. So the log is the evidence and the DOM is used only for links. Each run also reports whether rendering found anything the HTML did not already name, because that is what decides whether to wait for it again.
 
 ### Public share links
 
@@ -94,17 +96,21 @@ Signed, expiring, optionally password-protected links to a single archived page 
 
 **Effort:** high, and it's the feature most likely to introduce a security hole — it deliberately punches a hole in the auth boundary, on the origin that replays untrusted JavaScript ([11](11-security.md)). If built: separate origin, no session cookies, tokens scoped to one collection, rate limited, revocable, off by default.
 
-### Scheduled report digest
+### Scheduled report digest ✅ *built after M8*
 
 Weekly email or notification: sites captured, new posts found, failures, storage growth, upcoming credential expiries, integrity results.
 
 **Effort:** low-medium. High value for an unattended tool — it's how you notice something broke three weeks ago.
 
-### Multi-seed sites
+> **As built.** That last sentence turned out to be the specification. The list above is all *activity*, and activity is what the app already shows; the report is built around **absence** instead — sites nothing has captured in a month, feeds that poll successfully and return nothing because the URL now serves a login page, credentials expiring next week. It is also readable on demand rather than only pushed, because a digest nobody has configured a webhook for is a digest nobody ever reads, and the dashboard is silent when there is nothing to say.
+
+### Multi-seed sites ✅ *built after M8*
 
 Some blogs span domains (a custom domain plus the blogspot original, or a site that migrated). Allow multiple seeds under one site with one scope, one index, and one replay collection.
 
 **Effort:** medium. Mostly already supported by the data model; the work is UI and scope resolution.
+
+> **As built.** The data model did stretch to it — seeds live in `scope_settings` and needed no migration — but "the work is UI" was wrong three times over. Each seed's origin needs enumerating separately (its own robots.txt, its own sitemap), each seed must be sampled from scratch rather than reached by link-following, and adding a seed has to make its host crawlable or the scope refuses it on the first request. The sharpest edge was elsewhere: the domain picker submits a scope with no seeds in it, so a wholesale rewrite of `scope_settings` deleted the second domain — and `user_edited` with it — the moment anybody ticked a checkbox.
 
 ---
 

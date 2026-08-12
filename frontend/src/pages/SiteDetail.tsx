@@ -383,6 +383,8 @@ function Scope({ siteId, onChanged }: { siteId: number; onChanged?: () => void }
 
       {open && (
         <div className="mt-4 space-y-4">
+          <Seeds siteId={siteId} onChanged={onChanged} />
+
           <DomainPicker siteId={siteId} onChanged={onChanged} />
 
           {scope.data && scope.data.wget_preview.length > 0 && (
@@ -398,6 +400,102 @@ function Scope({ siteId, onChanged }: { siteId: number; onChanged?: () => void }
         </div>
       )}
     </section>
+  );
+}
+
+/**
+ * Where this site starts from.
+ *
+ * Almost always one address, which is why this is a quiet line rather than a
+ * section: the case it exists for — a blog that moved to a custom domain, or
+ * one that spans two — is real and rare. Keeping both under one site is what
+ * keeps one index, one replay collection, and one capture selector that knows
+ * about every version of a page.
+ */
+function Seeds({ siteId, onChanged }: { siteId: number; onChanged?: () => void }) {
+  const client = useQueryClient();
+  const [draft, setDraft] = useState("");
+  const seeds = useQuery({ queryKey: ["seeds", siteId], queryFn: () => endpoints.seeds(siteId) });
+
+  const refresh = async () => {
+    await Promise.all([
+      client.invalidateQueries({ queryKey: ["seeds", siteId] }),
+      client.invalidateQueries({ queryKey: ["scope", siteId] }),
+      client.invalidateQueries({ queryKey: ["site", siteId] }),
+    ]);
+    onChanged?.();
+  };
+
+  const add = useMutation({
+    mutationFn: () => endpoints.addSeed(siteId, draft.trim()),
+    onSuccess: async () => {
+      setDraft("");
+      await refresh();
+    },
+  });
+  const drop = useMutation({
+    mutationFn: (url: string) => endpoints.removeSeed(siteId, url),
+    onSuccess: refresh,
+  });
+
+  const list = seeds.data?.seeds ?? [];
+  const primary = seeds.data?.primary ?? "";
+
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-baseline gap-2">
+        <h3 className="text-xs font-medium uppercase text-muted">Starting points</h3>
+        {list.length > 1 && (
+          <span className="hint">
+            {list.length} seeds, one scope, one archive
+          </span>
+        )}
+      </div>
+
+      <ul className="space-y-1 text-sm">
+        {list.map((url) => (
+          <li key={url} className="flex items-center gap-2">
+            <span className="min-w-0 flex-1 truncate font-mono text-xs">{url}</span>
+            {url === primary ? (
+              <span className="text-xs text-muted">primary</span>
+            ) : (
+              <button
+                className="btn-ghost px-2 py-0.5 text-xs"
+                onClick={() => drop.mutate(url)}
+                disabled={drop.isPending}
+              >
+                Remove
+              </button>
+            )}
+          </li>
+        ))}
+      </ul>
+
+      <form
+        className="flex flex-wrap gap-2"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (draft.trim()) add.mutate();
+        }}
+      >
+        <input
+          className="field min-w-0 flex-1 font-mono text-xs"
+          placeholder="Another address this site lives at"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          spellCheck={false}
+          aria-label="Additional seed URL"
+        />
+        <button className="btn-ghost shrink-0 text-xs" disabled={add.isPending || !draft.trim()}>
+          {add.isPending && <Spinner />}
+          Add seed
+        </button>
+      </form>
+
+      {add.error && <Alert kind="error">{(add.error as ApiError).message}</Alert>}
+      {drop.error && <Alert kind="error">{(drop.error as ApiError).message}</Alert>}
+      {add.data?.note && <p className="hint">{add.data.note}</p>}
+    </div>
   );
 }
 

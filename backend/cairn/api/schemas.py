@@ -621,6 +621,9 @@ class ScheduleSettings(BaseModel):
     per_host_serial: bool
     full_recapture_days: int = Field(ge=0, le=3650)
     in_quiet_hours_now: bool
+    # How often the periodic report goes out. 0 switches it off; it is still
+    # readable on demand, because that is where it is most often read.
+    digest_every_days: int = Field(default=7, ge=0, le=365)
 
 
 class NotifyTarget(BaseModel):

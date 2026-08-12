@@ -133,6 +133,36 @@ def integrity_report(db: DbSession, settings: AppSettings, _user: CurrentUser) -
     return integrity.health(db, settings)
 
 
+@router.get("/digest")
+def digest_report(
+    db: DbSession,
+    settings: AppSettings,
+    _user: CurrentUser,
+    days: int = Query(7, ge=1, le=365),
+) -> dict[str, Any]:
+    """The periodic report, on demand.
+
+    The same thing the scheduler pushes. Readable without configuring a
+    notification target, because a report nobody has set up a webhook for is a
+    report nobody ever reads — and this one is mostly about what has *not*
+    happened, which no other page in the app answers.
+    """
+    from datetime import timedelta
+
+    from cairn.db.types import utcnow
+    from cairn.services import digest as digest_service
+
+    now = utcnow()
+    report = digest_service.build(
+        db,
+        settings,
+        since=now - timedelta(days=days),
+        now=now,
+        previous_total=digest_service.previous_total(db),
+    )
+    return {**report.to_dict(), "text": digest_service.render_text(report)}
+
+
 @router.get("/storage")
 def storage_report(db: DbSession, settings: AppSettings, _user: CurrentUser) -> dict[str, Any]:
     from cairn.services import usage

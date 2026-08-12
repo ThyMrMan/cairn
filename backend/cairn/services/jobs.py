@@ -403,7 +403,23 @@ class JobSupervisor:
             options: dict[str, Any] = {
                 "max_pages": int(spec.get("max_pages") or 100),
                 "max_depth": int(spec.get("max_depth") or 3),
+                # A site that spans domains is indexed as one thing. Running
+                # discovery on the primary alone would produce a picker that
+                # has never seen the second domain's asset hosts.
+                "extra_seeds": sites.extra_seeds(site),
             }
+
+            if spec.get("use_browser"):
+                # Refused here rather than falling back to a plain run. Somebody
+                # asked for the browser because they believe the plain run is
+                # missing something; quietly giving them the plain run again
+                # answers that with the same wrong list and no explanation.
+                from cairn.services import browser as browser_service
+
+                available, reason = browser_service.availability()
+                if not available:
+                    raise JobError(f"discovery cannot use a browser: {reason}")
+                options["use_browser"] = True
 
             # Discovery must see what a reader sees. Without the jar, a flagged
             # blog answers every probe with the interstitial and the picker
@@ -438,7 +454,11 @@ class JobSupervisor:
                 # A user who has already picked domains does not want a re-run
                 # silently undoing that — the diff is shown instead.
                 if not _scope_was_edited(session, site):
-                    scope = discovery_service.scope_from_result(result, seed_url=site.seed_url)
+                    scope = discovery_service.scope_from_result(
+                        result,
+                        seed_url=site.seed_url,
+                        extra_seeds=sites.extra_seeds(site),
+                    )
                     sites.save_scope(session, site, scope)
                     sites.write_site_yaml(session, self._settings, site)
                 job.spec = {**(job.spec or {}), "discovery_id": discovery.id}
@@ -1055,7 +1075,7 @@ class JobSupervisor:
             else:
                 discovered, seed_source = discovery_service.seeds_for_capture(session, site, scope)
                 seeds = list(dict.fromkeys([*discovered, *extra]))
-                seed_source["manual"] = len(extra) + 1
+                seed_source["manual"] += len(extra)
             seed_path = temp_dir / SEED_FILE
             storage.write_atomic(seed_path, "\n".join(seeds) + "\n")
 

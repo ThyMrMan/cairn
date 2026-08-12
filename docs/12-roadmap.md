@@ -319,6 +319,26 @@ Also worth doing: run `--warc-dedup` against a second capture and verify you get
 ---
 
 
+## After M8 — the backlog's Tier 2 ✅
+
+**Ships:** discovery that can see JavaScript, sites that span domains, and a report about what has *not* happened.
+
+- [x] Browser-based discovery ([13](13-feature-backlog.md#browser-based-discovery))
+- [x] Multi-seed sites ([13](13-feature-backlog.md#multi-seed-sites))
+- [x] Scheduled report digest ([13](13-feature-backlog.md#scheduled-report-digest))
+
+**Done when:** a host that only JavaScript names appears in the domain picker; a blog that moved to a new domain is one site with one index; and a site nothing has captured in three months says so without anybody going looking. *Asserted in `test_discovery_browser.py` against four loopback addresses each reachable by a different route — the network log, a script-injected link, and a scroll — with the fetch-only run as the control; in `test_multiseed.py`, where two domains are enumerated separately and the picker is saved without losing the second; and in `test_digest.py`, where a tick sends a real notification to a real socket naming a site that has been silent for 200 days.*
+
+**Three corrections from building them:**
+
+1. **Rendering a page and re-parsing the DOM does not find a JavaScript-only host.** It is the obvious implementation of "discovery through a browser" and it misses the case the feature exists for: `new Image()` fetches without ever entering the document. Measured on a fixture with one host per route — the rendered DOM found two asset hosts, the browser's own **network log** found three, and the missing one was the pixel. The log is the evidence; the DOM supplies links and nothing else. The log also carries each response's real content type, which the fetch path never learns for anything it did not fetch itself.
+2. **The domain picker deletes what it does not know about.** It submits hosts and patterns and no seeds, so `save_scope` replacing `scope_settings` wholesale dropped every seed after the first — and `user_edited` with it, which is what stops the next re-index overwriting a hand-picked scope. Both were live bugs the moment multi-seed existed, and the second was a latent one before that. `save_scope` now merges.
+3. **A digest of what happened is a digest nobody needs.** docs/13 asked for captures, new posts, failures and growth — all of which the app already shows on its own pages. What nothing shows is *absence*: the feed that polls successfully and returns nothing because the URL now serves a login page, the site whose captures quietly stopped. Those are what the report leads with, and the failing jobs are named rather than counted, because a count only sends the reader to the job list to find out what it counted.
+
+**Also worth knowing:** rendering is capped at 40 pages however many were asked for, and each run reports whether the browser found anything the HTML did not already name — "this site does not need the browser for discovery" is the sentence that saves the next hour. The digest waits a full period before its first send, because a report an hour after installation says nothing and teaches the reader to ignore the next one.
+
+---
+
 ## Sequencing notes
 
 **Why discovery before replay.** Discovery determines *what gets captured*; getting it wrong means recapturing everything later. Replay is read-only over whatever exists and can be built against any archive.
