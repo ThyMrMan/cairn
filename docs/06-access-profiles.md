@@ -98,6 +98,8 @@ sequenceDiagram
 
 Minted jars expire. Re-mint when the earliest cookie expiry is within 24 h, when the jar is older than `profiles.mint_ttl_days` (default 7), when there is no jar yet, or when the user clicks **Run the script now**. All of it happens **before** the capture starts.
 
+**A gate usually redirects rather than serving a warning.** Detection was written around inspecting the body of a 200 — and Blogger, for one, answers the seed with a **302** to `www.blogger.com/interstitial/blog?u=<blog>`, on a host no site's scope covers. wget records the redirect, follows nothing, and stops. So the archive holds one record, the capture used to report `partial` with no explanation at all, and the first sign of trouble was pywb inside the replay iframe reporting that a URL nobody had entered was missing from the collection. Redirect targets are now checked against the same interstitial markers as page bodies, `/interstitial/` among them, and a capture that ends at one says so and names both ends.
+
 **The pause-and-resume design in earlier drafts of this document cannot be built.** It said: the engine emits `interstitial_detected`, the supervisor pauses the job, re-mints, and resumes with the fresh jar. wget reads `--load-cookies` once at startup and holds the jar in memory — there is no way to hand a running crawl a new one, and overwriting the file it was given changes nothing. Nothing about that is a limitation of the supervisor; it is what the flag means.
 
 What replaces it is two checks either side of the crawl, which between them cover the same failure:

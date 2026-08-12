@@ -155,9 +155,34 @@ def cdxj_lines(site_root: Path, warcs: list[Path]) -> list[str]:
     except Exception as exc:
         raise ReplayError(f"could not index {len(warcs)} WARC(s): {exc}") from exc
 
-    lines = [line + "\n" for line in buffer.getvalue().splitlines() if line.strip()]
+    lines = [
+        line + "\n"
+        for line in buffer.getvalue().splitlines()
+        if line.strip() and not _is_engine_bookkeeping(line)
+    ]
     _assert_relative(lines, relative)
     return lines
+
+
+# wget writes three `metadata://gnu.org/software/wget/warc/…` records into
+# every WARC — its manifest, its log and its arguments. They are the crawler
+# talking about itself, not anything anybody archived.
+_BOOKKEEPING_SCHEMES = ("metadata:", "urn:")
+
+
+def _is_engine_bookkeeping(line: str) -> bool:
+    """Whether a CDXJ line describes the crawler rather than the site.
+
+    Excluded from the index because replay only ever resolves http(s), and
+    because the record count is what the UI uses to decide whether a site has
+    anything to show. Three bookkeeping records per capture made a site whose
+    only real record was a redirect look like a site with four.
+    """
+    try:
+        url = str(json.loads(line.split(" ", 2)[2]).get("url") or "")
+    except (IndexError, ValueError):  # pragma: no cover — malformed indexer output
+        return False
+    return url.lower().startswith(_BOOKKEEPING_SCHEMES)
 
 
 def _relative(site_root: Path, warc: Path) -> str:
@@ -326,6 +351,24 @@ def index_stats(settings: Settings, archive_path: str) -> tuple[int, int | None]
     with open(path, "rb") as fh:
         records = sum(1 for line in fh if line.strip())
     return records, int(path.stat().st_mtime)
+
+
+def replayable_pages(settings: Settings, archive_path: str) -> int:
+    """How many archived records are a page somebody could actually open.
+
+    Records, on their own, do not mean an archive anybody can browse: a
+    capture turned away by a content warning holds a redirect and nothing
+    else, and one that only ever 404'd holds error pages. Both used to present
+    an iframe, which then showed pywb reporting that some URL the person had
+    never heard of was not in this collection.
+    """
+    count = 0
+    for record in index_records(settings, archive_path):
+        status = str(record.status or "")
+        mime = (record.mime or "").lower()
+        if status.startswith("2") and ("html" in mime or not mime):
+            count += 1
+    return count
 
 
 def read_record(settings: Settings, archive_path: str, record: CdxRecord) -> Any:

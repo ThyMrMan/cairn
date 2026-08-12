@@ -31,7 +31,12 @@ MARKERS = (
 
 # Blogger sends the interstitial from a distinct path, which is far stronger
 # evidence than any phrase because no article is served from it.
+#
+# `/interstitial/` is the one Blogger actually uses today —
+# `www.blogger.com/interstitial/blog?u=<blog>` — and its absence here is why a
+# gated blog could be captured, marked partial, and say nothing about why.
 URL_MARKERS = (
+    "/interstitial/",
     "/content-warning",
     "blogger.com/blogin.g",
     "/b/blogger-warning",
@@ -56,12 +61,26 @@ class Verdict:
 CLEAR = Verdict(blocked=False, reason="")
 
 
-def looks_blocked(body: bytes, url: str = "") -> Verdict:
-    """Whether this response is a bypass page rather than content."""
+def url_looks_blocked(url: str) -> Verdict:
+    """Whether a URL alone is enough to call it an interstitial.
+
+    Separate from `looks_blocked` because a **redirect** has no body to
+    inspect, and a redirect is how a gated blog most often refuses: the seed
+    answers 302 and points at a host the crawl is not allowed to follow. Left
+    to the body check, that capture archives one record and explains nothing.
+    """
     lowered = (url or "").lower()
     for marker in URL_MARKERS:
         if marker in lowered:
-            return Verdict(True, f"the final URL is an interstitial path ({marker})")
+            return Verdict(True, f"the URL is an interstitial path ({marker})")
+    return CLEAR
+
+
+def looks_blocked(body: bytes, url: str = "") -> Verdict:
+    """Whether this response is a bypass page rather than content."""
+    by_url = url_looks_blocked(url)
+    if by_url.blocked:
+        return Verdict(True, by_url.reason.replace("the URL is", "the final URL is"))
 
     if len(body) > MAX_INTERSTITIAL_BYTES:
         # Long enough to be a real page. Say nothing rather than guess.

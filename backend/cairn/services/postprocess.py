@@ -317,6 +317,7 @@ def step_asset_audit(ctx: Context) -> None:
     lazy_hits = 0
     scanned = 0
     blocked = 0
+    redirects: list[tuple[str, str]] = []
     for warc in warcs:
         try:
             with open(warc, "rb") as fh:
@@ -325,13 +326,24 @@ def step_asset_audit(ctx: Context) -> None:
                         continue
                     if not record.http_headers:
                         continue
+                    status = record.http_headers.get_statuscode()
+                    # A redirect has no body to judge, and a redirect is how a
+                    # gated blog most often refuses: the seed answers 302 and
+                    # points somewhere the crawl may not follow. Checked before
+                    # the success filter below, which would otherwise drop it.
+                    if str(status or "").startswith("3"):
+                        target = record.http_headers.get_header("Location", "") or ""
+                        source = record.rec_headers.get_header("WARC-Target-URI") or ""
+                        if target:
+                            redirects.append((source, target))
+                        continue
                     # Error pages are not pages. `--content-on-error` archives
                     # the body of every 404, and a site's 404 template
                     # references its own logo and stylesheet — which are then
                     # reported as assets the capture is missing, from a page
                     # nobody asked for. It also made the page count nonsense:
                     # 4 real pages and 12 mangled requests read as "16 pages".
-                    if not _is_success(record.http_headers.get_statuscode()):
+                    if not _is_success(status):
                         continue
                     ctype = record.http_headers.get_header("Content-Type", "") or ""
                     if "html" not in ctype.lower():
@@ -353,6 +365,8 @@ def step_asset_audit(ctx: Context) -> None:
                 extra={"warc": warc.name, "err": str(exc)},
             )
             continue
+
+    _report_gate_redirects(ctx, redirects, scanned)
 
     missing = sorted(u for u in referenced if u not in captured)
     absent, excluded = _partition_missing(ctx, missing)
@@ -427,6 +441,64 @@ def _is_success(status: str | None) -> bool:
 
 def capture_is_ok(ctx: Context) -> bool:
     return ctx.capture.status == "ok"
+
+
+def _report_gate_redirects(ctx: Context, redirects: list[tuple[str, str]], scanned: int) -> None:
+    """Explain a capture that was turned away at the door.
+
+    A gated blog does not serve a content warning to a crawler with no cookie
+    — it **redirects** to one, on a host the crawl is not allowed to follow.
+    So the archive holds a single 302, the capture reports one URL, and until
+    this existed it said nothing at all about why. What the person then met
+    was pywb, in an iframe, reporting that a URL they had never heard of could
+    not be found in this collection.
+
+    Two findings, in descending order of certainty:
+
+    `gated` — the redirect target is a recognisable interstitial. That is the
+    access-profile case and the message says so.
+
+    `off-scope` — it is not recognisable, but the crawl could not follow it and
+    archived nothing else. Whatever the reason, "the site sent us somewhere
+    this capture is not allowed to go" is the explanation for an empty
+    archive, and saying it is better than leaving somebody to work it out from
+    a replay error.
+    """
+    if not redirects:
+        return
+
+    gated = [
+        (source, target)
+        for source, target in redirects
+        if interstitial.url_looks_blocked(target).blocked
+    ]
+    ctx.stats["redirects"] = len(redirects)
+    ctx.stats["gate_redirects"] = len(gated)
+
+    if gated:
+        source, target = gated[0]
+        ctx.warnings.append(
+            f"{len(gated)} request(s) were redirected to what looks like a content warning "
+            f"rather than the page — {source} sends visitors to {target}. Nothing behind it "
+            "was archived, because that host is not in this site's scope and would not be "
+            "worth archiving if it were. Give this site an access profile that carries the "
+            "cookie the warning sets, test it, and capture again."
+        )
+        if capture_is_ok(ctx):
+            ctx.capture.status = "partial"
+        return
+
+    # No recognisable gate, and nothing else came back either.
+    if scanned == 0:
+        source, target = redirects[0]
+        ctx.warnings.append(
+            f"This capture archived no pages: {source} redirected to {target}, which is "
+            "outside this site's scope, so the crawl stopped there. If that host is part of "
+            "the site, turn it on in the domain picker; if it is a sign-in or a content "
+            "warning, this site needs an access profile."
+        )
+        if capture_is_ok(ctx):
+            ctx.capture.status = "partial"
 
 
 def _partition_missing(ctx: Context, missing: list[str]) -> tuple[list[str], list[str]]:

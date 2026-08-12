@@ -281,3 +281,87 @@ def test_generated_config_discovers_collections_rather_than_listing_them(
     assert config["enable_content_security_policy"] is True
     assert config["port"] == settings.replay_port
     assert "do not hand-edit" in path.read_text(encoding="utf-8")
+
+
+# ── records that are not pages ───────────────────────────────────────────
+#
+# From a real run: after capturing a gated blog, replay showed pywb's "could
+# not be found in this collection" for a URL the person had never entered. The
+# archive held one redirect and three of wget's own bookkeeping records, so
+# four records looked like four pages and the iframe loaded anyway.
+
+
+def write_mixed_warc(path: Path) -> None:
+    """One redirect, one page, and the three records wget writes about itself."""
+    from warcio.statusandheaders import StatusAndHeaders
+    from warcio.warcwriter import WARCWriter
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "wb") as fh:
+        writer = WARCWriter(fh, gzip=True)
+
+        redirect = StatusAndHeaders(
+            "302 Moved Temporarily",
+            [("Location", "https://www.blogger.com/interstitial/blog?u=" + URL)],
+            protocol="HTTP/1.1",
+        )
+        writer.write_record(writer.create_warc_record(URL, "response", http_headers=redirect))
+
+        ok = StatusAndHeaders("200 OK", [("Content-Type", "text/html")], protocol="HTTP/1.1")
+        writer.write_record(
+            writer.create_warc_record(
+                POST, "response", payload=io.BytesIO(b"<html>real</html>"), http_headers=ok
+            )
+        )
+
+        for name in ("MANIFEST.txt", "wget.log", "wget_arguments.txt"):
+            writer.write_record(
+                writer.create_warc_record(
+                    f"metadata://gnu.org/software/wget/warc/{name}",
+                    "metadata",
+                    payload=io.BytesIO(b"wget talking about itself"),
+                    warc_content_type="text/plain",
+                )
+            )
+
+
+def test_the_crawlers_own_records_are_left_out_of_the_index(site_tree: Settings) -> None:
+    out = storage.ensure_capture_dirs(site_tree, ARCHIVE_PATH, "20260810T120000Z-full-wget")
+    write_mixed_warc(out / storage.WARC_DIR / "part-00000.warc.gz")
+
+    result = replay.build_index(site_tree, ARCHIVE_PATH)
+    urls = [record.url for record in replay.index_records(site_tree, ARCHIVE_PATH)]
+
+    assert result.records == 2, urls
+    assert not any(u.startswith("metadata:") for u in urls)
+    assert sorted(urls) == sorted([URL, POST])
+
+
+def test_a_redirect_only_archive_has_no_replayable_pages(site_tree: Settings) -> None:
+    """What a gated blog leaves behind. The iframe must not be offered for it."""
+    from warcio.statusandheaders import StatusAndHeaders
+    from warcio.warcwriter import WARCWriter
+
+    out = storage.ensure_capture_dirs(site_tree, ARCHIVE_PATH, "20260810T120000Z-full-wget")
+    warc = out / storage.WARC_DIR / "part-00000.warc.gz"
+    warc.parent.mkdir(parents=True, exist_ok=True)
+    with open(warc, "wb") as fh:
+        writer = WARCWriter(fh, gzip=True)
+        headers = StatusAndHeaders(
+            "302 Moved Temporarily",
+            [("Location", "https://www.blogger.com/interstitial/blog?u=" + URL)],
+            protocol="HTTP/1.1",
+        )
+        writer.write_record(writer.create_warc_record(URL, "response", http_headers=headers))
+
+    replay.build_index(site_tree, ARCHIVE_PATH)
+    records, _mtime = replay.index_stats(site_tree, ARCHIVE_PATH)
+
+    assert records == 1
+    assert replay.replayable_pages(site_tree, ARCHIVE_PATH) == 0
+
+
+def test_a_page_counts_as_replayable(site_tree: Settings) -> None:
+    make_capture(site_tree, "20260810T120000Z-full-wget", [(URL, "2026-08-10T12:00:00Z", b"hi")])
+    replay.build_index(site_tree, ARCHIVE_PATH)
+    assert replay.replayable_pages(site_tree, ARCHIVE_PATH) == 1

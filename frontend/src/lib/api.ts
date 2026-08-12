@@ -575,6 +575,8 @@ export type NotifySettings = {
 export type ReplayStatus = {
   collection: string;
   records: number;
+  /** Records that are a page somebody could open, rather than a redirect or an error. */
+  pages: number;
   indexed_at: number | null;
   origin: string;
   /** Empty when the origin could not be determined; the tab says so. */

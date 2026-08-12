@@ -86,6 +86,28 @@ export function Replay({
     );
   }
 
+  // Records are not pages. A capture turned away by a content warning holds
+  // one redirect and nothing else; loading the iframe for that shows pywb
+  // reporting that a URL nobody asked for is not in this collection, which is
+  // the least useful true sentence available.
+  if (data.pages === 0) {
+    return (
+      <EmptyState title="Nothing here can be replayed">
+        <p>
+          This site has {data.records.toLocaleString()} record(s) indexed and none of them is a
+          page — they are redirects, errors, or files with no content. That normally means the
+          crawl was turned away: a sign-in or a content warning redirects the seed somewhere
+          this site&rsquo;s scope does not cover, so nothing behind it was archived.
+        </p>
+        <p className="mt-2">
+          Open the newest capture below: its report says which URL redirected where. If it is a
+          content warning, this site needs an <strong>access profile</strong> carrying the
+          cookie that warning sets.
+        </p>
+      </EmptyState>
+    );
+  }
+
   if (!data.base_url) {
     return (
       <Alert kind="error" title="Replay has no address">

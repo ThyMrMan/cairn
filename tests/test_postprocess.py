@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from cairn.config import Settings
 from cairn.db.models import Capture, Site
 from cairn.db.types import utcnow
-from cairn.services import sites, storage
+from cairn.services import interstitial, sites, storage
 from cairn.services.htmlrefs import parse_page
 from cairn.services.postprocess import (
     Context,
@@ -429,3 +429,152 @@ def test_a_scope_with_no_asset_hosts_reports_everything_as_absent() -> None:
     absent, excluded = _partition_missing(ctx, ["https://blog.example.com/logo.png"])
     assert absent == ["https://blog.example.com/logo.png"]
     assert excluded == []
+
+
+# ── turned away at the door ──────────────────────────────────────────────
+#
+# Reported from a real run against a gated Blogger blog. The seed answered 302
+# to www.blogger.com/interstitial/blog?u=…, which is out of scope, so the
+# capture archived one redirect — and said nothing at all about why, because
+# interstitial detection only ever inspected the body of a 200 and a redirect
+# has no body. What the person met instead was pywb, in an iframe, reporting a
+# URL they had never entered as missing from the collection.
+
+
+def test_bloggers_interstitial_path_is_recognised() -> None:
+    """The path Blogger actually uses. Its absence is why this was silent."""
+    verdict = interstitial.url_looks_blocked(
+        "https://www.blogger.com/interstitial/blog?u=https://example.blogspot.com/"
+    )
+    assert verdict.blocked
+    assert "/interstitial/" in verdict.reason
+
+
+def test_an_ordinary_url_is_not_an_interstitial() -> None:
+    assert not interstitial.url_looks_blocked(
+        "https://example.blogspot.com/2026/08/post.html"
+    ).blocked
+    assert not interstitial.url_looks_blocked("").blocked
+
+
+def redirect_warc(path: Path, source: str, target: str) -> None:
+    from warcio.statusandheaders import StatusAndHeaders
+    from warcio.warcwriter import WARCWriter
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "wb") as fh:
+        writer = WARCWriter(fh, gzip=True)
+        headers = StatusAndHeaders(
+            "302 Moved Temporarily", [("Location", target)], protocol="HTTP/1.1"
+        )
+        writer.write_record(writer.create_warc_record(source, "response", http_headers=headers))
+
+
+def run_audit_on(db: Session, settings: Settings, tmp_path: Path, source: str, target: str):
+    redirect_warc(tmp_path / storage.WARC_DIR / "part-00000.warc.gz", source, target)
+    ctx = Context(
+        session=db,
+        settings=settings,
+        capture=Capture(status="ok", warc_files=[], started_at=utcnow()),
+        site=Site(seed_url=source, archive_path="Unfiled/blog"),
+        output_dir=tmp_path,
+        tool_version=None,
+        stats={},
+        scope={},
+        seeds=[source],
+        seed_source={"manual": 1},
+        artifacts=[],
+        warnings=[],
+    )
+    step_asset_audit(ctx)
+    return ctx
+
+
+def test_a_seed_redirected_to_a_content_warning_says_so(
+    db: Session, settings: Settings, tmp_path: Path
+) -> None:
+    seed = "https://example.blogspot.com/"
+    ctx = run_audit_on(
+        db, settings, tmp_path, seed, f"https://www.blogger.com/interstitial/blog?u={seed}"
+    )
+
+    assert ctx.capture.status == "partial"
+    assert ctx.stats["gate_redirects"] == 1
+    message = " ".join(ctx.warnings)
+    assert "content warning" in message
+    assert "access profile" in message
+    # It names both ends, so somebody can act on it without opening the WARC.
+    assert seed in message
+    assert "blogger.com/interstitial" in message
+
+
+def test_a_redirect_off_scope_that_archived_nothing_is_explained(
+    db: Session, settings: Settings, tmp_path: Path
+) -> None:
+    """Not every gate is recognisable. "The site sent us somewhere this capture
+    may not go, and nothing else came back" is the explanation regardless."""
+    ctx = run_audit_on(
+        db, settings, tmp_path, "https://example.com/", "https://sso.example.net/login?next=/"
+    )
+
+    assert ctx.capture.status == "partial"
+    assert ctx.stats["gate_redirects"] == 0
+    assert ctx.stats["redirects"] == 1
+    message = " ".join(ctx.warnings)
+    assert "archived no pages" in message
+    assert "sso.example.net" in message
+
+
+def test_a_redirect_beside_real_pages_is_not_a_failure(
+    db: Session, settings: Settings, tmp_path: Path
+) -> None:
+    """An ordinary site redirects constantly — http to https, a trailing
+    slash, a moved post. Reporting every one of those would be noise."""
+    from warcio.statusandheaders import StatusAndHeaders
+    from warcio.warcwriter import WARCWriter
+
+    warc = tmp_path / storage.WARC_DIR / "part-00000.warc.gz"
+    warc.parent.mkdir(parents=True, exist_ok=True)
+    with open(warc, "wb") as fh:
+        writer = WARCWriter(fh, gzip=True)
+        writer.write_record(
+            writer.create_warc_record(
+                "https://example.com/old",
+                "response",
+                http_headers=StatusAndHeaders(
+                    "301 Moved Permanently",
+                    [("Location", "https://example.com/new")],
+                    protocol="HTTP/1.1",
+                ),
+            )
+        )
+        writer.write_record(
+            writer.create_warc_record(
+                "https://example.com/new",
+                "response",
+                payload=io.BytesIO(b"<html><body><p>a real page</p></body></html>"),
+                http_headers=StatusAndHeaders(
+                    "200 OK", [("Content-Type", "text/html")], protocol="HTTP/1.1"
+                ),
+            )
+        )
+
+    ctx = Context(
+        session=db,
+        settings=settings,
+        capture=Capture(status="ok", warc_files=[], started_at=utcnow()),
+        site=Site(seed_url="https://example.com/", archive_path="Unfiled/blog"),
+        output_dir=tmp_path,
+        tool_version=None,
+        stats={},
+        scope={},
+        seeds=["https://example.com/"],
+        seed_source={"manual": 1},
+        artifacts=[],
+        warnings=[],
+    )
+    step_asset_audit(ctx)
+
+    assert ctx.capture.status == "ok"
+    assert ctx.stats["redirects"] == 1
+    assert not any("archived no pages" in w for w in ctx.warnings)

@@ -196,6 +196,12 @@ datapackage-digest.json                sha256 of datapackage.json
 
 ---
 
+## Records are not pages
+
+wget writes three `metadata://gnu.org/software/wget/warc/…` records into every WARC — its manifest, its log and its arguments. They are the crawler talking about itself, they are not http(s), and nothing replays them, so they are filtered out of the CDXJ. Left in, a capture whose only real record was a redirect looked like a site with four records, and the replay tab offered an iframe for it.
+
+The tab therefore asks a second question before loading anything: how many records are a **page** — 2xx, HTML. Zero means the crawl was turned away rather than that the archive is empty, and saying so beats letting pywb report a URL the person never entered as missing from the collection.
+
 ## Performance notes
 
 - **Index size** ~200–400 bytes per record. A 100k-URL site is a 20–40 MB CDXJ — memory-mapped by pywb, fine.
