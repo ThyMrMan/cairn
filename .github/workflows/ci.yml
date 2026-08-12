@@ -3,6 +3,12 @@ name: CI
 on:
   push:
     branches: [main]
+    # Not optional, and easy to leave out: a `push` trigger that names only
+    # `branches` does not fire for tags at all. Without this the publish step's
+    # `refs/tags/v*` branch is unreachable — the workflow simply never runs on
+    # a tag, so a release publishes no image and nothing reports an error,
+    # because nothing ran.
+    tags: ["v*"]
   pull_request:
   workflow_dispatch:
   # Weekly, because the advisories move while the code does not. An archiver
