@@ -80,9 +80,7 @@ def _copy_to(settings: Settings, target: Path, *, skip: str | None = None) -> Pa
 # ── the listing ──────────────────────────────────────────────────────────
 
 
-def test_a_complete_copy_reads_as_complete(
-    db: Session, settings: Settings, tmp_path: Path
-) -> None:
+def test_a_complete_copy_reads_as_complete(db: Session, settings: Settings, tmp_path: Path) -> None:
     _archive(db, settings)
     root = _copy_to(settings, tmp_path / "backup")
 

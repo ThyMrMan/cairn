@@ -327,7 +327,7 @@ class JobSupervisor:
             if job_type == "move":
                 await self._run_move(running)
                 return
-            if job_type in ("export", "verify", "index", "purge", "import"):
+            if job_type in ("export", "verify", "index", "purge", "import", "thumbnail"):
                 await self._run_maintenance(running, job_type)
                 return
             # Before the capture, never during it: see _refresh_stale_profile.
@@ -718,6 +718,7 @@ class JobSupervisor:
             "index": self._execute_reindex,
             "purge": self._execute_retention,
             "import": self._execute_import,
+            "thumbnail": self._execute_thumbnails,
         }[job_type]
         result = await asyncio.to_thread(runner, job_id, say, step)
 
@@ -901,6 +902,68 @@ class JobSupervisor:
             say(f"{total} page(s) indexed.")
             return self._finish_job(
                 session, job, "ok", None, progress={"pages": total, "sites": len(targets)}
+            )
+
+    def _execute_thumbnails(self, job_id: int, say: Any, step: Any) -> dict[str, Any]:
+        """Photograph archives that were captured before this existed.
+
+        One browser for the lot rather than one per site would be faster, and
+        is not what this does: a page from a stranger's archive can hang a
+        renderer, and a shared browser makes one bad site the reason the other
+        hundred and ninety-nine have no picture. Each site is independent, and
+        one that cannot be photographed is counted and skipped — the same rule
+        the ArchiveBox import learned.
+        """
+        from cairn.services import sites as site_service
+        from cairn.services import thumbnail
+
+        with self._sessions() as session:
+            job = session.get(Job, job_id)
+            if job is None:  # pragma: no cover
+                return {"status": "failed", "error": "the job vanished"}
+            force = bool((job.spec or {}).get("force"))
+
+            # Both checked once, up front: they fail the same way for every
+            # site, and two hundred identical skip lines is a worse report than
+            # one sentence naming the thing that is not running.
+            from cairn.services import browser
+
+            for ok, why in (browser.availability(), thumbnail.replay_ready(self._settings)):
+                if not ok:
+                    return self._finish_job(session, job, "failed", why)
+
+            targets = list(
+                session.scalars(
+                    select(Site).where(
+                        Site.deleted_at.is_(None),
+                        *([Site.id == job.site_id] if job.site_id else []),
+                    )
+                ).all()
+            )
+            say(f"Looking at {len(targets)} site(s){' — retaking every one' if force else ''}.")
+
+            taken = skipped = 0
+            for n, site in enumerate(targets, start=1):
+                step(n, len(targets), site.title)
+                if not force and thumbnail.exists(self._settings, site.archive_path):
+                    skipped += 1
+                    continue
+                try:
+                    thumbnail.capture_site(
+                        self._settings,
+                        site_id=site.id,
+                        archive_path=site.archive_path,
+                        seeds=site_service.all_seeds(site),
+                    )
+                except thumbnail.ThumbnailError as exc:
+                    skipped += 1
+                    say(f"{site.title}: {exc}")
+                    continue
+                taken += 1
+
+            say(f"{taken} taken, {skipped} skipped.")
+            return self._finish_job(
+                session, job, "ok", None, progress={"taken": taken, "skipped": skipped}
             )
 
     def _execute_retention(self, job_id: int, say: Any, step: Any) -> dict[str, Any]:

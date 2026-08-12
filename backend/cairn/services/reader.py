@@ -228,9 +228,7 @@ def index_of(session: Session, site: Site, *, limit: int = 200, offset: int = 0)
         .offset(offset)
     )
     rows = session.execute(stmt).all()
-    total = (
-        session.scalar(select(func.count(PageText.id)).where(PageText.site_id == site.id)) or 0
-    )
+    total = session.scalar(select(func.count(PageText.id)).where(PageText.site_id == site.id)) or 0
     return {
         "pages": [
             {

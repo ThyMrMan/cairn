@@ -271,9 +271,7 @@ def test_seeds_round_trip_through_the_api(authed: TestClient) -> None:
     assert created.status_code == 201, created.text
     site_id = created.json()["id"]
 
-    added = authed.post(
-        f"/api/sites/{site_id}/seeds", json={"url": "old.example.net"}, headers=XHR
-    )
+    added = authed.post(f"/api/sites/{site_id}/seeds", json={"url": "old.example.net"}, headers=XHR)
     assert added.status_code == 201, added.text
     assert added.json()["seeds"] == [
         "https://span.example.com/",
@@ -287,9 +285,7 @@ def test_seeds_round_trip_through_the_api(authed: TestClient) -> None:
     scope = authed.get(f"/api/sites/{site_id}/scope", headers=XHR).json()
     assert scope["seeds"] == listed["seeds"]
 
-    removed = authed.delete(
-        f"/api/sites/{site_id}/seeds?url=https://old.example.net/", headers=XHR
-    )
+    removed = authed.delete(f"/api/sites/{site_id}/seeds?url=https://old.example.net/", headers=XHR)
     assert removed.status_code == 200, removed.text
     assert authed.get(f"/api/sites/{site_id}/seeds", headers=XHR).json()["seeds"] == [
         "https://span.example.com/"

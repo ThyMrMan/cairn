@@ -1,0 +1,41 @@
+# The runtime image plus the test tooling.
+#
+# Kept out of the main Dockerfile on purpose: with multi-stage builds `docker
+# build .` produces the *last* stage, so a dev stage appended to it would
+# quietly become the default image everybody ships.
+#
+# Built FROM the runtime image so the tests run against exactly the wget,
+# Chromium, pywb and library versions that ship — which is the whole reason to
+# test in the container rather than on a development machine. The end-to-end
+# suites need all three and skip when any is missing, so running them anywhere
+# else silently tests less than it appears to.
+#
+#   docker build -t cairn:latest .
+#   docker build -t cairn:dev -f docker/Dockerfile.dev .
+#   docker run --rm -v "$PWD:/app" -w /app cairn:dev pytest -q
+#
+# `pythonpath = ["backend"]` in pyproject.toml is what makes the mounted
+# working copy shadow the installed package, so edits take effect without a
+# rebuild.
+#
+# **Rebuild this whenever you rebuild cairn:latest.** `FROM` pins nothing: a
+# stale dev image keeps whatever tools the runtime image had on the day it was
+# built, and the suites skip rather than fail when a tool is missing. That is
+# not hypothetical — the media tests skipped silently for a whole session
+# against a dev image predating yt-dlp, reported as seven of "10 skipped" and
+# looking exactly like the container-engine opt-in.
+ARG BASE=cairn:latest
+FROM ${BASE}
+
+ENV PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1
+
+# Mirrors the `dev` extra in pyproject.toml. Named rather than installed with
+# `pip install -e ".[dev]"` because the runtime image has no source tree in it
+# and an editable install would rewrite the venv the image already built.
+RUN /opt/venv/bin/pip install --no-cache-dir \
+      "pytest>=8.3" "pytest-asyncio>=0.25" "ruff>=0.8" "mypy>=1.14" \
+      types-pyyaml types-jsonschema
+
+# The runtime image starts s6 and supervises the app. A test image must not.
+ENTRYPOINT []
+CMD ["/bin/sh"]

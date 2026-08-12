@@ -77,7 +77,7 @@ An asyncio task that owns the job lifecycle:
 2. Respect a global concurrency cap and a per-host cap (never run two captures against the same host simultaneously — a self-inflicted DoS is the fastest way to get blocked).
 3. Build a `job.json` spec and spawn the engine (`asyncio.create_subprocess_exec`, argv list, never `shell=True`).
 4. Read the engine's stdout line by line as NDJSON. Persist `log` events to the capture's log file, `url` events in batches to the `capture_urls` table, `progress` events to the job row (throttled to ~1 Hz), and fan every event out to SSE subscribers.
-5. On exit: run the post-processor chain (index, extract, checksum, symlink refresh), write `manifest.json`, mark terminal state.
+5. On exit: run the post-processor chain — checksums, stats, the replay index, text extraction, the asset audit, the site thumbnail and any embedded media — write `manifest.json`, mark terminal state. The full list, its order and which steps are required is in [05](05-capture-engines.md#post-processors).
 6. On cancellation: `SIGTERM`, grace period, `SIGKILL`. Partial WARCs are still indexed and kept — a partial archive beats no archive.
 
 **Crash recovery.** On startup, any job in `running` is marked `interrupted` (the process that owned it is gone) with a resume offer. Engines should treat a resume as "re-crawl, dedup against the existing CDX," not "continue mid-stream."

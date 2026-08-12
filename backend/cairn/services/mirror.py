@@ -130,9 +130,7 @@ def survey(session: Session, settings: Settings, root: Path) -> Survey:
     known_paths = {site.archive_path for site in sites}
 
     for site in sites:
-        coverage = SiteCoverage(
-            site_id=site.id, title=site.title, archive_path=site.archive_path
-        )
+        coverage = SiteCoverage(site_id=site.id, title=site.title, archive_path=site.archive_path)
         captures = session.scalars(
             select(Capture)
             .where(Capture.site_id == site.id, Capture.status.in_(("ok", "partial")))
@@ -161,8 +159,9 @@ def survey(session: Session, settings: Settings, root: Path) -> Survey:
         result.present += coverage.present
         result.sites.append(coverage)
 
-    result.unknown_dirs = _unknown(root / settings.archives_dir.relative_to(settings.data_dir),
-                                   known_paths)
+    result.unknown_dirs = _unknown(
+        root / settings.archives_dir.relative_to(settings.data_dir), known_paths
+    )
     return result
 
 

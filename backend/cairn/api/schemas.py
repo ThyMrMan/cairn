@@ -367,6 +367,9 @@ class SiteSummary(BaseModel):
     last_capture_at: datetime | None
     created_at: datetime
     updated_at: datetime
+    # A stat, not a column: the image is derived data on disk, and a boolean
+    # the database owned could outlive the file it describes.
+    has_thumbnail: bool = False
 
 
 class SiteDetail(SiteSummary):
@@ -706,6 +709,10 @@ class SearchStatus(BaseModel):
 
 
 # ── exports ──────────────────────────────────────────────────────────────
+
+
+class ThumbnailSettings(BaseModel):
+    enabled: bool
 
 
 class ExportEntry(BaseModel):

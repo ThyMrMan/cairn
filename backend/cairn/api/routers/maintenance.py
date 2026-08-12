@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, Query, Request, status
 
 from cairn.api.deps import AppSettings, ClientIp, Csrf, CurrentUser, DbSession
 from cairn.api.errors import ApiError
-from cairn.api.schemas import JobAccepted, Ok, TrashEntry
+from cairn.api.schemas import JobAccepted, Ok, ThumbnailSettings, TrashEntry
 from cairn.db.models import Folder
 from cairn.services import audit, replay, symlinks, trash
 
@@ -125,6 +125,58 @@ def verify_archive(
     return JobAccepted(job_id=job.id)
 
 
+@router.get("/thumbnails/settings", response_model=ThumbnailSettings)
+def thumbnail_settings(db: DbSession, _user: CurrentUser) -> ThumbnailSettings:
+    from cairn.services import thumbnail
+
+    return ThumbnailSettings(enabled=thumbnail.enabled(db))
+
+
+@router.put("/thumbnails/settings", response_model=ThumbnailSettings)
+def put_thumbnail_settings(
+    body: ThumbnailSettings, db: DbSession, _user: CurrentUser
+) -> ThumbnailSettings:
+    from cairn.services import settings_store, thumbnail
+
+    settings_store.put(db, thumbnail.ENABLED_SETTING, body.enabled)
+    db.commit()
+    return body
+
+
+@router.post(
+    "/maintenance/thumbnails", response_model=JobAccepted, status_code=status.HTTP_202_ACCEPTED
+)
+def rebuild_thumbnails(
+    db: DbSession,
+    user: CurrentUser,
+    ip: ClientIp,
+    supervisor: Annotated[Any, Depends(_supervisor)],
+    site_id: Annotated[int | None, Query()] = None,
+    force: Annotated[bool, Query()] = False,
+) -> JobAccepted:
+    """Photograph archives captured before there was anything to photograph with.
+
+    A job because each site is a browser page load: fine for one, minutes for
+    two hundred. `force` re-takes pictures that already exist, which is what
+    you want after changing nothing about the archive and everything about the
+    replay — a pywb upgrade, say.
+    """
+    job = supervisor.enqueue(
+        db, job_type="thumbnail", site_id=site_id, spec={"force": force}, priority=250
+    )
+    audit.record(
+        db,
+        "maintenance.thumbnails",
+        actor=user.username,
+        target=str(site_id) if site_id else "all sites",
+        ip=ip,
+        detail={"job_id": job.id, "force": force},
+    )
+    db.commit()
+    supervisor.notify()
+    return JobAccepted(job_id=job.id)
+
+
 # ── the copy ─────────────────────────────────────────────────────────────
 #
 # Making the copy is rsync's job, or restic's. Knowing the copy is good is
@@ -149,9 +201,7 @@ def survey_mirror(
     return mirror.survey(db, settings, root).to_dict()
 
 
-@router.post(
-    "/mirror/verify", response_model=JobAccepted, status_code=status.HTTP_202_ACCEPTED
-)
+@router.post("/mirror/verify", response_model=JobAccepted, status_code=status.HTTP_202_ACCEPTED)
 def verify_mirror(
     db: DbSession,
     settings: AppSettings,
@@ -181,9 +231,7 @@ def verify_mirror(
         spec={"deep": deep, "root": str(root)},
         priority=200,
     )
-    audit.record(
-        db, "maintenance.verify-mirror", actor=user.username, target=str(root), ip=ip
-    )
+    audit.record(db, "maintenance.verify-mirror", actor=user.username, target=str(root), ip=ip)
     db.commit()
     supervisor.notify()
     return JobAccepted(job_id=job.id)

@@ -170,9 +170,7 @@ def test_a_note_survives_the_block_moving(db: Session, settings: Settings) -> No
     assert found.block_index == 3
 
 
-def test_whitespace_from_a_browser_selection_still_matches(
-    db: Session, settings: Settings
-) -> None:
+def test_whitespace_from_a_browser_selection_still_matches(db: Session, settings: Settings) -> None:
     """A DOM selection carries newlines the rendered text does not."""
     site = _readable(db, settings)
     row = annotation_service.create(

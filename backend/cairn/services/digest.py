@@ -138,13 +138,11 @@ def build(
     until = now or utcnow()
     digest = Digest(since=since, until=until)
 
-    digest.sites = (
-        session.scalar(select(func.count(Site.id)).where(Site.deleted_at.is_(None))) or 0
-    )
+    digest.sites = session.scalar(select(func.count(Site.id)).where(Site.deleted_at.is_(None))) or 0
     digest.total_bytes = (
-        session.scalar(select(func.coalesce(func.sum(Site.size_bytes), 0)).where(
-            Site.deleted_at.is_(None)
-        ))
+        session.scalar(
+            select(func.coalesce(func.sum(Site.size_bytes), 0)).where(Site.deleted_at.is_(None))
+        )
         or 0
     )
     if previous_total is not None:

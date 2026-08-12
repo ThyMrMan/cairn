@@ -5,6 +5,12 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  # Weekly, because the advisories move while the code does not. An archiver
+  # that nobody has committed to in three months still gains vulnerabilities in
+  # pywb's and Chromium's dependency trees, and a scan that only runs on push
+  # is a scan that never runs on the repository this most applies to.
+  schedule:
+    - cron: "17 5 * * 1"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -125,6 +131,30 @@ jobs:
           docker logs cairn-ci
           exit 1
 
+      # The image is the largest part of the attack surface and the part
+      # nothing else here looks at: pywb and Chromium bring a Debian userland
+      # with them. Scanned from the official container rather than through a
+      # third-party action, so this file keeps depending only on actions
+      # GitHub publishes.
+      - name: Vulnerabilities in the image
+        continue-on-error: true
+        run: |
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$HOME/.cache/trivy:/root/.cache/trivy" \
+            aquasec/trivy:latest image \
+              --scanners vuln \
+              --severity HIGH,CRITICAL \
+              --ignore-unfixed \
+              --format table \
+              cairn:ci | tee trivy.txt
+          {
+            echo "### Image advisories (HIGH/CRITICAL, fixed upstream)"
+            echo '```'
+            tail -c 60000 trivy.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Logs
         if: always()
         run: docker logs cairn-ci || true
@@ -132,3 +162,55 @@ jobs:
       - name: Clean up
         if: always()
         run: docker rm -f cairn-ci || true
+
+  # ── advisories ───────────────────────────────────────────────────────────
+  #
+  # Reported, never blocking, and that is a decision rather than laziness.
+  # The image deliberately pins setuptools below 81 because pywb still imports
+  # `pkg_resources`, which was removed there — and pywb in turn requires
+  # Werkzeug 2.2.3 exactly. "Upgrade until the scanner is quiet" is not always
+  # a move that exists here, and a gate that cannot be satisfied is one that
+  # gets switched off, after which nothing is scanned at all. The findings go
+  # to the run summary, where a human decides between a version bump, a
+  # workaround, and living with it. See docs/11.
+  audit:
+    name: Dependencies (advisories only)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install
+        run: |
+          pip install -e ".[dev]"
+          pip install pip-audit
+
+      - name: Python advisories
+        continue-on-error: true
+        run: |
+          {
+            echo "### Python packages"
+            pip-audit --desc on --format markdown || echo "_pip-audit reported findings._"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Frontend advisories
+        continue-on-error: true
+        working-directory: frontend
+        run: |
+          npm ci || npm install
+          {
+            echo "### npm packages"
+            echo '```'
+            npm audit --audit-level=high || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

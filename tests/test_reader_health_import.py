@@ -284,9 +284,7 @@ def test_a_recovery_clears_the_pending_state(db: Session, settings: Settings) ->
     assert row.consecutive == 0
 
 
-def test_the_first_check_of_a_dead_site_announces_nothing(
-    db: Session, settings: Settings
-) -> None:
+def test_the_first_check_of_a_dead_site_announces_nothing(db: Session, settings: Settings) -> None:
     """It was archived precisely because it was disappearing."""
     site = site_service.create_site(db, settings, seed_url="https://already.example.com/")
     changed = sitehealth.record(db, site, sitehealth.Probe(state=sitehealth.GONE, http_status=404))
@@ -328,9 +326,7 @@ def test_the_summary_leads_with_what_is_gone(db: Session, settings: Settings) ->
     now = utcnow()
     gone = site_service.create_site(db, settings, seed_url="https://gone.example.com/")
     blocked = site_service.create_site(db, settings, seed_url="https://blocked.example.com/")
-    db.add(
-        SiteHealth(site_id=blocked.id, state=sitehealth.BLOCKED, checked_at=now, since=now)
-    )
+    db.add(SiteHealth(site_id=blocked.id, state=sitehealth.BLOCKED, checked_at=now, since=now))
     db.add(SiteHealth(site_id=gone.id, state=sitehealth.GONE, checked_at=now, since=now))
     db.flush()
 
@@ -349,9 +345,7 @@ def test_health_reaches_the_digest_but_only_when_it_matters(
     gone = site_service.create_site(db, settings, seed_url="https://vanished.example.com/")
     flaky = site_service.create_site(db, settings, seed_url="https://offline.example.com/")
     db.add(SiteHealth(site_id=gone.id, state=sitehealth.GONE, checked_at=now, since=now))
-    db.add(
-        SiteHealth(site_id=flaky.id, state=sitehealth.UNREACHABLE, checked_at=now, since=now)
-    )
+    db.add(SiteHealth(site_id=flaky.id, state=sitehealth.UNREACHABLE, checked_at=now, since=now))
     db.flush()
 
     report = digest_service.build(db, settings, since=now - timedelta(days=7), now=now)
@@ -417,15 +411,11 @@ def test_pages_on_two_hosts_of_one_domain_are_one_site_and_both_in_scope(
 
 def test_two_blogspot_subdomains_are_two_sites(db: Session, settings: Settings) -> None:
     """The PSL's private section, doing the job it does for the domain picker."""
-    plan = bulkurls.survey(
-        db, "https://alice.blogspot.com/a\nhttps://bob.blogspot.com/b\n"
-    )
+    plan = bulkurls.survey(db, "https://alice.blogspot.com/a\nhttps://bob.blogspot.com/b\n")
     assert {g.key for g in plan.groups} == {"alice.blogspot.com", "bob.blogspot.com"}
 
 
-def test_an_existing_site_is_reused_rather_than_duplicated(
-    db: Session, settings: Settings
-) -> None:
+def test_an_existing_site_is_reused_rather_than_duplicated(db: Session, settings: Settings) -> None:
     existing = site_service.create_site(db, settings, seed_url="https://known.example.com/")
     plan = bulkurls.survey(db, "https://www.known.example.com/a-post")
     assert plan.groups[0].site_id == existing.id
@@ -475,9 +465,7 @@ def test_importing_a_list_archives_the_pages_and_does_not_crawl(
 
 def test_asking_for_a_crawl_gets_one(db: Session, settings: Settings) -> None:
     supervisor = _FakeSupervisor()
-    bulkurls.import_urls(
-        db, settings, "https://c.example.com/1", supervisor=supervisor, crawl=True
-    )
+    bulkurls.import_urls(db, settings, "https://c.example.com/1", supervisor=supervisor, crawl=True)
     spec = supervisor.specs[0]["spec"]
     assert spec["only_extra_seeds"] is False  # type: ignore[index]
     assert spec["kind"] == "full"  # type: ignore[index]

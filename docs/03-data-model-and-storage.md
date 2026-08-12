@@ -39,7 +39,7 @@
             site.cdxj                 # merged across all captures — what pywb reads
           derived/
             text/                     # <capture>.jsonl — extracted text for search
-            screenshots/
+            screenshots/              # home.jpg + home.json — the site card's thumbnail
             media/                 # <capture>/ — embedded video, if the site opts in
           exports/
             example-blog-2026-08.wacz

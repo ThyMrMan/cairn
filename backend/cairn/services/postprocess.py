@@ -215,6 +215,51 @@ def step_text_extract(ctx: Context) -> None:
     ctx.stats["text_boilerplate_blocks"] = result.dropped_blocks
 
 
+def step_thumbnail(ctx: Context) -> None:
+    """Photograph the archived front page for the site card.
+
+    Two conditions, and the second is the one that matters. A picture is taken
+    when there is none yet, or when the newest archived version of the page it
+    would show came from *this* capture. An incremental capture of one new post
+    has not changed what the front page looks like, so re-photographing it
+    would start a browser after every feed poll to produce the same image.
+
+    Silent when it cannot run. Unlike the media step — which somebody switched
+    on for this site and deserves to hear about — a thumbnail is decoration,
+    and an install whose replay sidecar is not running would otherwise carry a
+    warning on every capture of every site, teaching the reader to skip the
+    warnings that mean something. The reason is recorded in the manifest.
+    """
+    from cairn.services import sites as site_service
+    from cairn.services import thumbnail
+
+    if not thumbnail.enabled(ctx.session):
+        return
+
+    seeds = site_service.all_seeds(ctx.site)
+    record = thumbnail.subject(ctx.settings, ctx.site.archive_path, seeds)
+    if record is None:
+        return
+    if not thumbnail.is_from_capture(record, ctx.capture.dir_name) and thumbnail.exists(
+        ctx.settings, ctx.site.archive_path
+    ):
+        return
+
+    try:
+        shot = thumbnail.capture_site(
+            ctx.settings,
+            site_id=ctx.site.id,
+            archive_path=ctx.site.archive_path,
+            seeds=seeds,
+            record=record,
+        )
+    except thumbnail.ThumbnailError as exc:
+        ctx.stats["thumbnail_skipped"] = str(exc)
+        log.info("no thumbnail for this capture", extra={"site": ctx.site.id, "why": str(exc)})
+        return
+    ctx.stats["thumbnail"] = shot.to_dict()
+
+
 def step_media(ctx: Context) -> None:
     """Fetch the video an archived post embedded, if this site asked for it.
 
@@ -587,6 +632,10 @@ CHAIN: list[Step] = [
     Step("cdxj-index", 40, False, step_cdxj_index),
     Step("text-extract", 50, False, step_text_extract),
     Step("asset-audit", 60, False, step_asset_audit),
+    # Before media rather than beside it, which is where docs/05 first put it:
+    # media downloads video and can run for an hour, and the card should not
+    # wait behind that for a picture that takes a second.
+    Step("screenshot", 65, False, step_thumbnail),
     # Last, and never required: it reaches hosts outside the site's scope and
     # can take longer than the crawl did.
     Step("media", 70, False, step_media),

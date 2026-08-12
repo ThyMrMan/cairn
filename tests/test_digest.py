@@ -102,9 +102,7 @@ def test_a_failed_job_is_named_not_merely_counted(db: Session, settings: Setting
 # ── what quietly did not ─────────────────────────────────────────────────
 
 
-def test_a_site_nobody_has_captured_in_months_is_reported(
-    db: Session, settings: Settings
-) -> None:
+def test_a_site_nobody_has_captured_in_months_is_reported(db: Session, settings: Settings) -> None:
     now = utcnow()
     _site(db, settings, "recent", last_capture_at=now - timedelta(days=2))
     _site(db, settings, "forgotten", last_capture_at=now - timedelta(days=120))
@@ -115,9 +113,7 @@ def test_a_site_nobody_has_captured_in_months_is_reported(
     assert report.has_problems
 
 
-def test_a_feed_that_polls_and_returns_nothing_is_reported(
-    db: Session, settings: Settings
-) -> None:
+def test_a_feed_that_polls_and_returns_nothing_is_reported(db: Session, settings: Settings) -> None:
     """The failure mode with no failure.
 
     The fetch succeeds, the parse succeeds, and there are simply no entries —
@@ -191,9 +187,7 @@ def test_credentials_about_to_expire_are_mentioned(db: Session, settings: Settin
 # ── growth and rendering ─────────────────────────────────────────────────
 
 
-def test_growth_is_the_difference_between_two_readings(
-    db: Session, settings: Settings
-) -> None:
+def test_growth_is_the_difference_between_two_readings(db: Session, settings: Settings) -> None:
     """Not a sum over captures.
 
     Summing captures would count everything that arrived and nothing that
@@ -202,7 +196,10 @@ def test_growth_is_the_difference_between_two_readings(
     """
     _site(db, settings, "grower", size_bytes=5_000_000_000)
     report = digest_service.build(
-        db, settings, previous_total=3_000_000_000, **_window()  # type: ignore[arg-type]
+        db,
+        settings,
+        previous_total=3_000_000_000,
+        **_window(),  # type: ignore[arg-type]
     )
     assert report.total_bytes == 5_000_000_000
     assert report.growth_bytes == 2_000_000_000

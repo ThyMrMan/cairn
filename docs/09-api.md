@@ -273,6 +273,10 @@ The interactive session is a **CDP screencast over a WebSocket**, not the `vnc_u
 | `POST` | `/api/maintenance/verify` | `?site_id=&deep=` → `202 {job_id}`. `deep` also parses every WARC |
 | `GET` | `/api/maintenance/integrity` | Archive health: verified count, oldest unverified capture, last report |
 | `POST` | `/api/maintenance/reindex-search` | `?site_id=&extract=` → `202 {job_id}` |
+| `GET` | `/api/sites/{id}/thumbnail` | The site card's picture of the archived front page, or 404. `image/jpeg`, `nosniff`, ETag |
+| `GET` | `/api/thumbnails/settings` | `{enabled}` — whether a capture takes one |
+| `PUT` | `/api/thumbnails/settings` | `{enabled}` |
+| `POST` | `/api/maintenance/thumbnails` | `?site_id=&force=` → `202 {job_id}`. Backfills sites captured before thumbnails existed |
 | `GET` | `/api/search` | `?q=&site_id=&folder=&tag=&limit=&offset=` → ranked hits with snippets |
 | `GET` | `/api/search/status` | `{pages, words, sites, unindexed_sites}` |
 | `GET` | `/api/sites/{id}/exports` | The site's `.wacz` files, from the directory |

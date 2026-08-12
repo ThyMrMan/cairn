@@ -47,6 +47,10 @@ export default function Sites() {
 
   const items = sites.data?.items ?? [];
   const filtered = Object.keys(filter).length > 0;
+  // Space is reserved for a picture only once some site on this page has one,
+  // so an archive captured before thumbnails existed keeps the rows it had
+  // rather than growing a column of empty boxes.
+  const anyThumbnails = items.some((site) => site.has_thumbnail);
 
   return (
     <div className="space-y-5">
@@ -120,6 +124,31 @@ export default function Sites() {
                   onChange={() => toggle(site.id)}
                   aria-label={`Select ${site.title}`}
                 />
+                {anyThumbnails && (
+                  // Not a link: the title beside it already goes to the site,
+                  // and a second focusable copy of the same destination is one
+                  // more tab stop between the checkbox and anything useful.
+                  <div className="shrink-0 overflow-hidden rounded border border-border bg-raised">
+                    {site.has_thumbnail ? (
+                      <img
+                        src={endpoints.thumbnailUrl(site.id)}
+                        alt=""
+                        width={80}
+                        height={50}
+                        loading="lazy"
+                        className="h-[50px] w-20 object-cover object-top"
+                        // The row was laid out before the request was made, so
+                        // a picture deleted since the list was fetched must
+                        // leave the space rather than a broken-image icon.
+                        onError={(event) => {
+                          event.currentTarget.style.visibility = "hidden";
+                        }}
+                      />
+                    ) : (
+                      <span className="block h-[50px] w-20" />
+                    )}
+                  </div>
+                )}
                 <Link to={`/sites/${site.id}`} className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="truncate font-medium">{site.title}</span>

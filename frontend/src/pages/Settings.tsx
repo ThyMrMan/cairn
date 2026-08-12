@@ -18,6 +18,7 @@ export default function Settings() {
       <ScheduleSection />
       <NotificationsSection />
       <IntegritySection />
+      <ThumbnailSection />
       <StorageSection />
       <MirrorSection />
       <BookmarkletSection />
@@ -438,6 +439,67 @@ function MetricsSection() {
           )}
         </div>
       )}
+    </Section>
+  );
+}
+
+function ThumbnailSection() {
+  const client = useQueryClient();
+  const config = useQuery({ queryKey: ["thumbnail-settings"], queryFn: endpoints.thumbnailSettings });
+  const save = useMutation({
+    mutationFn: (enabled: boolean) => endpoints.putThumbnailSettings({ enabled }),
+    onSuccess: (data) => client.setQueryData(["thumbnail-settings"], data),
+  });
+  const [queued, setQueued] = useState<string | null>(null);
+  const run = useMutation({
+    mutationFn: (force: boolean) => endpoints.rebuildThumbnails({ force }),
+    onSuccess: (result, force) => {
+      setQueued(
+        `Queued as job #${result.job_id}. It loads one archived page per site${
+          force ? ", including the ones that already have a picture" : ""
+        }, so watch it on the Jobs page.`,
+      );
+      void client.invalidateQueries({ queryKey: ["jobs"] });
+    },
+  });
+
+  return (
+    <Section
+      title="Site thumbnails"
+      description="A picture of each site's archived front page, taken through replay rather than off the live web — so it shows what is in the archive, not what the domain serves today."
+    >
+      <label className="flex items-center gap-2 text-sm">
+        <input
+          type="checkbox"
+          checked={Boolean(config.data?.enabled)}
+          onChange={(e) => save.mutate(e.target.checked)}
+        />
+        Take one after each capture
+      </label>
+      <p className="mt-2 text-xs text-muted">
+        Only when that capture changed the page it would show, so an incremental capture of one
+        new post does not start a browser. Needs replay to be running.
+      </p>
+      <div className="mt-4 flex flex-wrap gap-2">
+        <button
+          className="btn-ghost text-xs"
+          onClick={() => run.mutate(false)}
+          disabled={run.isPending}
+        >
+          {run.isPending && <Spinner />}
+          Take the missing ones
+        </button>
+        <button
+          className="btn-ghost text-xs"
+          onClick={() => run.mutate(true)}
+          disabled={run.isPending}
+        >
+          Retake every one
+        </button>
+      </div>
+      {queued && <p className="mt-2 text-xs text-muted">{queued}</p>}
+      {run.error && <p className="mt-2 text-xs text-danger">{(run.error as ApiError).message}</p>}
+      {save.error && <p className="mt-2 text-xs text-danger">{(save.error as ApiError).message}</p>}
     </Section>
   );
 }

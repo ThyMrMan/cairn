@@ -142,6 +142,18 @@ class Settings(BaseSettings):
             return self.replay_public_url.rstrip("/")
         return ""
 
+    @property
+    def replay_internal_origin(self) -> str:
+        """Where *this container* reaches pywb, whatever a browser is told.
+
+        Deliberately not `replay_origin_for`: that answers "what should the
+        viewer's browser ask for", which behind a reverse proxy is a hostname
+        that resolves outside and may not resolve in here at all. The site
+        thumbnail runs Chromium inside the container against the sidecar next
+        to it, so it wants the loopback address and the real port.
+        """
+        return f"http://127.0.0.1:{self.replay_port}"
+
     def replay_origin_for(self, scheme: str, hostname: str | None) -> str:
         """The origin a browser at `scheme://hostname` should use for replay.
 

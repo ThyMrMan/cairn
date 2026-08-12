@@ -279,9 +279,7 @@ def add_seed(session: Session, settings: Settings, site: Site, raw: str) -> str:
     if len(existing) >= MAX_SEEDS_PER_SITE:
         raise SiteError(f"A site can have at most {MAX_SEEDS_PER_SITE} seeds.")
 
-    other = session.scalar(
-        visible().where(Site.id != site.id, Site.seed_url == seed).limit(1)
-    )
+    other = session.scalar(visible().where(Site.id != site.id, Site.seed_url == seed).limit(1))
     if other is not None:
         raise SiteError(
             f"{seed} is already the seed of {other.title!r}. Two sites archiving the same "

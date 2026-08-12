@@ -287,6 +287,7 @@ async def context(
     user_agent: str | None = None,
     viewport: dict[str, int] | None = None,
     storage_state: Any = None,
+    device_scale_factor: float | None = None,
 ) -> AsyncIterator[Any]:
     """A fresh context with the restrictions docs/06 asks for.
 
@@ -297,10 +298,15 @@ async def context(
     The profile's own user agent wins when it has one — docs/06 is explicit
     that some bypasses bind the cookie to it, so a mint that quietly used a
     different one would produce a jar that fails in the crawl.
+
+    `device_scale_factor` below 1 renders at less than CSS resolution, which is
+    how the site thumbnail gets a card-sized image out of a full-sized viewport
+    without an imaging library anywhere in the dependency tree.
     """
     created = await browser.new_context(
         user_agent=user_agent or await presentable_user_agent(browser),
         viewport=viewport or DEFAULT_VIEWPORT,
+        device_scale_factor=device_scale_factor,
         storage_state=storage_state,
         # A userscript that triggers a download would otherwise write into the
         # container. Nothing here wants files, only cookies.

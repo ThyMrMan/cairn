@@ -423,14 +423,25 @@ Built-in chain (✅ = shipped):
 | 50 | `symlink-tree` | Refresh `/data/by-tag` (debounced) | | M4 |
 | 60 | `asset-audit` | Report referenced-but-uncaptured assets and lazy-load hints | | ✅ |
 | 50 | `text-extract` | Extract readable text into `derived/text/` and index it for search | | ✅ |
+| 65 | `screenshot` | Thumbnail of the archived front page, for the site card | | ✅ |
 | 70 | `media` | `yt-dlp` the video an archived post embedded, per-site opt-in | | ✅ |
-| 70 | `screenshot` | Homepage thumbnail for the site card (needs browser) | | ✗ |
 | 80 | `wacz-export` | ~~Package as `.wacz` if the site opts in~~ — an export job, not a step. See below | | ✗ |
 | 90 | `notify` | ntfy / Apprise / webhook on completion or failure | | M6 |
 
 **The shipped chain runs in-process, not as subprocesses.** The manifest, the ordering and the required/optional distinction are all real; the isolation is not, because the built-ins need none and a subprocess contract nobody has written a second implementation of is a contract that will turn out to be wrong. It becomes a real addon boundary in M7, alongside the engine SDK, for the same reason engines got the seam first ([D3](00-decisions.md#d3--wget-for-v1-behind-an-engine-interface-from-day-one)).
 
 **`wacz-export` is not a post-processor and should not be.** A WACZ is a whole-site package, so running it per capture would repackage every WARC the site has after every incremental capture of a few hundred kilobytes — the cost grows with the archive while the new content does not. It is an on-demand job instead (`POST /api/sites/{id}/export/wacz`).
+
+**`screenshot` photographs the replay, not the live site, and that is the whole design.** This table originally said "homepage thumbnail", and the one-line implementation of that — point Chromium at `site.seed_url` — produces a card that lies about exactly the archives worth having: a blog that has closed shows whatever the parked domain serves today, and a blog behind a content warning shows the content warning. Site health monitoring exists because the original goes away; a picture claiming otherwise would contradict it on the same screen. So the shot is taken through the pywb next door, and it is a picture of what is in the WARC.
+
+Four things came out of measuring that against the pinned 2.9.1:
+
+- **`mp_` does not survive a browser.** It returns the bare content to `urllib`, which is what the M3 replay test has always relied on — but a browser loading the same URL at the top level ends up at the *framed* one, because replayed pages carry a frame check that puts the banner back.
+- **A screenshot of the framed URL is a photograph of pywb**, whose banner is the top 90 px of an 800 px viewport. The page is therefore loaded inside *our own* iframe on a blank page: the frame check sees a framed page and leaves it alone, and the archived page gets the whole viewport.
+- **A URL not in the index renders pywb's "URL Not Found"**, so the CDXJ is asked for a 2xx HTML record before a browser is started. No record, no picture — which is the correct outcome for a capture that was turned away at the door.
+- **Nothing reaches the live web.** A fixture page that builds an image URL at runtime, on a host that was never archived, made zero requests to it: wombat.js rewrites even that. Requests off the replay origin are refused anyway, because this runs unattended after every capture and "wombat rewrote everything we thought to test" is a weaker guarantee than not letting the request out.
+
+It sits at 65 rather than beside `media` at 70, where this table first put it: media downloads video and can run for an hour, and the card should not wait behind that for a picture that takes a second. It is skipped unless this capture changed the page it would show, so an incremental capture of one new post does not start a browser; and its failures go to the manifest rather than to the capture's warnings, because a thumbnail is decoration and a warning on every capture of every site is how a warning list stops being read. The image is a 640×400 JPEG — a 1280×800 viewport at `device_scale_factor` 0.5, which is what keeps an imaging library out of the dependency tree.
 
 **`media` is last and never required.** It reaches hosts outside the site's scope — that is what an embed is — and can take longer than the crawl did, so it is off unless a site asks for it and bounded per item, per capture and by count. Its URLs come out of archived HTML rather than from anything the user typed, which makes them the one genuinely attacker-controlled fetch target here, so they are checked against the private ranges docs/11 lists before anything connects.
 

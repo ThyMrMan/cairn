@@ -317,6 +317,7 @@ export type Site = {
   last_capture_at: string | null;
   created_at: string;
   updated_at: string;
+  has_thumbnail: boolean;
 };
 
 export type SiteDetail = Site & {
@@ -1082,6 +1083,15 @@ export const endpoints = {
   verifyArchive: (params: { site_id?: number; deep?: boolean } = {}) =>
     api.post<JobAccepted>(`/maintenance/verify${query(params as never)}`),
   integrity: () => api.get<IntegrityHealth>("/maintenance/integrity"),
+  rebuildThumbnails: (params: { site_id?: number; force?: boolean } = {}) =>
+    api.post<JobAccepted>(`/maintenance/thumbnails${query(params as never)}`),
+  thumbnailSettings: () => api.get<{ enabled: boolean }>("/thumbnails/settings"),
+  putThumbnailSettings: (body: { enabled: boolean }) =>
+    api.put<{ enabled: boolean }>("/thumbnails/settings", body),
+  // Not fetched through `api` — it goes in an <img src>, which carries the
+  // session cookie itself and cannot carry the CSRF header the JSON client
+  // adds. Safe because it is a GET that changes nothing.
+  thumbnailUrl: (siteId: number) => `/api/sites/${siteId}/thumbnail`,
 
   // ── search ─────────────────────────────────────────────────────────────
   search: (params: {

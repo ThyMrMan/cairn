@@ -16,7 +16,7 @@ Not a milestone; a go/no-go. Purely command-line, no code written that you keep.
 4. Index it with `cdxj-indexer`, serve with `pywb`, and browse it.
 5. Confirm `wget --version` includes `+pcre` on your intended base image.
 
-**Go/no-go:** if the cookie approach doesn't get past the interstitial, the answer is the browser-based path ([06 mode 3](06-access-profiles.md#mode-3--interactive-m5)) and M5 moves to the front. Better to learn that in an afternoon than in month three.
+**Go/no-go:** if the cookie approach doesn't get past the interstitial, the answer is the browser-based path ([06 mode 3](06-access-profiles.md#mode-3--interactive)) and M5 moves to the front. Better to learn that in an afternoon than in month three.
 
 Also worth doing: run `--warc-dedup` against a second capture and verify you get revisit records. Incremental feed capture ([08](08-feeds-and-scheduling.md#incremental-captures)) depends on it.
 
@@ -152,7 +152,7 @@ Also worth doing: run `--warc-dedup` against a second capture and verify you get
 
 **A sixth, found after shipping, from a field report.** A tagged site appeared under `by-tag` as a 0 KB *file* rather than a folder. Symlinks carry a type — file or directory — decided when they are created and inferred from the target, and `create_site` rebuilt the tag tree *before* it created the site directory. Linux resolves by path at every access, so nothing in 366 tests or on any Linux box could see it; a Windows-backed filesystem bakes the type in and shows a file forever. Worse, the rebuild could not repair it: `_link` left alone any link whose text already matched, and the text was never the part that was wrong. Both halves are fixed and both are now pinned by tests, one of which fails on Linux if the ordering is reintroduced.
 
-**Left out on purpose:** thumbnails, which this list also asked for. They need a screenshot, which needs a browser, which arrives in M5. Site cards carry tags, size, URL count, last capture and status instead of a picture that would have to be a placeholder.
+**Left out on purpose:** thumbnails, which this list also asked for. They need a screenshot, which needs a browser, which arrives in M5. Site cards carry tags, size, URL count, last capture and status instead of a picture that would have to be a placeholder. *(Built in the pass below. The browser arrived in M5 and nobody came back for this until it was the last unbuilt item in the plan.)*
 
 **One thing to know:** the retention sweep runs at boot and on demand, not on a timer — there is no scheduler until M6. The window is a floor on how long a deleted archive is kept, never a promise about when it goes.
 
@@ -392,6 +392,31 @@ Also worth doing: run `--warc-dedup` against a second capture and verify you get
 
 1. **Storage tiering does not fit, and the probe said so before any of it was written.** Replay serves a WARC through a symlink perfectly — measured, identical to the control. But `storage.resolve_within` resolves symlinks before checking containment, deliberately (docs/05), so integrity verification, WACZ export and text extraction all refuse a file replay is happy with; making them accept it means removing the control that keeps an engine inside the archive tree. And a tier that can go away answers 503 with no explanation, because fetching on demand would need us in front of pywb, which docs/07 forbids. Satisfying the containment rule leaves the tier inside each site's own directory — a move within one tree, which usually moves nothing. On Unraid the share's cache setting already does this transparently, with no index to keep in step.
 2. **Making a copy is rsync's job; knowing the copy is good is ours.** WARCs are immutable, so a copy is append-only — precisely what rsync, restic and rclone are built for. What none of them can say is that every capture this instance knows about is present, or that each file still hashes to what was recorded when it was written. That is in `manifest.json` and the integrity verifier, and it is the same walk against a different root and the same database.
+
+---
+
+## After M8 — the picture on the card, and the scanners ✅
+
+**Ships:** the last unbuilt item in the plan, and the one operational control docs/11 asked for and nothing implemented.
+
+- [x] Site thumbnails — the `screenshot` post-processor ([05](05-capture-engines.md#post-processors))
+- [x] Dependency scanning in CI ([11](11-security.md#operational))
+
+**Done when:** a site card shows what its archive looks like rather than a row of numbers, and a vulnerable dependency is reported without anybody going to look. *Asserted in `test_thumbnail.py`, whose end-to-end case captures a fixture site, **switches the fixture off**, and only then takes the picture — which is the state every archived site eventually reaches and the one where a thumbnail of the live web starts lying.*
+
+**Three corrections from building them:**
+
+1. **The obvious thumbnail photographs the wrong thing.** "Homepage thumbnail for the site card" reads as one line: point the browser at the seed URL. That gives the archive of a closed blog a picture of a parked domain, and the archive of a gated blog a picture of the content warning — on the same screen as the site-health panel reporting that the original is gone. The picture is taken through replay instead, so it shows what is in the WARC. Everything else followed from that: `mp_` returns bare content to `urllib` but a browser loading it at the top level is bounced to the framed URL by the page's own frame check; the framed URL is 90 px of pywb banner; and a URL not in the index renders pywb's "URL Not Found", so our own CDXJ is asked for a 2xx HTML record before Chromium is started.
+2. **The condition matters more than the screenshot.** Taking one after every capture means a browser launch per feed poll, forever, to reproduce an identical image — the front page did not change because one post was added. A picture is taken when the newest archived version of the page it would show came from *this* capture, or when there is none yet. The second clause is what lets a site captured years ago get one at all.
+3. **A scanner that can fail the build is a scanner that gets switched off.** The image pins `setuptools<81` because pywb imports `pkg_resources`, and the first Trivy run found exactly one HIGH — Werkzeug 2.2.3, which pywb requires *exactly*, in a release that is the newest there is. A blocking gate would have been red from the day it was added, on a finding no bump of ours can clear. They report to the run summary instead, and run weekly, because the advisories arrive while the code sits still.
+
+**Also worth knowing:** the image is a 640×400 JPEG produced by rendering a 1280×800 viewport at `device_scale_factor` 0.5 — about 10 KB, and no imaging library anywhere in the tree. And `has_thumbnail` is a `stat`, not a column: a folder move or a restore can take the file away without the database hearing, and a boolean that outlives its file is a broken image on a card with nothing to press.
+
+**And the test image had been lying for longer than that.** `cairn:dev` was built from a Dockerfile living in a scratch directory rather than in the repository, so it was never rebuilt when the runtime image was — and it predated `yt-dlp` entering the image. Seven media tests had therefore been skipping in every container run, reported inside a "10 skipped" that looked exactly like the container-engine opt-in it sat next to. A suite skips rather than fails when a tool is missing, which is the right behaviour and also the reason nobody noticed. The Dockerfile is now [`docker/Dockerfile.dev`](../docker/Dockerfile.dev), the README says to rebuild it alongside the runtime image, and `pytest -rs` is documented as the way to tell "opted out" from "quietly not testing this any more".
+
+**One more, and it was the test that was wrong.** Every other replay suite picks its own port and builds its own URLs; this one cannot, because the code under test asks `settings.replay_port` where replay is — that is the entire point of `replay_internal_origin`. Binding the configured default instead meant that running the suite inside the **shipped** image, where s6 starts pywb on that very port over a different collections tree, silently handed the test somebody else's archive. pywb logged `404` for every request and the end-to-end test passed, because a picture of "URL Not Found" is a valid JPEG of about the right size. The fixture now chooses a free port and points `settings` at it, and the test fetches the `mp_` URL and looks for the fixture's own markup before photographing anything. Both were confirmed by forcing the collision back: 1 failed where it used to be 17 passed.
+
+**Still outstanding, and named here so it stays visible:** the two checklists in [11](11-security.md) have never been ticked. Most of what they list is built and test-covered, but ticking them honestly means auditing each line — including "SSRF blocklist enforced on every redirect hop", which is the one worth actually re-reading the code for rather than inferring.
 
 ---
 

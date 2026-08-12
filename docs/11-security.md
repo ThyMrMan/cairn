@@ -198,9 +198,37 @@ The lesson generalizes: *verify a CSP in a browser, not by reading the header*. 
 - **Don't expose it directly if you can avoid it.** Tailscale or a Cloudflare Tunnel removes the internet-facing surface entirely; a reverse proxy with Authelia in front adds a second gate. Say this plainly in the README, because it's better advice than any amount of in-app hardening.
 - **Container runs unprivileged**, drops to `PUID`/`PGID`, no `--privileged`, no Docker socket unless the user explicitly opts into container-based engines.
 - **Read-only where possible.** pywb needs no write access to the archive tree; mount it read-only within the container.
-- **Dependency scanning** in CI (`pip-audit`, `npm audit`, Trivy on the image). pywb and Chromium both pull large dependency trees.
+- **Dependency scanning** in CI (`pip-audit`, `npm audit`, Trivy on the image). pywb and Chromium both pull large dependency trees. **Built, and deliberately advisory** — see below.
 - **Version pinning** in the image; `:latest` plus Unraid auto-update plus automatic migrations is a bad combination for anything you care about.
 - **Log rotation** with size caps — a crawl log from a 100k-page site is large, and unbounded logs are their own availability problem.
+
+### The scanners report; they do not gate
+
+`pip-audit`, `npm audit` and Trivy run in CI, and none of them can fail a
+build. That is a decision with evidence behind it rather than a shortcut.
+
+The image deliberately pins `setuptools<81` because pywb 2.9.1 still imports
+`pkg_resources`, so "upgrade until the scanner is quiet" is not always a move
+that exists here. A gate that cannot be satisfied is a gate somebody switches
+off, and then nothing is scanned at all. The findings go to the run summary,
+where a person decides between a version bump, a workaround, and living with
+it.
+
+They also run **weekly on a schedule**, which for this repository is the point:
+the code can go three months without a commit while the advisories keep
+arriving, and a scan that only runs on push is one that never runs.
+
+**What the first run found**, and it makes the case for both halves of that:
+one HIGH in the image, CVE-2024-34069 in Werkzeug 2.2.3, which is not our
+choice — pywb 2.9.1 requires it *exactly* (`Requires-Dist: werkzeug==2.2.3`)
+and 2.9.1 is the newest release. A blocking gate would have been red from the
+day it was added, on a finding no version bump of ours can clear. Measured
+since: pywb replays identically on Werkzeug 3.1.8 — same bytes on the bare
+content, the framed wrapper, the untimestamped redirect and the CDX API — so
+overriding the pin is available if the exposure is ever judged to matter. It
+has not been overridden, because the CVE is in Werkzeug's interactive debugger
+and pywb never enables it, and because overriding an upstream pin means owning
+every future pywb release that turns out to need it.
 
 ---
 

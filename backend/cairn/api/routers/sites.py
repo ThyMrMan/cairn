@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Query, Request, status
+from fastapi import APIRouter, Depends, Query, Request, Response, status
 from sqlalchemy import func, select
 
 from cairn.api.deps import AppSettings, ClientIp, Csrf, CurrentUser, DbSession
@@ -27,10 +27,11 @@ from cairn.api.schemas import (
     SiteSummary,
     SiteUpdate,
 )
+from cairn.config import Settings
 from cairn.db.models import Capture, Folder, Job, Site
 from cairn.db.types import utcnow
 from cairn.engines.registry import EngineConfigError, EngineError
-from cairn.services import audit, moves, symlinks, trash
+from cairn.services import audit, moves, symlinks, thumbnail, trash
 from cairn.services import folders as folder_service
 from cairn.services import sites as site_service
 from cairn.services import tags as tag_service
@@ -88,9 +89,12 @@ def _scope_response(db: DbSession, site: Site) -> ScopeResponse:
     )
 
 
-def _summary(db: DbSession, site: Site, tags: list[str] | None = None) -> SiteSummary:
+def _summary(
+    db: DbSession, settings: Settings, site: Site, tags: list[str] | None = None
+) -> SiteSummary:
     folder = db.get(Folder, site.folder_id)
     return SiteSummary(
+        has_thumbnail=thumbnail.exists(settings, site.archive_path),
         id=site.id,
         slug=site.slug,
         title=site.title,
@@ -119,6 +123,7 @@ def _summary(db: DbSession, site: Site, tags: list[str] | None = None) -> SiteSu
 def list_sites(
     request: Request,
     db: DbSession,
+    settings: AppSettings,
     _user: CurrentUser,
     page: int = Query(1, ge=1),
     per_page: int = Query(50, ge=1, le=200),
@@ -138,7 +143,7 @@ def list_sites(
     rows, total = site_service.list_sites(db, site_filter, page=page, per_page=per_page)
     tags = site_service.tag_map(db, [s.id for s in rows])
     return Page[SiteSummary](
-        items=[_summary(db, s, tags.get(s.id, [])) for s in rows],
+        items=[_summary(db, settings, s, tags.get(s.id, [])) for s in rows],
         total=total,
         page=page,
         per_page=per_page,
@@ -183,16 +188,16 @@ def create_site(
         raise ApiError("invalid_site", str(exc), status_code=400) from exc
 
     audit.record(db, "site.create", actor=user.username, target=site.slug, ip=ip)
-    return _detail(db, site)
+    return _detail(db, settings, site)
 
 
 @router.get("/sites/{site_id}", response_model=SiteDetail)
-def get_site(site_id: int, db: DbSession, _user: CurrentUser) -> SiteDetail:
-    return _detail(db, _require_site(db, site_id))
+def get_site(site_id: int, db: DbSession, settings: AppSettings, _user: CurrentUser) -> SiteDetail:
+    return _detail(db, settings, _require_site(db, site_id))
 
 
-def _detail(db: DbSession, site: Site) -> SiteDetail:
-    base = _summary(db, site)
+def _detail(db: DbSession, settings: Settings, site: Site) -> SiteDetail:
+    base = _summary(db, settings, site)
     captures = db.scalar(select(func.count(Capture.id)).where(Capture.site_id == site.id)) or 0
     running = db.scalar(
         select(Job.id)
@@ -207,6 +212,41 @@ def _detail(db: DbSession, site: Site) -> SiteDetail:
         scope=_scope_response(db, site),
         capture_count=captures,
         running_job_id=running,
+    )
+
+
+@router.get("/sites/{site_id}/thumbnail")
+def site_thumbnail(
+    site_id: int, request: Request, db: DbSession, settings: AppSettings, _user: CurrentUser
+) -> Response:
+    """The site card's picture of the archived front page.
+
+    Our own render, not an archived byte — so unlike the raw record inspector
+    (docs/11) it is served inline, which is the entire point of it. `nosniff`
+    and a fixed content type all the same: the file is written by this
+    application and by nothing else, and a served path should never be the
+    place that assumption is first tested.
+    """
+    site = _require_site(db, site_id)
+    path = thumbnail.image_path(settings, site.archive_path)
+    if not path.is_file():
+        raise ApiError("not_found", "This site has no thumbnail.", status_code=404)
+
+    stat = path.stat()
+    etag = f'"{int(stat.st_mtime)}-{stat.st_size}"'
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=status.HTTP_304_NOT_MODIFIED, headers={"ETag": etag})
+    return Response(
+        content=path.read_bytes(),
+        media_type=thumbnail.CONTENT_TYPE,
+        headers={
+            "ETag": etag,
+            # Long enough that a list of two hundred sites is not two hundred
+            # conditional requests every time somebody sorts the page; short
+            # enough that a capture taken while you are looking shows up.
+            "Cache-Control": "private, max-age=300",
+            "X-Content-Type-Options": "nosniff",
+        },
     )
 
 
@@ -269,7 +309,7 @@ def update_site(
     db.flush()
     site_service.write_site_yaml(db, settings, site)
     audit.record(db, "site.update", actor=user.username, target=site.slug, ip=ip)
-    return _detail(db, site)
+    return _detail(db, settings, site)
 
 
 @router.post("/sites/{site_id}/move", response_model=MoveOutcome)
@@ -362,7 +402,7 @@ def restore_site(
         ) from exc
 
     audit.record(db, "site.restore", actor=user.username, target=site.slug, ip=ip)
-    return _detail(db, site)
+    return _detail(db, settings, site)
 
 
 @router.post("/sites/bulk", response_model=BulkSiteResponse)

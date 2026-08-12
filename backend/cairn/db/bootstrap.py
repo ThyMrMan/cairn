@@ -75,6 +75,11 @@ DEFAULT_SETTINGS: dict[str, object] = {
     # Retention, off. An archiver that deletes archives unasked is not one
     # anybody should trust, whatever its defaults are.
     "retention.captures": {"enabled": False},
+    # A picture of the archived front page on each site card. On: it is one
+    # page load after a capture that already took minutes, and a wall of
+    # identical rows is what it replaces. Off is for an instance where every
+    # megabyte of RAM is accounted for — it starts a browser.
+    "thumbnails.enabled": True,
 }
 
 
