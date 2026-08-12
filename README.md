@@ -1,10 +1,6 @@
-<!--
-  Badges go here once this repository has a URL. The CI workflow is
-  .github/workflows/ci.yml; the badge is
-  ![CI](https://github.com/ThyMrMan/cairn/actions/workflows/ci.yml/badge.svg)
--->
-
 # Cairn
+
+[![CI](https://github.com/ThyMrMan/cairn/actions/workflows/ci.yml/badge.svg)](https://github.com/ThyMrMan/cairn/actions/workflows/ci.yml)
 
 **A self-hosted website archiver with a web UI. Crawls whole domains to WARC,
 replays them in your browser, and keeps them current from RSS.**
