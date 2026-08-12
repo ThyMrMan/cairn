@@ -22,7 +22,7 @@ log = get_logger(__name__)
 MAX_BODY_BYTES = 8 * 1024 * 1024
 DEFAULT_TIMEOUT_S = 20.0
 MAX_REDIRECTS = 5
-USER_AGENT = "Mozilla/5.0 (compatible; Cairn/1.0; +https://github.com/you/cairn)"
+USER_AGENT = "Mozilla/5.0 (compatible; Cairn/1.0; +https://github.com/ThyMrMan/cairn)"
 
 
 @dataclass(slots=True)

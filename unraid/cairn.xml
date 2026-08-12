@@ -1,14 +1,14 @@
 <?xml version="1.0"?>
 <Container version="2">
   <Name>Cairn</Name>
-  <Repository>ghcr.io/you/cairn:latest</Repository>
-  <Registry>https://ghcr.io/you/cairn</Registry>
+  <Repository>ghcr.io/thymrman/cairn:latest</Repository>
+  <Registry>https://ghcr.io/thymrman/cairn</Registry>
   <Network>bridge</Network>
   <MyIP/>
   <Shell>bash</Shell>
   <Privileged>false</Privileged>
-  <Support>https://github.com/you/cairn/discussions</Support>
-  <Project>https://github.com/you/cairn</Project>
+  <Support>https://github.com/ThyMrMan/cairn/discussions</Support>
+  <Project>https://github.com/ThyMrMan/cairn</Project>
   <Overview>
     Self-hosted website archiver. Crawls whole sites to WARC, replays them in your
     browser, organizes them into folders and tags, and keeps them current from RSS feeds.
@@ -21,7 +21,7 @@
   </Overview>
   <Category>Productivity: Tools:Utilities</Category>
   <WebUI>http://[IP]:[PORT:8080]/</WebUI>
-  <Icon>https://raw.githubusercontent.com/you/cairn/main/frontend/public/favicon.svg</Icon>
+  <Icon>https://raw.githubusercontent.com/ThyMrMan/cairn/main/frontend/public/favicon.svg</Icon>
   <ExtraParams>--shm-size=2g</ExtraParams>
   <DonateText/>
   <DonateLink/>

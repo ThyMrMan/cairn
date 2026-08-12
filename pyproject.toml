@@ -1,6 +1,6 @@
 [project]
 name = "cairn"
-version = "0.1.0"
+version = "1.0.0"
 description = "Self-hosted website archiver — crawls whole sites to WARC, replays them in the browser."
 requires-python = ">=3.12"
 license = { text = "MIT" }

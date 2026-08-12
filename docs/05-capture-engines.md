@@ -89,7 +89,7 @@ config_schema:                      # JSON Schema → auto-generated UI form
     user_agent:
       type: string
       title: "User agent"
-      default: "Mozilla/5.0 (compatible; Cairn/1.0; +https://github.com/you/cairn)"
+      default: "Mozilla/5.0 (compatible; Cairn/1.0; +https://github.com/ThyMrMan/cairn)"
 ```
 
 > **Built in M7, and the `docker` sketch above was wrong.** It showed a stock

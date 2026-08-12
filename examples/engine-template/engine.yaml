@@ -7,7 +7,7 @@ description: >-
   WARC — no recursion, no assets. Copy this directory, rename it, and replace
   the fetching.
 author: "cairn"
-homepage: https://github.com/you/cairn
+homepage: https://github.com/ThyMrMan/cairn
 
 runtime:
   # `subprocess`: cairn spawns this command with the path to job.json as the

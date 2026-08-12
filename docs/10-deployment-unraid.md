@@ -94,20 +94,20 @@ It must stay a *functional* check. The obvious `wget --version | grep +pcre` is 
 <?xml version="1.0"?>
 <Container version="2">
   <Name>Cairn</Name>
-  <Repository>ghcr.io/you/cairn:latest</Repository>
-  <Registry>https://ghcr.io/you/cairn</Registry>
+  <Repository>ghcr.io/thymrman/cairn:latest</Repository>
+  <Registry>https://ghcr.io/thymrman/cairn</Registry>
   <Network>bridge</Network>
   <Shell>bash</Shell>
   <Privileged>false</Privileged>
-  <Support>https://github.com/you/cairn/discussions</Support>
-  <Project>https://github.com/you/cairn</Project>
+  <Support>https://github.com/ThyMrMan/cairn/discussions</Support>
+  <Project>https://github.com/ThyMrMan/cairn</Project>
   <Overview>
     Self-hosted website archiver. Crawls whole sites to WARC, replays them in your
     browser, organizes them into folders and tags, and keeps them current from RSS feeds.
   </Overview>
   <Category>Productivity: Tools:Utilities</Category>
   <WebUI>http://[IP]:[PORT:8080]/</WebUI>
-  <Icon>https://raw.githubusercontent.com/you/cairn/main/docs/icon.png</Icon>
+  <Icon>https://raw.githubusercontent.com/ThyMrMan/cairn/main/docs/icon.png</Icon>
   <ExtraParams>--shm-size=2g</ExtraParams>
 
   <Config Name="WebUI Port" Target="8080" Default="8080" Mode="tcp"
@@ -220,7 +220,7 @@ The simplest secure answer for a personal tool: put the Unraid host on a tailnet
 ```yaml
 services:
   cairn:
-    image: ghcr.io/you/cairn:latest
+    image: ghcr.io/thymrman/cairn:latest
     container_name: cairn
     restart: unless-stopped
     ports:

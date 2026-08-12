@@ -1,7 +1,7 @@
 """Reporting which build is running.
 
 This exists because a version string alone answered the question wrongly: an
-image several milestones behind reported the same "0.1.0" as the tree it was
+image several milestones behind reported the same version as the tree it was
 being compared against, and a capture was diagnosed against code that was not
 running. The build id is the part that has to change.
 """

@@ -36,7 +36,7 @@ DEFAULT_SETTINGS: dict[str, object] = {
     "crawl.default_wait_s": 1.0,
     "crawl.default_rate_limit": "2m",
     "crawl.obey_robots": True,
-    "crawl.user_agent": "Mozilla/5.0 (compatible; Cairn/1.0; +https://github.com/you/cairn)",
+    "crawl.user_agent": "Mozilla/5.0 (compatible; Cairn/1.0; +https://github.com/ThyMrMan/cairn)",
     "storage.trash_retention_days": 30,
     # How old a minted jar may be before a capture re-mints it first. Only
     # userscript profiles can be re-minted unattended — they are the only mode

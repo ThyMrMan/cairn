@@ -1,6 +1,6 @@
 services:
   cairn:
-    image: ghcr.io/you/cairn:latest
+    image: ghcr.io/thymrman/cairn:latest
     # For a local build instead of the published image:
     # build: .
     container_name: cairn

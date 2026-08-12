@@ -1,7 +1,7 @@
 <!--
   Badges go here once this repository has a URL. The CI workflow is
   .github/workflows/ci.yml; the badge is
-  ![CI](https://github.com/OWNER/REPO/actions/workflows/ci.yml/badge.svg)
+  ![CI](https://github.com/ThyMrMan/cairn/actions/workflows/ci.yml/badge.svg)
 -->
 
 # Cairn
@@ -70,7 +70,7 @@ The `-p` flags are not optional. Without them the container starts, reports
 `healthy`, and is unreachable — the healthcheck runs inside it.
 
 ```bash
-docker run -d --name cairn -p 8080:8080 -p 8081:8081 -v cairn-config:/config -v cairn-data:/data -e CAIRN_SECRET_KEY="$(openssl rand -base64 48)" --shm-size=2g ghcr.io/you/cairn:latest
+docker run -d --name cairn -p 8080:8080 -p 8081:8081 -v cairn-config:/config -v cairn-data:/data -e CAIRN_SECRET_KEY="$(openssl rand -base64 48)" --shm-size=2g ghcr.io/thymrman/cairn:latest
 ```
 
 ### Unraid

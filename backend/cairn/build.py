@@ -1,11 +1,11 @@
 """Which build is actually running.
 
-`__version__` cannot answer that. It reads "0.1.0" on every commit, so a
-container built from a tree three milestones old reports exactly what a
+`__version__` cannot answer that. It changes on a release and not on a commit,
+so a container built from a tree three milestones old reports exactly what a
 current one does. That is not hypothetical: a capture was diagnosed against
-the wrong code for a full round of testing because both said "0.1.0", and the
-only clue that the running image predated the fix was an `&amp;` left
-undecoded in a gap report.
+the wrong code for a full round of testing because both reported the same
+version, and the only clue that the running image predated the fix was an
+`&amp;` left undecoded in a gap report.
 
 The build stamp is the part that changes. It comes from, in order:
 
@@ -47,7 +47,7 @@ class BuildInfo:
 
     @property
     def label(self) -> str:
-        """`0.1.0 (a9873aa)` — what the UI shows."""
+        """`1.0.0 (a9873aa)` — what the UI shows."""
         return f"{self.version} ({self.build})"
 
 

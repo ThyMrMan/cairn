@@ -271,8 +271,9 @@ scraper cannot log in and an exporter tends to be reachable more widely than
 the app.
 
 The running build is shown at the bottom of the sidebar and in **Settings →
-About**. The version on its own is not enough — it reads `0.1.0` on every
-commit — so the build id beside it is what answers "am I testing the update?".
+About**. The version on its own is not enough — it changes on a release and not
+on a commit — so the build id beside it is what answers "am I testing the
+update?".
 
 ---
 
