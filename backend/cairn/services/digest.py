@@ -75,6 +75,10 @@ class Digest:
     quiet_sites: list[dict[str, Any]] = field(default_factory=list)
     stalled_feeds: list[dict[str, Any]] = field(default_factory=list)
     expiring_profiles: list[dict[str, Any]] = field(default_factory=list)
+    # Sites whose *live* counterpart is gone or has moved. The other rows here
+    # are about this archive failing; this one is about the web doing what the
+    # archive exists for, and it is the most interesting line in the report.
+    vanished_sites: list[dict[str, Any]] = field(default_factory=list)
     integrity: dict[str, Any] = field(default_factory=dict)
     total_bytes: int = 0
     growth_bytes: int | None = None
@@ -92,6 +96,7 @@ class Digest:
             or self.quiet_sites
             or self.stalled_feeds
             or self.expiring_profiles
+            or self.vanished_sites
             or self.integrity.get("findings")
         )
 
@@ -113,6 +118,7 @@ class Digest:
             "quiet_sites": self.quiet_sites,
             "stalled_feeds": self.stalled_feeds,
             "expiring_profiles": self.expiring_profiles,
+            "vanished_sites": self.vanished_sites,
             "integrity": self.integrity,
             "total_bytes": self.total_bytes,
             "growth_bytes": self.growth_bytes,
@@ -150,6 +156,7 @@ def build(
     _quiet_sites(session, digest)
     _stalled_feeds(session, digest)
     _expiring_profiles(session, digest)
+    _vanished_sites(session, digest)
     _integrity(session, settings, digest)
     return digest
 
@@ -308,6 +315,22 @@ def _expiring_profiles(session: Session, digest: Digest) -> None:
     ]
 
 
+def _vanished_sites(session: Session, digest: Digest) -> None:
+    """Sites whose live counterpart is gone or has moved.
+
+    Only those two states. `unreachable` is as likely to be this end as
+    theirs, and `blocked` says something about our user agent — putting either
+    in a weekly report would train the reader to skim past the line that one
+    day says a blog closed.
+    """
+    from cairn.services import sitehealth
+
+    health = sitehealth.summary(session)
+    digest.vanished_sites = [
+        problem for problem in health["problems"] if problem["state"] in sitehealth.NOTABLE
+    ][:MAX_LISTED]
+
+
 def _integrity(session: Session, settings: Settings, digest: Digest) -> None:
     from cairn.services import integrity
 
@@ -349,6 +372,13 @@ def render_text(digest: Digest) -> str:
     if digest.stalled_feeds:
         lines.append(f"{len(digest.stalled_feeds)} feed(s) polling but returning nothing:")
         lines += [f"  · {f['site']} — {f['url']}" for f in digest.stalled_feeds[:5]]
+    if digest.vanished_sites:
+        lines.append(f"{len(digest.vanished_sites)} archived site(s) are no longer as they were:")
+        lines += [
+            f"  · {s['title']} — {s['state']}"
+            + (f" ({s['http_status']})" if s["http_status"] else "")
+            for s in digest.vanished_sites[:5]
+        ]
     if digest.expiring_profiles:
         lines.append("Access profiles needing attention:")
         lines += [

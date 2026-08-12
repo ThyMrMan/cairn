@@ -142,6 +142,14 @@ function NeedsAttention() {
       text: `${j.type} failed${j.site ? ` for ${j.site}` : ""}${j.error ? `: ${j.error}` : ""}`,
       to: "/jobs",
     })),
+    ...data.vanished_sites.map((s) => ({
+      key: `gone-${s.site_id}`,
+      text:
+        s.state === "moved"
+          ? `${s.title} — the live site now redirects to ${s.final_url}`
+          : `${s.title} — the live site returns ${s.http_status ?? 404}. These pages are now only in your archive.`,
+      to: `/sites/${s.site_id}`,
+    })),
     ...data.expiring_profiles.map((p) => ({
       key: `profile-${p.profile_id}`,
       text: `${p.name} — credentials ${p.expired ? "have expired" : "expire soon"}`,

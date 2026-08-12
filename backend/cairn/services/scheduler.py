@@ -159,6 +159,10 @@ class Scheduler:
         report.deferred = deferred
         report.maintenance = await asyncio.to_thread(self._maintenance, now)
 
+        checked = await self._check_health(now)
+        if checked:
+            report.maintenance.append(f"checked {checked} site(s) for signs of life")
+
         summary = await asyncio.to_thread(self._due_digest, now)
         if summary is not None:
             title, body = summary
@@ -176,6 +180,67 @@ class Scheduler:
                 priority="high",
             )
         return report
+
+    async def _check_health(self, now: datetime) -> int:
+        """Ask a few archived sites whether they still exist.
+
+        A handful per tick rather than all of them on a timer: these are other
+        people's servers, one request each is enough, and spreading the sweep
+        across ticks means it is never a burst. The interval is per site — a
+        site checked yesterday is not due — so the work finds its own level.
+        """
+        from cairn.services import sitehealth
+
+        due = await asyncio.to_thread(self._due_health, now)
+        if not due:
+            return 0
+
+        from cairn.discovery.fetch import Fetcher
+
+        announced: list[tuple[str, str]] = []
+        async with Fetcher(user_agent=_default_user_agent()) as fetcher:
+            for site_id, seed in due:
+                found = await sitehealth.probe(fetcher, seed)
+                changed = await asyncio.to_thread(self._record_health, site_id, found, now)
+                if changed:
+                    announced.append((seed, changed))
+
+        for seed, state in announced:
+            if state not in sitehealth.NOTABLE:
+                continue
+            await notify.send(
+                self._sessions,
+                notify.SITE_GONE,
+                title=(
+                    "An archived site has moved"
+                    if state == sitehealth.MOVED
+                    else "An archived site is gone"
+                ),
+                body=f"{seed}\n{sitehealth.describe(state)}",
+            )
+        return len(due)
+
+    def _due_health(self, now: datetime) -> list[tuple[int, str]]:
+        from cairn.services import sitehealth
+
+        with self._sessions() as session:
+            days = settings_store.get_int(
+                session, sitehealth.EVERY_DAYS_SETTING, sitehealth.DEFAULT_EVERY_DAYS
+            )
+            if days <= 0:
+                return []
+            return [(s.id, s.seed_url) for s in sitehealth.due_sites(session, now=now, days=days)]
+
+    def _record_health(self, site_id: int, probe: Any, now: datetime) -> str | None:
+        from cairn.services import sitehealth
+
+        with self._sessions() as session:
+            site = session.get(Site, site_id)
+            if site is None:  # pragma: no cover — deleted mid-check
+                return None
+            changed = sitehealth.record(session, site, probe, now=now)
+            session.commit()
+            return changed
 
     def _due_digest(self, now: datetime) -> tuple[str, str] | None:
         """Build and stamp the periodic report, or nothing if it is not due.

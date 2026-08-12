@@ -3,6 +3,7 @@ import { useEffect, useState, type FormEvent } from "react";
 
 import { endpoints, type CdxVersion } from "../lib/api";
 import { dateTime, readableTimestamp } from "../lib/format";
+import { Reader } from "./Reader";
 import { Alert, EmptyState, Spinner } from "./ui";
 
 /**
@@ -21,11 +22,14 @@ export function Replay({
   siteId,
   initialUrl = "",
   initialTimestamp = null,
+  initialMode = "rendered",
 }: {
   siteId: number;
   /** Open here instead of at the seed — a search result arriving at its page. */
   initialUrl?: string;
   initialTimestamp?: string | null;
+  /** Which view to open in. A search result can ask for the reader. */
+  initialMode?: "rendered" | "reader";
 }) {
   const client = useQueryClient();
   const status = useQuery({
@@ -36,6 +40,11 @@ export function Replay({
   const [url, setUrl] = useState(initialUrl);
   const [draft, setDraft] = useState(initialUrl);
   const [timestamp, setTimestamp] = useState<string | null>(initialTimestamp);
+  // Rendered or read. Beside each other rather than one falling back to the
+  // other: they answer different questions, and a reader view that silently
+  // replaced a failed replay would make a half-captured site look fine.
+  const [mode, setMode] = useState<"rendered" | "reader">(initialMode);
+  const [readCapture, setReadCapture] = useState<string | null>(null);
 
   // The seed is the way in; everything else is reached by clicking.
   useEffect(() => {
@@ -65,6 +74,37 @@ export function Replay({
   const data = status.data;
   const list = versions.data?.versions ?? [];
   const current = timestamp ?? list.at(-1)?.timestamp ?? null;
+
+  // Checked before the index is: the reader reads extracted text, not the
+  // CDXJ, so it is exactly the view that still works when replay's index is
+  // missing or the collection will not load. Sending somebody to "rebuild the
+  // index" when they asked to read the page would be answering the wrong
+  // question with the wrong button.
+  if (mode === "reader") {
+    return (
+      <div className="space-y-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <ModeSwitch mode={mode} onChange={setMode} />
+          <form onSubmit={go} className="flex min-w-0 flex-1 gap-2">
+            <input
+              className="field min-w-0 flex-1 font-mono text-xs"
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              spellCheck={false}
+              aria-label="Archived URL"
+            />
+            <button className="btn-ghost shrink-0">Go</button>
+          </form>
+        </div>
+        <Reader
+          siteId={siteId}
+          url={url}
+          captureDir={readCapture}
+          onCapture={setReadCapture}
+        />
+      </div>
+    );
+  }
 
   if (data.records === 0) {
     return (
@@ -136,6 +176,7 @@ export function Replay({
       )}
 
       <div className="flex flex-wrap items-center gap-2">
+        <ModeSwitch mode={mode} onChange={setMode} />
         <form onSubmit={go} className="flex min-w-0 flex-1 gap-2">
           <input
             className="field min-w-0 flex-1 font-mono text-xs"
@@ -207,6 +248,41 @@ export function Replay({
           Rebuild index
         </button>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Rendered or read.
+ *
+ * Two words rather than an icon: "reader" is a thing people already know from
+ * their browser, and a page symbol next to a globe symbol is a guess.
+ */
+function ModeSwitch({
+  mode,
+  onChange,
+}: {
+  mode: "rendered" | "reader";
+  onChange: (next: "rendered" | "reader") => void;
+}) {
+  return (
+    <div className="flex shrink-0 overflow-hidden rounded-md border border-border text-xs">
+      {(["rendered", "reader"] as const).map((option) => (
+        <button
+          key={option}
+          className={`px-2.5 py-1 ${
+            mode === option ? "bg-raised text-fg" : "text-muted hover:text-fg"
+          }`}
+          onClick={() => onChange(option)}
+          title={
+            option === "rendered"
+              ? "The page as it was published, with its own CSS and scripts"
+              : "Just the text, extracted when the capture was indexed. Works without pywb."
+          }
+        >
+          {option === "rendered" ? "Rendered" : "Reader"}
+        </button>
+      ))}
     </div>
   );
 }

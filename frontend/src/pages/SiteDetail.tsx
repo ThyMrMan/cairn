@@ -23,6 +23,10 @@ export default function SiteDetail() {
   const [params] = useSearchParams();
   const replayUrl = params.get("replay") ?? undefined;
   const replayTimestamp = params.get("ts");
+  // A search result can ask for the reader directly: "which of my archives
+  // mentioned this" is nearly always followed by wanting to read it.
+  const replayMode: "rendered" | "reader" =
+    params.get("mode") === "reader" ? "reader" : "rendered";
 
   const site = useQuery({
     queryKey: ["site", siteId],
@@ -134,6 +138,8 @@ export default function SiteDetail() {
         </Alert>
       )}
 
+      <LiveSite siteId={siteId} seedUrl={data.seed_url} />
+
       <Scope
         siteId={siteId}
         onChanged={() => void client.invalidateQueries({ queryKey: ["site", siteId] })}
@@ -148,6 +154,7 @@ export default function SiteDetail() {
         captureCount={data.capture_count}
         initialUrl={replayUrl}
         initialTimestamp={replayTimestamp}
+        initialMode={replayMode}
       />
 
       <Changes siteId={siteId} captureCount={data.capture_count} />
@@ -197,16 +204,86 @@ export default function SiteDetail() {
   );
 }
 
+/**
+ * Whether the site this archive is of still exists.
+ *
+ * A single line, and normally the boring one. It earns its place on the day it
+ * says the blog now returns 404 — which is the moment the archive stopped
+ * being a copy and became the only copy.
+ */
+function LiveSite({ siteId, seedUrl }: { siteId: number; seedUrl: string }) {
+  const client = useQueryClient();
+  const health = useQuery({
+    queryKey: ["site-health", siteId],
+    queryFn: () => endpoints.siteHealth(),
+    select: (all) => all.problems.find((p) => p.site_id === siteId) ?? null,
+  });
+  const check = useMutation({
+    mutationFn: () => endpoints.checkSiteHealth(siteId),
+    onSuccess: () => client.invalidateQueries({ queryKey: ["site-health"] }),
+  });
+
+  const problem = health.data;
+  const result = check.data;
+  if (!problem && !result) {
+    return (
+      <p className="hint">
+        <button
+          className="hover:underline"
+          onClick={() => check.mutate()}
+          disabled={check.isPending}
+        >
+          {check.isPending ? "Checking…" : "Check whether the live site is still there"}
+        </button>
+      </p>
+    );
+  }
+
+  const state = problem?.state ?? result?.state ?? "live";
+  const tone = state === "gone" ? "warn" : state === "moved" ? "info" : "info";
+  return (
+    <Alert
+      kind={tone}
+      title={
+        state === "gone"
+          ? "The live site is gone"
+          : state === "moved"
+            ? "The live site has moved"
+            : "The live site answers normally"
+      }
+    >
+      <p>
+        {result?.message ??
+          (problem?.state === "moved"
+            ? `${seedUrl} now redirects to ${problem.final_url}. Add that address as a second seed to keep archiving it.`
+            : `${seedUrl} returns ${problem?.http_status ?? "an error"}${
+                problem?.since ? `, and has since ${dateTime(problem.since)}` : ""
+              }.`)}
+      </p>
+      <button
+        className="btn-ghost mt-2 text-xs"
+        onClick={() => check.mutate()}
+        disabled={check.isPending}
+      >
+        {check.isPending && <Spinner />}
+        Check again
+      </button>
+    </Alert>
+  );
+}
+
 function ReplaySection({
   siteId,
   captureCount,
   initialUrl,
   initialTimestamp,
+  initialMode = "rendered",
 }: {
   siteId: number;
   captureCount: number;
   initialUrl?: string;
   initialTimestamp?: string | null;
+  initialMode?: "rendered" | "reader";
 }) {
   // Collapsed until there is something to see: an iframe that loads pywb on
   // every visit to a site nobody has captured yet is pure noise. Open anyway
@@ -232,6 +309,7 @@ function ReplaySection({
             siteId={siteId}
             initialUrl={initialUrl}
             initialTimestamp={initialTimestamp ?? null}
+            initialMode={initialMode}
           />
         </div>
       )}

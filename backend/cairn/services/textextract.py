@@ -82,6 +82,16 @@ BLOCK_TAGS = frozenset(
     }
 )  # fmt: skip
 
+# What a block is *for*, as far as reading it goes. Deliberately a handful of
+# values rather than the tag: the reader only needs to know whether something
+# is a heading, an item, a quotation or prose, and storing "h5" so it can be
+# rendered as an h3 anyway is a longer file for no difference on screen.
+BLOCK_KINDS = {
+    "h1": "h1", "h2": "h2", "h3": "h3", "h4": "h3", "h5": "h3", "h6": "h3",
+    "li": "li", "dd": "li", "dt": "li",
+    "blockquote": "quote", "pre": "pre", "figcaption": "caption",
+}  # fmt: skip
+
 # Words that appear in the class or id of a region no reader would call the
 # page. Matched as whole words within the attribute, so `post-body` survives
 # while `post-footer` does not.
@@ -118,6 +128,12 @@ class Page:
     url: str
     title: str
     blocks: list[str] = field(default_factory=list)
+    # What each block was, one per block: "h1".."h3", "li", "quote", "pre", or
+    # "p". Search ignores it entirely; the reader view needs it, because text
+    # in which every heading is a paragraph is markedly harder to read than
+    # the page it came from. Absent from files written before it existed, and
+    # `kind_of` falls back rather than making those files unreadable.
+    kinds: list[str] = field(default_factory=list)
     timestamp: str = ""
     # Byte offset and length of this page's line in the capture's JSONL, so a
     # snippet is a seek and a read rather than a scan of the whole file.
@@ -127,6 +143,17 @@ class Page:
     @property
     def text(self) -> str:
         return "\n".join(self.blocks)
+
+    def kind_of(self, index: int) -> str:
+        """One block's kind, defaulting to a paragraph.
+
+        Indexed rather than zipped so a file written before `kinds` existed —
+        or one where the two lists have drifted — reads as prose instead of
+        raising or losing blocks.
+        """
+        if 0 <= index < len(self.kinds):
+            return self.kinds[index] or "p"
+        return "p"
 
 
 @dataclass(slots=True)
@@ -151,7 +178,13 @@ class _BlockParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.blocks: list[str] = []
+        self.kinds: list[str] = []
         self.title = ""
+        # What the block currently being buffered was opened by. One value
+        # rather than a stack: a stack has to survive unbalanced markup, which
+        # archived pages are full of, and the worst a single value gets wrong
+        # is that `<li><p>x</p></li>` reads as a paragraph — which it is.
+        self._kind = "p"
         self._buf: list[str] = []
         self._skip = 0
         self._depth = 0
@@ -175,6 +208,7 @@ class _BlockParser(HTMLParser):
             self._boiler.append(self._depth)
         if tag in BLOCK_TAGS:
             self._flush()
+            self._kind = BLOCK_KINDS.get(tag, "p")
 
     def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag in BLOCK_TAGS:
@@ -209,6 +243,8 @@ class _BlockParser(HTMLParser):
         self._buf.clear()
         if len(text) >= MIN_BLOCK_CHARS:
             self.blocks.append(text)
+            self.kinds.append(self._kind)
+        self._kind = "p"
 
 
 def _is_boilerplate(tag: str, attrs: list[tuple[str, str | None]]) -> bool:
@@ -222,13 +258,19 @@ def _is_boilerplate(tag: str, attrs: list[tuple[str, str | None]]) -> bool:
 
 def parse(html: str) -> tuple[str, list[str]]:
     """`(title, blocks)` for one page."""
+    title, blocks, _kinds = parse_kinds(html)
+    return title, blocks
+
+
+def parse_kinds(html: str) -> tuple[str, list[str], list[str]]:
+    """`(title, blocks, kinds)` — the same pass, with what each block was."""
     parser = _BlockParser()
     try:
         parser.feed(html)
     except Exception as exc:
         log.debug("html parse gave up", extra={"err": str(exc)})
     parser.finish()
-    return _WS.sub(" ", parser.title).strip(), parser.blocks
+    return _WS.sub(" ", parser.title).strip(), parser.blocks, parser.kinds
 
 
 def decode(body: bytes, content_type: str) -> str:
@@ -294,6 +336,7 @@ def read_pages(settings: Settings, archive_path: str, capture_dir: str) -> Itera
                 url=str(doc.get("url") or ""),
                 title=str(doc.get("title") or ""),
                 blocks=[str(b) for b in (doc.get("blocks") or [])],
+                kinds=[str(k) for k in (doc.get("kinds") or [])],
                 timestamp=str(doc.get("ts") or ""),
                 offset=offset,
                 length=length,
@@ -314,6 +357,7 @@ def read_page_at(path: Path, offset: int, length: int) -> Page | None:
         url=str(doc.get("url") or ""),
         title=str(doc.get("title") or ""),
         blocks=[str(b) for b in (doc.get("blocks") or [])],
+        kinds=[str(k) for k in (doc.get("kinds") or [])],
         timestamp=str(doc.get("ts") or ""),
         offset=offset,
         length=length,
@@ -379,13 +423,14 @@ def _page_from(record: Any) -> Page | None:
     if not url:
         return None
     body = record.content_stream().read(MAX_PAGE_BYTES)
-    title, blocks = parse(decode(body, ctype))
+    title, blocks, kinds = parse_kinds(decode(body, ctype))
     if not blocks and not title:
         return None
     return Page(
         url=url,
         title=title,
         blocks=blocks,
+        kinds=kinds,
         timestamp=str(record.rec_headers.get_header("WARC-Date") or ""),
     )
 
@@ -409,9 +454,12 @@ def _drop_repeated(pages: list[Page]) -> int:
 
     dropped = 0
     for page in pages:
-        kept = [b for b in page.blocks if _key(b) not in common]
-        dropped += len(page.blocks) - len(kept)
-        page.blocks = kept
+        # Filtered in lockstep: the two lists are positional, so dropping a
+        # block without its kind silently shifts every heading after it.
+        keep = [i for i, b in enumerate(page.blocks) if _key(b) not in common]
+        dropped += len(page.blocks) - len(keep)
+        page.kinds = [page.kind_of(i) for i in keep]
+        page.blocks = [page.blocks[i] for i in keep]
     return dropped
 
 
@@ -431,7 +479,13 @@ def _write_jsonl(path: Path, pages: list[Page]) -> None:
     for page in pages:
         raw = (
             json.dumps(
-                {"url": page.url, "title": page.title, "ts": page.timestamp, "blocks": page.blocks},
+                {
+                    "url": page.url,
+                    "title": page.title,
+                    "ts": page.timestamp,
+                    "blocks": page.blocks,
+                    "kinds": page.kinds,
+                },
                 ensure_ascii=False,
             )
             + "\n"

@@ -120,17 +120,21 @@ Some blogs span domains (a custom domain plus the blogspot original, or a site t
 
 ArchiveBox's "personas" bundle cookies + user agent + browser profile. This design already has profiles carrying cookies and UA; extending to full browser profiles (localStorage, IndexedDB, service workers) makes them work with `browsertrix-crawler --profile` directly.
 
-### Site health monitoring
+### Site health monitoring ✅ *built after M8*
 
 Periodically check whether archived sites are still live. Surfacing *"3 archived sites are now returning 404"* is both interesting and a strong argument for the tool's existence.
+
+> **As built.** All of the work is in not crying wolf. A blog is briefly 502 and a container is briefly without DNS, so a state change is believed only after two checks agree; a 500 is the site failing rather than ending; a DNS failure says more about this end than theirs; a 403 is about our user agent; and a redirect off the registrable domain is a *move*, which is actionable — add the new address as a second seed. The first check of a site announces nothing at all, because a blog that was already gone when it was added was archived precisely because it was disappearing.
 
 ### Bookmarklet / browser extension
 
 One-click "archive this page" from the browser. Karakeep and Linkwarden both have one and it's the most-used feature in both.
 
-### Bulk URL import
+### Bulk URL import ✅ *built after M8*
 
 Paste or upload a list of URLs; group into sites by host automatically. Useful for migrations and for one-off collections.
+
+> **As built.** Three things that look obvious and are wrong. A pasted URL is a *page*, not a site — seeding a site at `blog/2019/03/some-post.html` gives an archive whose identity is one post — so the site is seeded at the origin and the pasted URLs become the capture's seeds. Which means the capture must not crawl: fifty bookmarks across fifty domains, each triggering a full crawl, is a plausible way to get an IP address blocked, so `only_extra_seeds` is the default and crawling is a tick box. And grouping by registrable domain means a group can *span hosts*, so every host in it goes into the scope or the capture silently drops half the list. The parser takes every http(s) URL out of whatever was pasted, which makes a Netscape bookmarks export, a markdown list and a CSV column all work with no format selector.
 
 ### Archive annotations
 
@@ -144,9 +148,11 @@ Move captures older than N months to a slower or cheaper tier (array-only, or an
 
 `/metrics` with job counts, capture durations, error rates, storage. Easy, and Unraid users often already run Grafana.
 
-### Read-only "reader" view
+### Read-only "reader" view ✅ *built after M8*
 
 Extracted article text rendered cleanly, no CSS, no JS. Fast, accessible, and immune to broken replay — and it's what you actually want when reading rather than verifying.
+
+> **As built.** Nearly free, because M8's extraction already put the text on disk with the sidebar removed. Two things it deliberately is not: a fallback that hides a broken replay — it is offered beside replay and names the capture it read — and a copy, since nothing is stored for it. Extraction gained one field: what each block *was*, so a heading renders as a heading. Text in which every heading is a paragraph is markedly harder to read than the page it came from.
 
 ### Federated/mirror sync
 

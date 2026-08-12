@@ -114,6 +114,9 @@ Anything a filter can express must survive a round trip through both serializati
 | `GET` | `/api/sites/{id}/seeds` | Every address this site starts from, primary first |
 | `POST` | `/api/sites/{id}/seeds` | `{url}` → adds a seed and makes its host crawlable |
 | `DELETE` | `/api/sites/{id}/seeds?url=` | Removes one; the first seed cannot go |
+| `GET` | `/api/sites/{id}/reader?url=&capture=` | One archived page as clean text |
+| `GET` | `/api/sites/{id}/reader/versions?url=` | Captures whose text holds that URL |
+| `GET` | `/api/sites/{id}/reader/index` | Every readable page of a site |
 | `GET` | `/api/sites/{id}/scope` | Current resolved scope |
 | `PUT` | `/api/sites/{id}/scope` | Host selections, patterns, limits, politeness |
 | `POST` | `/api/sites/{id}/scope/preview` | Dry-run estimate — no fetching |
@@ -255,6 +258,10 @@ The interactive session is a **CDP screencast over a WebSocket**, not the `vnc_u
 | `PATCH` | `/api/settings` | Partial update |
 | `GET` | `/api/storage` | Per-folder and per-site usage, free space, trash size |
 | `GET` | `/api/digest?days=` | The periodic report: what happened, and what quietly did not |
+| `GET` | `/api/site-health` | Which archived sites are still live, and which are not |
+| `POST` | `/api/sites/{id}/health-check` | Probe one site's live counterpart now |
+| `POST` | `/api/import/urls/survey` | `{text}` → what a pasted list would become |
+| `POST` | `/api/import/urls` | Create or reuse a site per domain and archive the listed pages |
 | `GET` | `/api/trash` | Deleted sites, their size, and days until purge |
 | `DELETE` | `/api/trash` | Purge everything in the trash now |
 | `POST` | `/api/maintenance/verify` | `?site_id=&deep=` → `202 {job_id}`. `deep` also parses every WARC |

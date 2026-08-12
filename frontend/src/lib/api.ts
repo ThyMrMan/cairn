@@ -562,6 +562,39 @@ export type ScheduleSettings = {
   digest_every_days: number;
 };
 
+/** Whether the live sites behind the archives are still there. */
+export type SiteHealthProblem = {
+  site_id: number;
+  title: string;
+  state: string;
+  http_status: number | null;
+  final_url: string | null;
+  error: string | null;
+  since: string | null;
+  checked_at: string | null;
+};
+
+export type SiteHealthSummary = {
+  counts: Record<string, number>;
+  problems: SiteHealthProblem[];
+  checked: number;
+};
+
+export type SiteHealthCheck = {
+  state: string;
+  changed: string | null;
+  http_status: number | null;
+  final_url: string | null;
+  error: string | null;
+  message: string;
+  health: {
+    state: string;
+    since: string | null;
+    checked_at: string | null;
+    pending_state: string | null;
+  } | null;
+};
+
 /** The periodic report: what happened, and what quietly did not. */
 export type DigestReport = {
   since: string;
@@ -593,6 +626,14 @@ export type DigestReport = {
     mode: string;
     expires_at: string | null;
     expired: boolean;
+  }[];
+  vanished_sites: {
+    site_id: number;
+    title: string;
+    state: string;
+    http_status: number | null;
+    final_url: string | null;
+    since: string | null;
   }[];
   integrity: {
     captures: number;
@@ -711,6 +752,28 @@ export type DiscoveryResponse = {
   message?: string;
 };
 
+// ── the reader view ──────────────────────────────────────────────────────
+
+export type ReaderBlock = { kind: string; text: string };
+
+export type ReaderArticle = {
+  url: string;
+  title: string;
+  timestamp: string;
+  capture_dir: string;
+  capture_id: number | null;
+  words: number;
+  minutes: number;
+  blocks: ReaderBlock[];
+};
+
+export type ReaderVersion = {
+  capture_id: number | null;
+  capture_dir: string;
+  started_at: string | null;
+  timestamp: string;
+};
+
 export type ScopePreview = {
   pages_to_crawl: number;
   excluded_by_pattern: number;
@@ -756,6 +819,35 @@ export type SearchStatus = {
 };
 
 export type ExportEntry = { name: string; size_bytes: number; created_at: string };
+
+/** A pasted list of URLs, grouped into the sites it would become. */
+export type UrlImportGroup = {
+  key: string;
+  origin: string;
+  hosts: string[];
+  urls: string[];
+  url_count: number;
+  site_id: number | null;
+  site_title: string | null;
+  is_new: boolean;
+};
+
+export type UrlImportSurvey = {
+  found: number;
+  groups: UrlImportGroup[];
+  new_sites: number;
+  existing_sites: number;
+  skipped: string[];
+  skipped_count: number;
+};
+
+export type UrlImportResult = {
+  created: number[];
+  updated: number[];
+  jobs: number[];
+  urls: number;
+  errors: string[];
+};
 
 export type ArchiveBoxSurvey = {
   version: string;
@@ -901,6 +993,9 @@ export const endpoints = {
   audit: (page = 1) => api.get<Page<AuditEntry>>(`/audit?page=${page}`),
   storage: () => api.get<Storage>("/storage"),
   digest: (days = 7) => api.get<DigestReport>(`/digest?days=${days}`),
+  siteHealth: () => api.get<SiteHealthSummary>("/site-health"),
+  checkSiteHealth: (id: number) =>
+    api.post<SiteHealthCheck>(`/sites/${id}/health-check`),
   version: () => api.get<Version>("/version"),
 
   // ── organization ───────────────────────────────────────────────────────
@@ -983,6 +1078,10 @@ export const endpoints = {
     api.get<{ enabled: boolean; token_set: boolean }>("/metrics/settings"),
   putMetricsSettings: (body: { enabled?: boolean; token?: string }) =>
     api.put<{ enabled: boolean; token_set: boolean }>("/metrics/settings", body),
+  surveyUrls: (text: string) => api.post<UrlImportSurvey>("/import/urls/survey", { text }),
+  importUrls: (text: string, options: { capture?: boolean; crawl?: boolean } = {}) =>
+    api.post<UrlImportResult>("/import/urls", { text, ...options }),
+
   surveyArchiveBox: (path: string) =>
     api.get<ArchiveBoxSurvey>(`/import/archivebox${query({ path })}`),
   importArchiveBox: (path: string, hosts: string[] = []) =>
@@ -1110,6 +1209,17 @@ export const endpoints = {
         (timestamp ? `&timestamp=${timestamp}` : ""),
     ),
   reindex: (id: number) => api.post<{ records: number; warcs: number }>(`/sites/${id}/reindex`),
+
+  // ── the reader view ────────────────────────────────────────────────────
+  readerPage: (id: number, url: string, capture?: string) =>
+    api.get<ReaderArticle>(
+      `/sites/${id}/reader?url=${encodeURIComponent(url)}` +
+        (capture ? `&capture=${encodeURIComponent(capture)}` : ""),
+    ),
+  readerVersions: (id: number, url: string) =>
+    api.get<{ url: string; versions: ReaderVersion[] }>(
+      `/sites/${id}/reader/versions?url=${encodeURIComponent(url)}`,
+    ),
 
   // ── feeds ──────────────────────────────────────────────────────────────
   feeds: (siteId: number) => api.get<Feed[]>(`/sites/${siteId}/feeds`),

@@ -54,6 +54,7 @@ ITEMS_CAPTURED = "items_captured"
 NEW_HOSTS = "new_hosts"
 URLS_DISAPPEARED = "urls_disappeared"
 DIGEST = "digest"
+SITE_GONE = "site_gone"
 
 EVENTS: dict[str, tuple[str, bool]] = {
     CAPTURE_FAILED: ("A capture failed", True),
@@ -69,6 +70,10 @@ EVENTS: dict[str, tuple[str, bool]] = {
     # The one that matters. It is the moment the archive paid for itself, and
     # a reason to protect that capture from any retention policy.
     URLS_DISAPPEARED: ("Archived URLs disappeared from the site", True),
+    # The same moment from the other direction: not a post that vanished but
+    # the whole site. On, and it fires at most once per site per change,
+    # because a state has to be confirmed before it is believed.
+    SITE_GONE: ("An archived site went away or moved", True),
     # On by default and the only *periodic* event here. Everything else fires
     # when something happens; this one fires when nothing has, which is the
     # failure an unattended archiver actually has (docs/13).

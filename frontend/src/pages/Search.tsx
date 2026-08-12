@@ -150,7 +150,13 @@ function Result({ hit, terms }: { hit: SearchHit; terms: string[] }) {
           {hit.timestamp ? readableTimestamp(hit.timestamp) : ""}
         </span>
       </div>
-      <p className="break-all text-xs text-muted">{hit.url}</p>
+      <p className="break-all text-xs text-muted">
+        {hit.url}
+        {" · "}
+        <Link to={`${replay}&mode=reader`} className="hover:underline">
+          read
+        </Link>
+      </p>
       {hit.snippets.map((snippet, i) => (
         <p key={i} className="text-sm leading-relaxed">
           <Highlighted text={snippet} terms={terms} />

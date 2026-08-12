@@ -123,3 +123,75 @@ def reindex_search(
     db.commit()
     supervisor.notify()
     return JobAccepted(job_id=job.id)
+
+
+# ── the reader view ──────────────────────────────────────────────────────
+#
+# Beside replay rather than instead of it. Replay answers "is this what was
+# published"; this answers "I want to read this", which is a different question
+# and the one asked more often once an archive is a few years old.
+
+
+@router.get("/sites/{site_id}/reader")
+def read_page(
+    site_id: int,
+    db: DbSession,
+    settings: AppSettings,
+    _user: CurrentUser,
+    url: Annotated[str, Query(min_length=1, max_length=4096)],
+    capture: Annotated[str | None, Query(max_length=255)] = None,
+) -> dict[str, Any]:
+    """One archived page as clean text."""
+    from cairn.services import reader
+
+    site = _require_site(db, site_id)
+    article = reader.read(db, settings, site, url, capture_dir=capture)
+    if article is None:
+        raise ApiError(
+            "no_text",
+            "There is no extracted text for that page. Captures made before text "
+            "extraction existed need Rebuild search index with re-extraction before "
+            "they can be read.",
+            status_code=404,
+        )
+    return article.to_dict()
+
+
+@router.get("/sites/{site_id}/reader/versions")
+def read_versions(
+    site_id: int,
+    db: DbSession,
+    settings: AppSettings,
+    _user: CurrentUser,
+    url: Annotated[str, Query(min_length=1, max_length=4096)],
+) -> dict[str, Any]:
+    """Which captures can be read, oldest first."""
+    from cairn.services import reader
+
+    site = _require_site(db, site_id)
+    found = reader.versions(db, settings, site, url)
+    return {"url": url, "versions": [v.to_dict() for v in found]}
+
+
+@router.get("/sites/{site_id}/reader/index")
+def read_index(
+    site_id: int,
+    db: DbSession,
+    _user: CurrentUser,
+    limit: Annotated[int, Query(ge=1, le=500)] = 200,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> dict[str, Any]:
+    """Every readable page of a site — the way in without a URL."""
+    from cairn.services import reader
+
+    site = _require_site(db, site_id)
+    return reader.index_of(db, site, limit=limit, offset=offset)
+
+
+def _require_site(db: DbSession, site_id: int) -> Any:
+    from cairn.services import sites as site_service
+
+    site = site_service.get_site(db, site_id)
+    if site is None:
+        raise ApiError("not_found", "That site does not exist.", status_code=404)
+    return site

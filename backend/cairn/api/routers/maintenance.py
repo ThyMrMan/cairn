@@ -133,6 +133,55 @@ def integrity_report(db: DbSession, settings: AppSettings, _user: CurrentUser) -
     return integrity.health(db, settings)
 
 
+@router.get("/site-health")
+def site_health(db: DbSession, _user: CurrentUser) -> dict[str, Any]:
+    """Which archived sites are still live, and which are not."""
+    from cairn.services import sitehealth
+
+    return sitehealth.summary(db)
+
+
+@router.post("/sites/{site_id}/health-check")
+async def check_one_site(
+    site_id: int, db: DbSession, user: CurrentUser, ip: ClientIp
+) -> dict[str, Any]:
+    """Ask now, rather than waiting for the sweep.
+
+    Runs the same code the ticker does, including the confirmation counter —
+    so pressing this twice can change a state, and pressing it once cannot.
+    That is deliberate: a button that reported "gone" on one bad response
+    would be a different feature from the one the sweep implements, and the
+    two disagreeing is worse than either.
+    """
+    from cairn.discovery.fetch import USER_AGENT, Fetcher
+    from cairn.services import audit as audit_service
+    from cairn.services import sitehealth
+    from cairn.services import sites as site_service
+
+    site = site_service.get_site(db, site_id)
+    if site is None:
+        raise ApiError("not_found", "That site does not exist.", status_code=404)
+
+    seed = site.seed_url
+    async with Fetcher(user_agent=USER_AGENT) as fetcher:
+        found = await sitehealth.probe(fetcher, seed)
+    changed = sitehealth.record(db, site, found)
+    audit_service.record(db, "site.health", actor=user.username, target=site.slug, ip=ip)
+    db.commit()
+
+    return {
+        "state": found.state,
+        "changed": changed,
+        "http_status": found.http_status,
+        "final_url": found.final_url,
+        "error": found.error,
+        "message": sitehealth.describe(
+            found.state, status=found.http_status, final_url=found.final_url
+        ),
+        "health": sitehealth.for_site(db, site_id),
+    }
+
+
 @router.get("/digest")
 def digest_report(
     db: DbSession,

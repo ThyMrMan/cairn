@@ -19,6 +19,7 @@ export default function Settings() {
       <NotificationsSection />
       <IntegritySection />
       <StorageSection />
+      <UrlImportSection />
       <ImportSection />
       <MetricsSection />
       <TagsSection />
@@ -28,6 +29,103 @@ export default function Settings() {
       <SessionsSection />
       <AuditSection />
     </div>
+  );
+}
+
+/**
+ * A pasted list of URLs.
+ *
+ * The survey always runs first, because the two things worth knowing before
+ * pressing the button — how many *sites* this becomes, and which of them
+ * already exist — are not visible in the list itself. Crawling is off unless
+ * asked for: fifty bookmarks are fifty pages, and turning them into fifty full
+ * crawls of fifty strangers' sites is how an IP address gets blocked.
+ */
+function UrlImportSection() {
+  const [text, setText] = useState("");
+  const [crawl, setCrawl] = useState(false);
+  const [done, setDone] = useState<string | null>(null);
+
+  const survey = useMutation({ mutationFn: () => endpoints.surveyUrls(text) });
+  const run = useMutation({
+    mutationFn: () => endpoints.importUrls(text, { capture: true, crawl }),
+    onSuccess: (result) =>
+      setDone(
+        `${result.created.length} site(s) created, ${result.updated.length} reused, ` +
+          `${result.jobs.length} capture(s) queued for ${result.urls} URL(s).`,
+      ),
+  });
+
+  const found = survey.data;
+
+  return (
+    <Section
+      title="Import a list of URLs"
+      description="Paste anything containing links — a bookmark export, a markdown list, a spreadsheet column — and every http(s) address in it is grouped by domain into sites."
+    >
+      <textarea
+        className="field h-32 w-full font-mono text-xs"
+        placeholder={"https://example.com/a-post\nhttps://another.example/something-else"}
+        value={text}
+        onChange={(e) => {
+          setText(e.target.value);
+          survey.reset();
+          setDone(null);
+        }}
+        aria-label="URLs to import"
+      />
+      <div className="mt-2 flex flex-wrap items-center gap-3">
+        <button
+          className="btn-ghost"
+          disabled={!text.trim() || survey.isPending}
+          onClick={() => survey.mutate()}
+        >
+          {survey.isPending && <Spinner />}
+          Look
+        </button>
+        <label className="flex items-center gap-2 text-sm">
+          <input type="checkbox" checked={crawl} onChange={(e) => setCrawl(e.target.checked)} />
+          Crawl each site as well
+        </label>
+      </div>
+      <p className="hint mt-2">
+        Without that box ticked, exactly the pages you listed are archived and nothing else.
+        With it, each site is crawled in full — which for a long list is a great deal of
+        somebody else&rsquo;s bandwidth and yours.
+      </p>
+
+      {survey.error && <Alert kind="error">{(survey.error as ApiError).message}</Alert>}
+
+      {found && (
+        <div className="mt-4 space-y-2 text-sm">
+          <p>
+            {found.found.toLocaleString()} URL(s) → {found.new_sites} new site(s),{" "}
+            {found.existing_sites} already here.
+          </p>
+          <ul className="space-y-1 text-xs text-muted">
+            {found.groups.slice(0, 12).map((group) => (
+              <li key={group.key}>
+                <span className="font-mono">{group.key}</span> — {group.url_count} page(s)
+                {group.is_new ? " · new site" : ` · into “${group.site_title}”`}
+              </li>
+            ))}
+          </ul>
+          {found.skipped_count > 0 && (
+            <p className="text-xs text-warn">{found.skipped_count} line(s) skipped.</p>
+          )}
+          <button
+            className="btn-primary"
+            disabled={!found.found || run.isPending}
+            onClick={() => run.mutate()}
+          >
+            {run.isPending && <Spinner />}
+            Import {found.groups.length} site(s)
+          </button>
+          {done && <p className="text-xs text-ok">{done}</p>}
+          {run.error && <p className="text-xs text-danger">{(run.error as ApiError).message}</p>}
+        </div>
+      )}
+    </Section>
   );
 }
 

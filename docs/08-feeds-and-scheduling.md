@@ -299,3 +299,40 @@ which is the only way this feature can really fail.
 notification target that is down would otherwise make every tick rebuild and
 re-send for the length of the outage. Missing a digest is a gap in the
 reporting, not a gap in the archive.
+
+---
+
+## Is the live site still there?
+
+The question the archive exists to answer, asked the other way round. A handful
+of sites are probed per tick — one request at the seed, at a per-site interval
+of a week by default — and the answer is one of five states. Four decisions,
+each of them about not crying wolf:
+
+**One bad check is not a dead site.** A blog is briefly 502, a container is
+briefly without DNS. A state change is believed only after two checks agree,
+and until then the reported state is the previous one. `since` records when the
+*believed* state began, so the report says "gone since March" rather than "gone
+since the last tick".
+
+**Unreachable is not gone.** A DNS failure or a refused connection says
+something about the path between here and there. Different word in the UI,
+different row in the digest — and absent from the notification entirely,
+because the action it calls for is "check your network", not "the blog closed".
+
+**A redirect off the registrable domain is a move, not a death.** The blog is
+alive and has changed address, which is exactly what a second seed is for, so
+the report says so.
+
+**403, 429 and 451 are not answers about existence.** A site behind Cloudflare
+is telling us about us. That is `blocked`, kept distinct from `gone` so nobody
+deletes an archive over it.
+
+The first check of a site never announces anything: a blog that was already
+gone when it was added was archived precisely because it was disappearing.
+
+There is a **Check now** button, and it runs the same code including the
+confirmation counter — pressing it twice can change a state and pressing it
+once cannot. A button that reported "gone" on one bad response would be a
+different feature from the one the sweep implements, and the two disagreeing
+would be worse than either.

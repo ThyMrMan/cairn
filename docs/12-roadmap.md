@@ -339,6 +339,26 @@ Also worth doing: run `--warc-dedup` against a second capture and verify you get
 
 ---
 
+## After M8 — reading, liveness, and getting things in ✅
+
+**Ships:** an archive you can read, that tells you when the original disappears, and that you can fill from a bookmark export.
+
+- [x] Read-only reader view ([13](13-feature-backlog.md#read-only-reader-view))
+- [x] Site health monitoring ([13](13-feature-backlog.md#site-health-monitoring))
+- [x] Bulk URL import ([13](13-feature-backlog.md#bulk-url-import))
+
+**Done when:** an archived post reads as an article with no pywb involved; a site that starts returning 404 says so without anybody going to look; and pasting a bookmark export produces one site per domain and archives exactly the pages listed. *Asserted in `test_reader_health_import.py`, including the three negatives that matter: a reader page written before block kinds existed still reads, one 404 does not mark a site as gone, and importing three URLs across two domains queues two captures that crawl nothing.*
+
+**Three corrections from building them:**
+
+1. **Two positional lists, filtered separately, is a silent corruption.** The reader needed to know what each block *was*, which meant a `kinds` array beside `blocks` in the extracted text — and the boilerplate filter drops blocks. Dropping one without its kind gives every heading after it the kind of the one before: a page whose text is entirely right and whose structure is quietly wrong, which no test of the text would catch.
+2. **A 500 is a site failing, not a site ending — and one 404 is neither.** The naive check reports whatever the last request said, which over a month of ordinary internet turns "this blog is gone" into a notification people mute. A state changes only after two checks agree, `unreachable` is kept apart from `gone` because the action is "check your network", and `blocked` is kept apart from both because a 403 is about our user agent.
+3. **A pasted URL is a page, not a site.** Seeding a site at `blog/2019/03/some-post.html` gives an archive whose identity is one post and whose scope is derived from it, so a group's site is seeded at the origin instead — and therefore the capture must not crawl, because fifty bookmarks across fifty domains each triggering a full crawl is a plausible way to get an IP address blocked. Grouping by registrable domain brought a third: a group can span hosts, and a scope built from the first URL's host silently drops everything on the other.
+
+**Also worth knowing:** the reader is checked *before* the replay index is, because it reads extracted text rather than the CDXJ and is therefore exactly the view that still works when the collection will not load. And the URL parser takes every http(s) address out of whatever was pasted, so a Netscape bookmarks export, a markdown list and a spreadsheet column all work without a format selector — or a parser per format, each with its own way of being subtly wrong.
+
+---
+
 ## Sequencing notes
 
 **Why discovery before replay.** Discovery determines *what gets captured*; getting it wrong means recapturing everything later. Replay is read-only over whatever exists and can be built against any archive.

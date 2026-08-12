@@ -649,6 +649,42 @@ class Setting(Base):
     value: Mapped[Any] = mapped_column(JsonText, nullable=False)
 
 
+class SiteHealth(Base):
+    """Whether the *live* site is still there.
+
+    One row per site, overwritten in place: this is a current state, not a
+    history, and the only historical fact worth keeping is `since` — the moment
+    the current state began, which is what turns "returning 404" into "has been
+    returning 404 since March".
+
+    Separate from the site row because it is a different kind of fact. Every
+    other column on `sites` describes the archive; these describe somebody
+    else's server, which we do not control, cannot rely on, and check on a
+    schedule that has nothing to do with capturing.
+    """
+
+    __tablename__ = "site_health"
+
+    site_id: Mapped[int] = mapped_column(
+        ForeignKey("sites.id", ondelete="CASCADE"), primary_key=True
+    )
+    # live | gone | moved | unreachable | blocked | error
+    state: Mapped[str] = mapped_column(String(16), nullable=False, default="live")
+    http_status: Mapped[int | None] = mapped_column(Integer, default=None)
+    # Where the seed ended up after redirects, when that is somewhere else.
+    final_url: Mapped[str | None] = mapped_column(Text, default=None)
+    error: Mapped[str | None] = mapped_column(Text, default=None)
+    checked_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False, default=utcnow)
+    since: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False, default=utcnow)
+    # A blog is briefly 500 and a container briefly has no DNS. A state only
+    # changes after this many checks agree, so one bad minute does not announce
+    # that somebody's site is gone.
+    consecutive: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # The state a run of `consecutive` checks has been reporting, which is not
+    # yet `state` because it has not been reported often enough to be believed.
+    pending_state: Mapped[str | None] = mapped_column(String(16), default=None)
+
+
 class SavedView(Base):
     __tablename__ = "saved_views"
 
@@ -679,6 +715,7 @@ __all__ = [
     "Session_",
     "Setting",
     "Site",
+    "SiteHealth",
     "SiteTag",
     "Tag",
     "User",

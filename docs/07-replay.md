@@ -225,3 +225,39 @@ The tab therefore asks a second question before loading anything: how many recor
 | pywb won't start, `ModuleNotFoundError: pkg_resources` | pywb 2.9.1 still imports it; setuptools removed it in 81 | The image pins `setuptools<81`. Nothing else in the container notices, so the only symptom is that replay is silently absent |
 | Replay tab blank, CSP violation in the console | `frame-src` did not match the iframe's origin | Both come from `Settings.replay_origin_for`; if they ever diverge this is what it looks like |
 | 503 on one capture but not another | Index filenames are basenames, not site-relative | Rebuild the index — and see the `dir_root` note under Indexing |
+
+---
+
+## The reader view
+
+Replay is a faithful reconstruction: the page's own CSS, its own JavaScript,
+its own fonts, in an iframe on a separate origin. That is the right answer to
+*"is this what was published"* and the wrong one to *"I want to read this"* —
+it needs pywb running, it needs the subresources to have been captured, and a
+page whose stylesheet went missing renders as a column of unstyled text with
+none of the affordances a reader view would have given it.
+
+So the replay panel has two modes, and the second one is the app's own origin
+rendering strings the extractor already pulled out of the WARC, with the
+sidebar and navigation removed by the same pass that makes search work. No
+iframe, no pywb, no archived JavaScript anywhere.
+
+**It is offered beside replay, never instead of it.** A reader view that
+silently stood in for a failed replay would make a half-captured site look
+fine. It always names the capture it read, and switching to it is a decision
+somebody made rather than a fallback that happened.
+
+**It is checked before the index is.** The reader reads `derived/text/`, not
+the CDXJ, so it is exactly the view that still works when the collection will
+not load — and sending somebody to "rebuild the index" when they asked to read
+a page would be answering the wrong question with the wrong button.
+
+**Extraction records what each block was.** A small addition to the JSONL: one
+`kinds` entry per block, holding `h1`–`h3`, `li`, `quote`, `pre`, `caption` or
+`p`. Search ignores it; the reader needs it, because text in which every
+heading is a paragraph is markedly harder to read than the page it came from.
+Files written before it existed simply lack the key and read as prose, and the
+repetition filter drops blocks and kinds together — filtering two positional
+lists separately would give every heading after a dropped block the kind of the
+one before it, which is a page whose text is right and whose structure is
+quietly wrong.

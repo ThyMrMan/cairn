@@ -110,6 +110,67 @@ def import_archivebox(
     return JobAccepted(job_id=job.id)
 
 
+# ── a pasted list of URLs ────────────────────────────────────────────────
+
+
+@router.post("/import/urls/survey", dependencies=[Csrf])
+def survey_urls(
+    body: dict[str, str], db: DbSession, _settings: AppSettings, _user: CurrentUser
+) -> dict[str, Any]:
+    """What importing this list would do, before it does any of it."""
+    from cairn.services import bulkurls
+
+    try:
+        return bulkurls.survey(db, body.get("text", "")).to_dict()
+    except bulkurls.BulkImportError as exc:
+        raise ApiError("bad_input", str(exc), status_code=400) from exc
+
+
+@router.post("/import/urls", dependencies=[Csrf], status_code=status.HTTP_201_CREATED)
+def import_urls(
+    body: dict[str, Any],
+    db: DbSession,
+    settings: AppSettings,
+    user: CurrentUser,
+    ip: ClientIp,
+    supervisor: Annotated[Any, Depends(_supervisor)],
+) -> dict[str, Any]:
+    """Create or reuse a site per domain and archive the pages that were listed.
+
+    `crawl` is off unless asked for, and that is the whole safety property:
+    a list of fifty bookmarks is fifty pages, not fifty crawls of fifty
+    strangers' sites.
+    """
+    from cairn.services import bulkurls
+
+    try:
+        result = bulkurls.import_urls(
+            db,
+            settings,
+            str(body.get("text") or ""),
+            folder_id=body.get("folder_id"),
+            tags=[str(t) for t in (body.get("tags") or [])],
+            supervisor=supervisor,
+            capture=bool(body.get("capture", True)),
+            crawl=bool(body.get("crawl", False)),
+        )
+    except bulkurls.BulkImportError as exc:
+        raise ApiError("bad_input", str(exc), status_code=400) from exc
+
+    audit.record(
+        db,
+        "import.urls",
+        actor=user.username,
+        target=f"{len(result.created)} new site(s)",
+        ip=ip,
+        detail={"urls": result.urls, "jobs": len(result.jobs)},
+    )
+    db.commit()
+    if result.jobs:
+        supervisor.notify()
+    return result.to_dict()
+
+
 @router.get("/metrics/settings", dependencies=[Csrf])
 def metrics_settings(db: DbSession, _user: CurrentUser) -> dict[str, Any]:
     """Whether the endpoint is on, and whether a token guards it.
