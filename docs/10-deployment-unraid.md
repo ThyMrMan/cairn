@@ -297,6 +297,28 @@ wget's memory grows with the visited-URL set and the WARC dedup index — that's
 
 ---
 
+## Publishing the image
+
+`ghcr.io/thymrman/cairn`, pushed by CI and by nothing else. Three tags:
+
+| Tag | When |
+|---|---|
+| `<commit sha>` | every push to `main` and every `v*` tag |
+| `latest` | pushes to `main` |
+| `1.2.0` | the tag `v1.2.0` |
+
+**The published image is the one that was tested, not a rebuild of it.** The workflow builds once, starts that container, waits for `/api/health`, scans it, and only then re-tags and pushes the same artifact. Building a second time for the push would be a different artifact from the one the evidence is about, however identical the inputs look — and every so often it genuinely is different.
+
+**No personal access token exists for this.** The runner authenticates with the `GITHUB_TOKEN` that GitHub mints per run, which is why the job declares `packages: write`. Nothing needs storing in a repository secret, and nothing needs a `docker login` on anybody's machine.
+
+Publishing is gated on `github.repository` as well as the branch, so a fork's CI builds and tests and publishes nothing — a pull request from a fork must not be able to push an image to the upstream namespace.
+
+The commit tag is what makes a running container traceable: it matches `CAIRN_BUILD`, which is baked into `BUILD_INFO` at build time and shown in **Settings → About**. A version alone cannot answer "which build is this" ([09](09-api.md#system)).
+
+**One manual step, once.** A new GHCR package is private, and the first push creates it. Making it pullable without a login is done in the package's own settings on GitHub — *Package settings → Change visibility → Public* — and it cannot be done from the workflow. Until then `docker pull` asks for credentials, which looks exactly like a broken image reference.
+
+---
+
 ## Backups, and checking them
 
 The archive tree is the thing worth backing up: WARCs are immutable ([D2](00-decisions.md#d2--index-across-warcs-never-merge-or-concatenate-them)), so a copy is append-only and every incremental run is cheap. Use whatever you already run — `rsync -a`, restic, rclone. Cairn does not sync, and deliberately: those tools have resumption, bandwidth limits, encryption and deduplication that a bespoke implementation would spend years catching up to.

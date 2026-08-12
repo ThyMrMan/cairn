@@ -69,6 +69,10 @@ The `-p` flags are not optional. Without them the container starts, reports
 docker run -d --name cairn -p 8080:8080 -p 8081:8081 -v cairn-config:/config -v cairn-data:/data -e CAIRN_SECRET_KEY="$(openssl rand -base64 48)" --shm-size=2g ghcr.io/thymrman/cairn:latest
 ```
 
+Images are published by CI to `ghcr.io/thymrman/cairn` as `latest`, the release
+version (`1.0.0`), and the commit sha. Pin a version rather than `latest` if the
+instance matters — see [10 — Deployment](docs/10-deployment-unraid.md#publishing-the-image).
+
 ### Unraid
 
 A Community Applications template is in [`unraid/`](unraid/). Put `/config` on
