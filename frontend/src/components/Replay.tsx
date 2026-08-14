@@ -130,7 +130,7 @@ export function Replay({
   // one redirect and nothing else; loading the iframe for that shows pywb
   // reporting that a URL nobody asked for is not in this collection, which is
   // the least useful true sentence available.
-  if (data.pages === 0) {
+  if (!data.has_pages) {
     return (
       <EmptyState title="Nothing here can be replayed">
         <p>

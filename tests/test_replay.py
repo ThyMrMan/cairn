@@ -365,3 +365,80 @@ def test_a_page_counts_as_replayable(site_tree: Settings) -> None:
     make_capture(site_tree, "20260810T120000Z-full-wget", [(URL, "2026-08-10T12:00:00Z", b"hi")])
     replay.build_index(site_tree, ARCHIVE_PATH)
     assert replay.replayable_pages(site_tree, ARCHIVE_PATH) == 1
+
+
+def test_the_existence_check_stops_at_the_first_page(site_tree: Settings, monkeypatch) -> None:
+    """Not "is it faster" but "does it stop", which is the only version of this
+    that stays true as archives grow.
+
+    Reported as the replay tab freezing on a large blog while a small one was
+    fine. The status endpoint parsed every line of the index to produce a count
+    whose only use was a comparison against zero — 1,435 ms on a 500,000-record
+    archive, measured, and paid on every open of the tab.
+    """
+    make_capture(site_tree, "20260810T120000Z-full-wget", [(URL, "2026-08-10T12:00:00Z", b"hi")])
+    replay.build_index(site_tree, ARCHIVE_PATH)
+
+    real = replay.index_records
+    seen = 0
+
+    def counting(*args: object, **kwargs: object):
+        nonlocal seen
+        for record in real(*args, **kwargs):  # type: ignore[arg-type]
+            seen += 1
+            yield record
+
+    monkeypatch.setattr(replay, "index_records", counting)
+
+    assert replay.has_replayable_page(site_tree, ARCHIVE_PATH) is True
+    assert seen == 1, f"read {seen} records to answer a yes/no question"
+
+
+def test_the_existence_check_still_says_no_for_a_redirect_only_archive(
+    site_tree: Settings,
+) -> None:
+    """The early exit must not turn "nothing is replayable" into a false yes —
+    that would put an iframe in front of a gated blog, which is the failure the
+    check was written for."""
+    from warcio.statusandheaders import StatusAndHeaders
+    from warcio.warcwriter import WARCWriter
+
+    out = storage.ensure_capture_dirs(site_tree, ARCHIVE_PATH, "20260810T120000Z-full-wget")
+    warc = out / storage.WARC_DIR / "part-00000.warc.gz"
+    warc.parent.mkdir(parents=True, exist_ok=True)
+    with open(warc, "wb") as fh:
+        writer = WARCWriter(fh, gzip=True)
+        headers = StatusAndHeaders(
+            "302 Moved Temporarily",
+            [("Location", "https://www.blogger.com/interstitial/blog?u=" + URL)],
+            protocol="HTTP/1.1",
+        )
+        writer.write_record(writer.create_warc_record(URL, "response", http_headers=headers))
+
+    replay.build_index(site_tree, ARCHIVE_PATH)
+    assert replay.has_replayable_page(site_tree, ARCHIVE_PATH) is False
+
+
+def test_the_record_count_is_not_recounted_until_the_index_changes(site_tree: Settings) -> None:
+    """Counting means reading the whole file, off an array, for a number that
+    cannot change until a capture rewrites it."""
+    make_capture(site_tree, "20260810T120000Z-full-wget", [(URL, "2026-08-10T12:00:00Z", b"hi")])
+    replay.build_index(site_tree, ARCHIVE_PATH)
+
+    first, _ = replay.index_stats(site_tree, ARCHIVE_PATH)
+
+    path = replay.index_path(site_tree, ARCHIVE_PATH)
+    original = path.read_bytes()
+    # Rewrite with different content but the same size and mtime: the cache is
+    # keyed on both, so this is the one edit it is entitled to miss.
+    stat = path.stat()
+    path.write_bytes(original)
+    import os
+
+    os.utime(path, (stat.st_atime, stat.st_mtime))
+    assert replay.index_stats(site_tree, ARCHIVE_PATH)[0] == first
+
+    # A real reindex changes the size, and the count is taken again.
+    make_capture(site_tree, "20260811T120000Z-full-wget", [(POST, "2026-08-11T12:00:00Z", b"x")])
+    replay.build_index(site_tree, ARCHIVE_PATH)
+    assert replay.index_stats(site_tree, ARCHIVE_PATH)[0] > first

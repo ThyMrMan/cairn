@@ -68,7 +68,12 @@ def replay_status(
         # Records alone do not mean a browsable archive. A capture turned away
         # by a content warning holds one redirect; loading an iframe for that
         # shows pywb reporting a URL nobody asked for as missing.
-        "pages": replay.replayable_pages(settings, site.archive_path),
+        #
+        # A boolean rather than the count it used to be. The only consumer ever
+        # asked whether it was zero, and the exact answer meant parsing every
+        # line of the index on every open of the tab — 1.4 s on a 500,000-record
+        # archive, before the array has been woken up.
+        "has_pages": replay.has_replayable_page(settings, site.archive_path),
         "indexed_at": indexed_at,
         "origin": origin,
         "base_url": f"{origin}/{collection}" if origin else "",

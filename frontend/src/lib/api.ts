@@ -688,8 +688,10 @@ export type NotifySettings = {
 export type ReplayStatus = {
   collection: string;
   records: number;
-  /** Records that are a page somebody could open, rather than a redirect or an error. */
-  pages: number;
+  /** Whether anything here is a page somebody could open, rather than a
+   *  redirect or an error. A boolean rather than the count it used to be: the
+   *  exact number cost a full parse of the index on every open of the tab. */
+  has_pages: boolean;
   indexed_at: number | null;
   origin: string;
   /** Empty when the origin could not be determined; the tab says so. */
@@ -859,6 +861,7 @@ export type SearchResults = {
 };
 
 export type SearchStatus = {
+  /** Pages in the full-text index — unrelated to the replay index's count. */
   pages: number;
   words: number;
   sites: number;
