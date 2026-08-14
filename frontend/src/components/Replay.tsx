@@ -180,6 +180,24 @@ export function Replay({
 
   const src = current ? `${data.base_url}/${current}/${url}` : `${data.base_url}/${url}`;
 
+  // With scripts off, load pywb's `mp_` form instead of the framed one.
+  //
+  // The framed URL *is* a script: it is a wrapper whose job — putting the
+  // banner back and loading the real page into an inner frame — is done in
+  // JavaScript. Blocking scripts and then loading it renders nothing at all,
+  // which is exactly what the first version of this toggle did.
+  //
+  // `mp_` is the bare content, and pywb rewrites its subresources server-side.
+  // Measured against pywb 2.9.1 with JavaScript disabled: the HTML renders,
+  // the stylesheet resolves through `cs_` and applies, and images resolve
+  // through `im_` and load. Only what the page's own scripts would have built
+  // is missing.
+  //
+  // It needs a real timestamp — `mp_` without one redirects, and the rewriting
+  // then hangs off a URL that does not resolve. That is why this falls back to
+  // the framed URL until the version list has arrived.
+  const frameSrc = scripts || !current ? src : `${data.base_url}/${current}mp_/${url}`;
+
   function go(e: FormEvent) {
     e.preventDefault();
     setUrl(draft.trim());
@@ -244,7 +262,7 @@ export function Replay({
 
         <label
           className="flex shrink-0 items-center gap-1.5 text-xs text-muted"
-          title="Turn off if the page hangs the browser. Some images will be missing."
+          title="Turn off if the page hangs the browser. Text, styles and images still render; anything the page's own scripts built does not."
         >
           <input type="checkbox" checked={scripts} onChange={(e) => setScripts(e.target.checked)} />
           Scripts
@@ -252,7 +270,7 @@ export function Replay({
 
         <a
           className="btn-ghost shrink-0 text-xs"
-          href={src}
+          href={frameSrc}
           target="_blank"
           rel="noreferrer noopener"
         >
@@ -262,10 +280,11 @@ export function Replay({
 
       {!scripts && (
         <Alert kind="info">
-          Running with the page&rsquo;s own JavaScript switched off. Anything the page built as it
-          loaded — lazily-inserted images, infinite scroll, embedded players — will be missing,
-          and the archived bytes are unchanged either way. This is the setting for a page whose
-          scripts hang the browser.
+          Running the archived page without its own JavaScript, and without pywb&rsquo;s banner —
+          the banner is drawn by a script too. Text, stylesheets and images all still come out of
+          the archive; what goes missing is anything the page <em>built</em> as it loaded, such as
+          lazily-inserted images, infinite scroll and embedded players. The archived bytes are
+          identical either way. This is the setting for a page whose scripts hang the browser.
         </Alert>
       )}
 
@@ -295,8 +314,8 @@ export function Replay({
         // previous page on screen while the next one loads. `scripts` is part
         // of the key because `sandbox` is read when the frame is created, so
         // toggling it has to build a new one.
-        key={`${src}|${scripts}`}
-        src={src}
+        key={frameSrc}
+        src={frameSrc}
         title="Archived page"
         className="h-[70vh] w-full rounded-md border border-border bg-white"
         // Archived JavaScript needs to run, and needs same-origin *relative to

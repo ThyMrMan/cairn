@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -187,3 +188,54 @@ def test_the_raw_record_is_served_by_the_app_as_an_attachment(
     assert raw.headers["content-disposition"].startswith("attachment")
     assert raw.headers["x-content-type-options"] == "nosniff"
     assert b"UNIQUE-CONTENT-MARKER-ONE" in raw.content
+
+
+def test_the_bare_form_stands_alone_without_javascript(
+    authed: TestClient, settings: Settings, site_server: str, pywb: str
+) -> None:
+    """The `mp_` form is what a no-scripts view has to be built on.
+
+    Reported as a blog whose archived page hangs the browser — and identically
+    through pywb on its own, which places the fault in the page's scripts
+    rather than anywhere here. The replay panel can decline to run them by
+    dropping `allow-scripts` from the iframe sandbox, but only against `mp_`:
+    the framed URL *is* a script, a wrapper whose whole job is done in
+    JavaScript, so blocking scripts and loading it renders nothing at all.
+    That was shipped and had to be corrected.
+
+    What makes `mp_` viable is that pywb rewrites subresources server-side, so
+    stylesheets and images still resolve with no JavaScript involved. Asserted
+    here rather than trusted, because it is the property the feature rests on
+    and nothing else in the suite would notice it changing.
+    """
+    _job, site_id = run_capture(authed, site_server)
+    status = authed.get(f"/api/sites/{site_id}/replay", headers=XHR).json()
+    collection = status["collection"]
+
+    versions = authed.get(
+        f"/api/sites/{site_id}/replay/versions?url={site_server}", headers=XHR
+    ).json()
+    timestamp = versions["versions"][-1]["timestamp"]
+
+    code, body = fetch(f"{pywb}/{collection}/{timestamp}mp_/{site_server}")
+    assert code == 200
+    text = body.decode("utf-8", "replace")
+
+    # Server-side rewriting: the modifiers pywb puts on subresources. `im_` for
+    # images and `cs_` for stylesheets are what a script-free page follows.
+    assert f"/{collection}/{timestamp}im_/" in text, "images were not rewritten server-side"
+
+    for modifier, marker in ((f"{timestamp}im_/", "logo.png"),):
+        target = next(
+            (
+                part
+                for part in re.findall(r'src="([^"]+)"', text)
+                if modifier in part and marker in part
+            ),
+            None,
+        )
+        assert target, f"no {marker} rewritten with {modifier} in the page"
+        absolute = target if target.startswith("http") else f"{pywb}{target}"
+        sub_code, sub_body = fetch(absolute)
+        assert sub_code == 200, f"{absolute} returned {sub_code}"
+        assert sub_body, "the archived subresource came back empty"
