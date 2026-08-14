@@ -108,7 +108,7 @@ Every fetched URL is recorded as a row with status, MIME type, size, and content
 
 A second addon type, **post-processors**, hooks after capture: indexers, text extractors, screenshotters, WACZ packagers, notifiers.
 
-Candidate second engines, in order of value: `browsertrix-crawler` (JS, lazy-load, profiles), `single-file-cli` (one-file HTML snapshots), `yt-dlp` (embedded media), `wget2` (faster).
+Candidate second engines, in order of value: `browsertrix-crawler` (JS, lazy-load, profiles), `single-file-cli` (one-file HTML snapshots), `yt-dlp` (embedded media), ~~`wget2` (faster)~~ — since ruled out, as it cannot write WARC ([14](14-tooling-landscape.md#wget2)).
 
 → [05](05-capture-engines.md)
 

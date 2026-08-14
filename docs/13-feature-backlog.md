@@ -236,7 +236,7 @@ Sync archives to a second instance. Real 3-2-1 for archives that matter.
 
 | Tool | Why |
 |---|---|
-| [**wget2**](https://gitlab.com/gnuwget/wget2) | Multi-threaded, HTTP/2, WARC support. Near drop-in speed upgrade |
+| ~~[**wget2**](https://gitlab.com/gnuwget/wget2)~~ | ✗ **Ruled out** — it has no WARC output at all, despite its manual documenting the options ([14](14-tooling-landscape.md#wget2)). Its speed is entirely concurrency, and at cairn's default politeness that is not where a crawl's time goes ([05](05-capture-engines.md#where-a-crawls-time-actually-goes)) |
 | [**grab-site**](https://github.com/ArchiveTeam/grab-site) | Archive Team's wpull-based crawler: curated ignore-sets, live dashboard, dynamic ignore editing mid-crawl. The ignore-sets in particular are years of accumulated knowledge about what's junk on the web — worth mining even if you don't use the tool |
 | [**warcprox**](https://github.com/internetarchive/warcprox) | MITM recording proxy. Lets *any* client record to WARC, including your own browser. The universal escape hatch |
 | [**monolith**](https://github.com/Y2Z/monolith) | Single-file HTML with everything inlined. Rust, fast, tiny |

@@ -239,6 +239,8 @@ Also worth doing: run `--warc-dedup` against a second capture and verify you get
 
 **Left out on purpose:** the `single-file-cli`, `yt-dlp`, `wget2` and `warcprox` engines from docs/05's candidate list. The interface is proven by a second engine that exercises every part of it; a third that exercises the same parts again proves nothing further, and each is a real maintenance cost.
 
+`wget2` has since been ruled out for good rather than deferred: it writes no WARC ([14](14-tooling-landscape.md#wget2)). Left on the list unexamined, it would have been picked up as the cheap win it appeared to be — the manual documents WARC options the binary does not have, and every other flag the wget engine builds is accepted.
+
 **One thing to know:** the container-engine tests need the Docker socket *and* `CAIRN_TEST_CONTAINERS=1`. They pull most of a gigabyte and take minutes, and a CI runner has a socket — so the second gate is a deliberate opt-in rather than something every push pays for.
 
 ---

@@ -70,9 +70,24 @@ Full flag reference in [05](05-capture-engines.md#the-wget-warc-engine).
 
 ### wget2
 
-wget's successor: multi-threaded, HTTP/2, HTTP compression, WARC support, actively developed.
+wget's successor: multi-threaded, HTTP/2, HTTP compression, actively developed.
 
-**Verdict:** an easy speed win as a second engine. Flags differ enough that it's a separate engine, not a config toggle. Note that WARC support has historically been less battle-tested than wget 1.x's — verify dedup and segmentation behavior before trusting it with a large archive.
+**Verdict: unusable here, and not because of a limitation — because of an absence. wget2 cannot write WARC at all.**
+
+This entry used to say "WARC support", and hedged only that it was "less battle-tested than wget 1.x's". Both claims were wrong. wget2's own manual carries a **WARC Options** section listing `--warc-file`, `--warc-cdx`, `--warc-dedup`, `--warc-max-size` and the rest, which is presumably where the belief came from; the binary implements none of them. Measured against Debian trixie's wget2 2.2.0 — the version the image's own base would install:
+
+| | wget 1.25.0 | wget2 2.2.0 |
+|---|--:|--:|
+| WARC options in `--help` | 11 | **0** |
+| WARC-related strings in the binary | 73 | **0** |
+| WARC-related strings in `libwget.so.3` | — | **0** |
+| `--warc-file` | accepted | `Unknown option 'warc-file'` |
+
+Zero strings anywhere is the part that settles it. A feature disabled at build time still leaves its error messages and option names in the source and usually in the library; nothing is there to enable. Upstream [issue #65, "Add proper WARC API + support by wget2"](https://gitlab.com/gnuwget/wget2/-/issues/65), is still open.
+
+What makes this an easy mistake to make: **every other flag the wget engine builds is accepted** — all thirty of them, including `--regex-type=pcre` with a working negative lookahead, which is the one that usually disqualifies a wget substitute. wget2 is a drop-in replacement for wget in every respect except the single one this application exists for.
+
+Its speed is real, and was measured anyway — the results are in [05](05-capture-engines.md#where-a-crawls-time-actually-goes), because what they say about where crawl time goes applies regardless of which crawler runs.
 
 ### browsertrix-crawler
 

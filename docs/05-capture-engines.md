@@ -356,7 +356,59 @@ Failed requests are the one exception: a 404 writes no file, so it leaves no ded
 - **Memory grows with crawl size.** wget keeps the visited-URL set and WARC dedup index in memory. A 100k-URL crawl can reach several GB. Cap `max_pages` for very large sites, or split into path-scoped captures.
 - **No JavaScript.** Lazy-loaded images (`data-src`) are missed. The engine should scan captured HTML for lazy-load attributes and emit a `warning` with a count — "312 images may be lazy-loaded and were not captured; consider the browser engine" — rather than leaving the user to discover the gaps during replay.
 - **No infinite scroll / dynamic pagination.**
-- **Single-threaded.** `wget2` is the drop-in upgrade for speed.
+- **Single-threaded**, and staying that way. `wget2` is not the upgrade it looks like — it cannot write WARC ([14](14-tooling-landscape.md#wget2)) — and at the shipped politeness settings this costs almost nothing anyway. See below.
+
+### Where a crawl's time actually goes
+
+"wget is single-threaded" reads like the thing to fix, so it was measured before anything got built. An 84-URL fixture site, served locally with **150 ms of latency injected per request** — real hosts answer in 80–300 ms, and localhost's 0.2 ms would hide the entire effect under test:
+
+| Configuration | Wall time | Peak concurrent requests |
+|---|--:|--:|
+| **wget, `wait_s=1.0`, WARC — cairn as shipped** | **95.7 s** | 1 |
+| wget, `wait_s=0`, WARC | 16.1 s | 1 |
+| wget, `wait_s=0`, no WARC | 16.1 s | 1 |
+| wget2, `wait_s=0`, 1 thread | 16.2 s | 1 |
+| wget2, `wait_s=0`, 4 threads | 4.3 s | 4 |
+| wget2, `wait_s=0`, 8 threads | 2.4 s | 8 |
+
+Three things fall out, and only the last is about the crawler.
+
+**83% of a default capture is the politeness delay.** 95.7 s against 16.1 s, from one setting. `wait_s` defaults to 1.0, the site editor already exposes it, and core's own estimate of a crawl is literally `pages × wait_s` (`api/routers/discovery.py`). Anyone who finds captures slow is asking for a number they can already turn down — which is also the number that keeps the archiver welcome on somebody's server, so the default stays where it is.
+
+**Writing the WARC is free.** 16.1 s with it and 16.1 s without, to the tenth. Worth ruling out, because "the archiving overhead" is the intuitive suspect and it turns out not to be a suspect at all.
+
+**Concurrency is the only real speed-up, and it is large.** 16.2 s against 2.4 s. wget2 single-threaded matches wget exactly, so HTTP/2, compression and the rewrite contribute nothing measurable on their own — every bit of the difference is requests in flight at once. That ceiling is genuine and wget2 cannot be how cairn reaches it.
+
+**One trap, for whenever a concurrent engine is next considered: `--wait` in wget2 is per-thread, not global.** The same nominal `--wait=1` with four threads produced requests in bursts of four, one burst per second — 26.5 s for the same crawl, 3.6× the request rate wget makes at the identical setting. Somebody who set `wait_s=1.0` to be polite and then switched engine would be four times less polite, with nothing on screen saying so. An engine that declares concurrency has to divide the wait by its worker count or express it as a global rate; `politeness.concurrency` exists in the scope model for this and is currently read by nothing.
+
+### browsertrix against wget, measured
+
+The obvious follow-up, since `browsertrix` has the `workers` knob and does write WARC. Same fixture, both crawlers as sibling containers on one Docker network so neither has a shorter path to the server, and both invoked with the flags their own adapters build:
+
+| Engine and settings | Total | In crawl | Requests | Distinct | Peak conc. | WARC |
+|---|--:|--:|--:|--:|--:|--:|
+| **wget, `wait_s=1.0`** — shipped | 100.2 s | 96.3 s | 84 | 84 | 1 | 108 KB |
+| wget, `wait_s=0` | 19.5 s | 14.7 s | 84 | 84 | 1 | 108 KB |
+| **browsertrix, `workers=1`, `postLoadDelay=2`** — shipped | 233.0 s | 223.4 s | **205** | 84 | 3 | 147 KB |
+| browsertrix, `workers=1`, delay 0 | 151.3 s | 144.9 s | 205 | 84 | 3 | 148 KB |
+| browsertrix, `workers=4`, delay 0 | 43.8 s | 36.5 s | 205 | 84 | 6 | 149 KB |
+| browsertrix, `workers=4`, delay 2 | 63.4 s | 56.2 s | 205 | 84 | 5 | 149 KB |
+
+*Total is wall clock, which is what a capture costs; in-crawl is first request to last at the server. The gap is startup — about 4 s for wget, 8–10 s for browsertrix, which boots Chromium and Redis before it fetches anything. On a two-page incremental capture that fixed cost is most of the job.*
+
+**At the settings both engines ship with, browsertrix takes 2.3× the time and makes 2.4× the requests** for an identical 84 URLs. It is not slower because it is a browser — with four workers it beats shipped wget outright, 43.8 s against 100.2 s. It is slower because of the two defaults: `postLoadDelay=2` costs exactly 2 s per page (233.0 − 151.3 = 81.7 s ≈ 40 × 2), and `workers=1` serialises pages.
+
+**The 205 requests are the more interesting number, and they are not a tuning artifact — no setting removes them.** Broken down against a 5-page run with the method logged:
+
+- **Every HTML page is fetched twice**, back to back, one round-trip apart, both plain `GET`. 41 pages, 82 requests.
+- **Shared assets are re-fetched once per page.** `/static/site.css` and `/static/logo.png` were requested 41 times each; wget fetched each once for the whole crawl. On a real site that is every stylesheet, webfont and logo, multiplied by the page count.
+- Chromium also asks for `/favicon.ico`, which the site does not have.
+
+That is 121 extra requests against somebody's server for the same archive, and it lands in storage too: 149 KB against 108 KB, **38% more WARC for identical content.**
+
+**And browsertrix has no per-request politeness knob at all.** `pageExtraDelay` waits *between pages*; nothing spaces the requests within one. Peak concurrency was 3 at `workers=1` — a single worker is already three simultaneous connections, because the browser fetches a page's subresources in parallel — and 6 at `workers=4`. wget at its default sits at exactly 1. Anyone switching a site to browsertrix for speed should know they are also going from one connection to six, and from 84 requests to 205.
+
+The honest summary: browsertrix is the engine to reach for when a site *needs* a browser (lazy loading, infinite scroll, script-built links), and it can be made faster than shipped wget by raising `workers`. It is not the cheaper way to archive a site that wget can already read.
 
 ### Log parsing
 
@@ -481,9 +533,11 @@ Produces a single self-contained HTML file with everything inlined. Not WARC, so
 
 Blogs embed YouTube and Vimeo. Neither wget nor a browser crawler captures the actual video stream. A post-processor that scans captured HTML for embeds and offers per-site opt-in media capture into `derived/media/` closes a real gap — and it's the gap people notice years later.
 
-### 4. `wget2` — the speed upgrade
+### 4. ~~`wget2` — the speed upgrade~~ ✗ **ruled out, it cannot write WARC**
 
-Multi-threaded, HTTP/2, WARC support. Near drop-in replacement. Flag names differ slightly, so it's a separate engine rather than a config toggle.
+This said "Multi-threaded, HTTP/2, WARC support. Near drop-in replacement." Two of those are true. wget2 has no WARC implementation — not a disabled build option, no code — so it cannot produce the only artifact this application keeps. Evidence and numbers in [14](14-tooling-landscape.md#wget2).
+
+It accepts every other flag the wget engine builds, which is exactly why it looked like a half-day's work. The speed it would have bought is real but mostly not where a slow capture's time goes: see [where a crawl's time actually goes](#where-a-crawls-time-actually-goes) — 83% of a default capture is the politeness delay, a setting the site editor already exposes. `browsertrix` is the only shipped engine that fetches in parallel *and* writes WARC, and it buys far less than wget2's threads did (43.8 s against 2.4 s) because each page goes through a browser.
 
 ### 5. `warcprox` — record anything
 
