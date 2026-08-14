@@ -125,20 +125,40 @@ a browser decodes the images approaching the viewport, and it takes the app's
 own UI with it because replay on the same hostname shares a process with the
 app ([07](07-replay.md#the-same-trap-costs-performance-too)).
 
-Since this was reported, the archived page loads only when you ask for it —
-**Load the archived page** — so a site page costs nothing to visit. If it still
-stalls once loaded, that is the archived page itself being heavy, and the two
-things that help are:
+**Turn off `Scripts` in the replay panel.** That is the fix in most cases, and
+it is one checkbox beside the capture selector.
 
-- **Give replay its own hostname**, which is worth doing anyway; the app can
-  then stay responsive while an archived page struggles.
-- **Use the reader view** for text. It reads extracted text rather than
-  rendering the page, so it is unaffected by how many photographs are on it.
+The dialog Firefox shows — *"This page is slowing down Firefox"* — is its
+**slow-script** warning, so the usual cause is not the page's weight but its
+JavaScript. An archived page's scripts run years after whatever they expected
+to talk to stopped answering: a retry loop never succeeds, an infinite-scroll
+handler never gets its next page, an analytics beacon never resolves. Live,
+those finish. Replayed, some of them spin forever.
 
-A useful check: does the app's own chrome — the URL bar, the capture selector —
-respond while the frame is stuck? If yes, it is the archived page. If the whole
-tab is dead before anything renders, it is not, and the browser console will
-say so.
+Confirmed by opening the same archive through pywb directly, on its own port,
+with none of this application involved — it hung identically. That is what
+places the fault in the page rather than anywhere in cairn.
+
+There is no way to ask pywb not to run a page's scripts, so the panel drops
+`allow-scripts` from the iframe sandbox instead. The archived bytes are
+untouched; you are choosing not to execute them. What goes missing is whatever
+the page built as it loaded — lazily-inserted images, infinite scroll, embedded
+players.
+
+Also worth knowing:
+
+- The archived page now loads only when you ask for it (**Load the archived
+  page**), so a site page costs nothing to visit even when its archive is one
+  of these.
+- **Give replay its own hostname.** Browsers isolate processes by site, not by
+  origin, so on one hostname a struggling archived page stalls the app's UI as
+  well as itself ([07](07-replay.md#the-same-trap-costs-performance-too)).
+- **The reader view** is unaffected: it reads extracted text and renders no
+  scripts and no images at all.
+
+If turning scripts off does *not* help, the page is genuinely heavy rather than
+looping — a front page of full-resolution photographs decodes to far more
+memory than it occupies on disk. Open a single post rather than the front page.
 
 ## The replay tab is blank, and you changed the replay port
 

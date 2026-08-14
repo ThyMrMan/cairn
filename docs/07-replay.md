@@ -136,6 +136,7 @@ The single most important security property in this document.
 | **CSP** | `enable_content_security_policy: true` — pywb injects a policy limiting archived content's outbound reach |
 | **Sandboxed iframe** | `sandbox="allow-scripts allow-same-origin allow-forms allow-popups"`. Archived JS needs scripts and same-origin *relative to the replay origin* to function; the sandbox still blocks top-navigation and plugins |
 | **`referrerpolicy="no-referrer"`** | Don't leak app URLs into archived content |
+| **`allow-scripts`, revocable** | Archived JavaScript runs by default, because that is what makes replay a replay. A checkbox drops it, and that is the only reliable rescue for a page whose scripts spin: they execute years after whatever they expected to talk to stopped answering, so a retry loop or an infinite-scroll handler can run forever where it used to finish. pywb offers no way to suppress them; removing one sandbox token does |
 | **Live-leak prevention** | pywb rewrites subresource URLs to route through the archive, so replay doesn't silently fetch from the live internet. Verify this in testing — a page that loads live analytics during replay is both a privacy leak and a correctness bug |
 
 ### The cookie-scope trap

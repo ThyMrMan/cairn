@@ -61,6 +61,10 @@ export function Replay({
   // Arriving from a search result is different: that URL was asked for by
   // name, so it loads without a second click.
   const [loaded, setLoaded] = useState(Boolean(initialUrl));
+  // Whether the archived page's own JavaScript may run. On by default, because
+  // it is what makes replay a replay rather than a screenshot — and off is the
+  // one thing that reliably rescues a page whose scripts spin.
+  const [scripts, setScripts] = useState(true);
 
   // The seed is the way in; everything else is reached by clicking.
   useEffect(() => {
@@ -238,6 +242,14 @@ export function Replay({
           {list.length === 1 ? "1 version" : `${list.length} versions`}
         </span>
 
+        <label
+          className="flex shrink-0 items-center gap-1.5 text-xs text-muted"
+          title="Turn off if the page hangs the browser. Some images will be missing."
+        >
+          <input type="checkbox" checked={scripts} onChange={(e) => setScripts(e.target.checked)} />
+          Scripts
+        </label>
+
         <a
           className="btn-ghost shrink-0 text-xs"
           href={src}
@@ -247,6 +259,15 @@ export function Replay({
           Open ↗
         </a>
       </div>
+
+      {!scripts && (
+        <Alert kind="info">
+          Running with the page&rsquo;s own JavaScript switched off. Anything the page built as it
+          loaded — lazily-inserted images, infinite scroll, embedded players — will be missing,
+          and the archived bytes are unchanged either way. This is the setting for a page whose
+          scripts hang the browser.
+        </Alert>
+      )}
 
       {versions.data?.count === 0 && (
         <Alert kind="warn">
@@ -271,8 +292,10 @@ export function Replay({
       ) : (
       <iframe
         // Keyed so switching capture or URL remounts rather than leaving the
-        // previous page on screen while the next one loads.
-        key={src}
+        // previous page on screen while the next one loads. `scripts` is part
+        // of the key because `sandbox` is read when the frame is created, so
+        // toggling it has to build a new one.
+        key={`${src}|${scripts}`}
         src={src}
         title="Archived page"
         className="h-[70vh] w-full rounded-md border border-border bg-white"
@@ -280,7 +303,19 @@ export function Replay({
         // the replay origin* to work at all. The sandbox still denies
         // top-level navigation, so a page in the archive cannot replace this
         // one, and popups open sandboxed.
-        sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+        //
+        // Dropping `allow-scripts` is the escape hatch. An archived page's
+        // scripts run years after whatever they expected to talk to stopped
+        // answering, and a retry loop or an infinite-scroll handler that never
+        // gets its next page will spin forever — reported as a blog that hangs
+        // the tab in replay, and identically through pywb on its own, which is
+        // what proves it is the page rather than anything here. There is no way
+        // to ask pywb not to run them, and this costs one attribute.
+        sandbox={
+          scripts
+            ? "allow-scripts allow-same-origin allow-forms allow-popups"
+            : "allow-same-origin allow-forms allow-popups"
+        }
         referrerPolicy="no-referrer"
       />
       )}
