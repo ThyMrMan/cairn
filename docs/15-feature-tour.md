@@ -263,6 +263,13 @@ Media URLs are the one genuinely attacker-controlled fetch target in the
 system — they come out of archived HTML somebody else wrote — so the
 private-range block in [11](11-security.md) is enforced there.
 
+It lives under **Embedded video and audio** on a site's page: the switch, the
+three limits, and a list of what each capture collected — playable in place —
+alongside what it refused and why. That last part is the half that matters
+years later, when the question is not "where is the video" but "was it ever
+there". Anything downloaded and since deleted, by a retention sweep or by hand,
+still shows its record; it just stops offering a link.
+
 ## Watching it
 
 **Prometheus** can scrape `/api/metrics`, off by default. It carries counts and

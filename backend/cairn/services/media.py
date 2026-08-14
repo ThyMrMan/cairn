@@ -353,3 +353,86 @@ def policy_for(session: Any, site: Any) -> dict[str, Any]:
     if isinstance(override, dict):
         policy.update(override)
     return policy
+
+
+# ── what a site has actually collected ───────────────────────────────────
+#
+# Read back from the capture manifests rather than from the directory, and the
+# difference is the entire point: the files on disk are only the successes. A
+# capture that found six embeds and was refused five of them leaves one file
+# and five explanations, and the explanations are what somebody needs — "the
+# video is not here" is the thing worth finding out now rather than in five
+# years, which is the reason this feature exists at all.
+
+
+ALLOWED_EXTENSIONS = frozenset(
+    {".mp4", ".webm", ".m4v", ".mov", ".mp3", ".m4a", ".ogg", ".ogv", ".opus", ".wav", ".flac"}
+)
+
+# What a browser may be told a file is. Keyed on extension, and deliberately
+# short: yt-dlp names the file from `%(ext)s`, which comes from the remote, so
+# the extension is not ours. An allowlist means the worst a hostile extension
+# can do is fail to be served.
+CONTENT_TYPES = {
+    ".mp4": "video/mp4",
+    ".m4v": "video/mp4",
+    ".mov": "video/quicktime",
+    ".webm": "video/webm",
+    ".ogv": "video/ogg",
+    ".mp3": "audio/mpeg",
+    ".m4a": "audio/mp4",
+    ".ogg": "audio/ogg",
+    ".opus": "audio/ogg",
+    ".wav": "audio/wav",
+    ".flac": "audio/flac",
+}
+
+
+def content_type(filename: str) -> str:
+    """The one type this will claim a file is, or "" to refuse it."""
+    return CONTENT_TYPES.get(Path(filename).suffix.lower(), "")
+
+
+def file_path(settings: Settings, archive_path: str, capture_dir: str, filename: str) -> Path:
+    """A downloaded file's path, refusing anything outside the media directory.
+
+    `filename` reaches here from a URL. `resolve_within` is what stops `..`
+    and a planted symlink; the extension check is what stops the file being
+    served as something a browser would execute.
+    """
+    if not content_type(filename):
+        raise MediaError(f"{filename!r} is not a media file this will serve")
+    return storage.resolve_within(media_dir(settings, archive_path, capture_dir), filename)
+
+
+def library(settings: Settings, site: Any, captures: list[Any]) -> dict[str, Any]:
+    """Every item these captures downloaded or refused, newest capture first."""
+    import json
+
+    items: list[dict[str, Any]] = []
+    total = 0
+    for capture in captures:
+        path = storage.manifest_path(settings, site.archive_path, capture.dir_name)
+        try:
+            manifest = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        block = ((manifest.get("stats") or {}).get("media")) or {}
+        for raw in block.get("items") or []:
+            if not isinstance(raw, dict):  # pragma: no cover — defensive
+                continue
+            entry = dict(raw)
+            entry["capture_id"] = capture.id
+            entry["capture_dir"] = capture.dir_name
+            name = str(entry.get("filename") or "")
+            # A file recorded in a manifest and since deleted — by a retention
+            # sweep, or by hand — must not be offered as a link that 404s.
+            entry["playable"] = bool(
+                name
+                and content_type(name)
+                and (media_dir(settings, site.archive_path, capture.dir_name) / name).is_file()
+            )
+            if entry.get("status") == "downloaded":
+                total += int(entry.get("bytes") or 0)
+            items.append(entry)
+    return {"items": items, "total_bytes": total}

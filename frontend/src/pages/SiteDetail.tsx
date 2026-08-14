@@ -7,6 +7,7 @@ import { Changes } from "../components/Changes";
 import { EnginePicker } from "../components/EnginePicker";
 import { Feeds } from "../components/Feeds";
 import { LiveLog } from "../components/LiveLog";
+import { Media } from "../components/Media";
 import { Replay } from "../components/Replay";
 import { Alert, EmptyState, Spinner } from "../components/ui";
 import { ApiError, endpoints } from "../lib/api";
@@ -158,6 +159,8 @@ export default function SiteDetail() {
       />
 
       <Changes siteId={siteId} captureCount={data.capture_count} />
+
+      <Media siteId={siteId} />
 
       <Exports siteId={siteId} captures={captures.data ?? []} />
 

@@ -34,6 +34,7 @@ on disk you can browse over SMB without the application running at all.
 | **Stays current** | Watch a feed, a sitemap, or a page's text. New posts are captured incrementally at a fraction of a full crawl. |
 | **Tells you when it breaks** | Notifications, a digest of what quietly *stopped* happening, live-site health checks, and a weekly checksum pass over every archived byte. |
 | **Pluggable engines** | Ships wget→WARC and browsertrix-crawler. A documented NDJSON contract lets you add your own in any language. |
+| **Keeps the embedded video** | No crawler captures a video stream, so an archived post with a YouTube embed keeps a dead rectangle. Switch it on per site and `yt-dlp` goes back for what the page embedded — bounded per item, per capture and by count, and playable from the site's page. |
 | **Portable output** | Standard WARC, a CDXJ index, and one-file `.wacz` export that [ReplayWeb.page](https://replayweb.page/) opens with no server. |
 
 A longer walk through every feature, and what each one deliberately does not

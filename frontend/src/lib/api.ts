@@ -978,6 +978,41 @@ export type RetentionPlan = {
   freed_bytes: number;
 };
 
+/** All optional: what is not set falls back to the instance default. */
+export type MediaPolicy = {
+  enabled?: boolean;
+  max_item_bytes?: number;
+  max_total_bytes?: number;
+  max_items?: number;
+  format?: string;
+  allow_private_hosts?: boolean;
+};
+
+export type MediaItem = {
+  url: string;
+  status: "downloaded" | "skipped" | "failed";
+  reason: string;
+  filename: string;
+  bytes: number;
+  title: string;
+  capture_id: number;
+  capture_dir: string;
+  /** The file is still on disk and has a type the server will serve. */
+  playable: boolean;
+};
+
+export type MediaSettings = {
+  /** Already merged: built-in under instance setting under site override. */
+  policy: Required<MediaPolicy>;
+  /** Only the fields this site overrides, which is what the form edits. */
+  override: MediaPolicy;
+  available: boolean;
+  unavailable_reason: string;
+  hosts: string[];
+  items: MediaItem[];
+  total_bytes: number;
+};
+
 export type IntegrityFinding = {
   kind: string;
   site_id: number;
@@ -1130,6 +1165,14 @@ export const endpoints = {
       `/sites/${siteId}/diff/resources${query(params as never)}`,
     ),
   retention: (siteId: number) => api.get<RetentionPlan>(`/sites/${siteId}/retention`),
+
+  // ── embedded media ─────────────────────────────────────────────────────
+  media: (siteId: number) => api.get<MediaSettings>(`/sites/${siteId}/media`),
+  putMedia: (siteId: number, body: MediaPolicy) =>
+    api.put<MediaSettings>(`/sites/${siteId}/media`, body),
+  /** Playable straight from a <video>/<audio> element; it answers Range. */
+  mediaUrl: (siteId: number, captureDir: string, filename: string) =>
+    `/api/sites/${siteId}/media/${encodeURIComponent(captureDir)}/${encodeURIComponent(filename)}`,
 
   // ── importing ──────────────────────────────────────────────────────────
   metricsSettings: () =>

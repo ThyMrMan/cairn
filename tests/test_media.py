@@ -9,6 +9,7 @@ to the downloader are the fixture's own.
 
 from __future__ import annotations
 
+import json
 import shutil
 import threading
 from collections.abc import Iterator
@@ -17,7 +18,10 @@ from pathlib import Path
 
 import pytest
 
-from cairn.services import media
+from cairn.db.models import Capture, Site
+from cairn.db.types import utcnow
+from cairn.services import media, storage
+from tests.conftest import XHR
 
 # ftyp + a body. Structurally enough of an MP4 for yt-dlp's generic extractor,
 # and nothing has to decode it.
@@ -276,18 +280,19 @@ def test_a_capture_of_a_page_with_a_video_gets_the_video(authed, settings, tmp_p
         # On for this site, and the private-host guard lifted because the
         # fixture is on loopback — which is exactly the pair the guard exists
         # to keep separate.
-        scope = authed.get(f"/api/sites/{site_id}").json()
-        assert scope is not None
-        from cairn.db.models import Site
-
-        factory = authed.app.state.sessionmaker
-        with factory() as session:
-            site = session.get(Site, site_id)
-            site.scope_settings = {
-                **(site.scope_settings or {}),
-                "media": {"enabled": True, "allow_private_hosts": True},
-            }
-            session.commit()
+        #
+        # Through the endpoint, not by writing `scope_settings` directly. This
+        # test used to reach into the session and set it, which is what a test
+        # does when the feature has no way in — and is why the missing endpoint
+        # went unnoticed: the only thing exercising the setting was a test that
+        # had bypassed it.
+        saved = authed.put(
+            f"/api/sites/{site_id}/media",
+            json={"enabled": True, "allow_private_hosts": True},
+            headers=XHR,
+        )
+        assert saved.status_code == 200, saved.text
+        assert saved.json()["policy"]["enabled"] is True
 
         started = authed.post(f"/api/sites/{site_id}/capture", json={"kind": "full"}, headers=XHR)
         from tests.test_capture_e2e import wait_for_job
@@ -315,3 +320,217 @@ def test_a_capture_of_a_page_with_a_video_gets_the_video(authed, settings, tmp_p
     # answerable years later without the database.
     detail = authed.get(f"/api/captures/{capture['id']}").json()
     assert detail["manifest"]["stats"]["media"]["downloaded"] == 1
+
+
+# ── the policy, and reaching it ──────────────────────────────────────────
+#
+# The download step shipped in M9 and nothing could switch it on: the policy
+# lives in `scope_settings["media"]` and no endpoint wrote it, so enabling the
+# feature meant editing the database by hand. These cover the endpoints that
+# closed that gap. None of them need yt-dlp — setting a policy, listing what a
+# capture recorded, and serving a file are all reachable without it, which is
+# also why the gap was invisible for so long.
+
+
+def _site_with_media(db, settings, *, items: list[dict] | None = None) -> tuple[int, str, str]:
+    """A site, one capture, and a manifest recording `items` as its media."""
+    site = Site(
+        folder_id=1,
+        slug="clips",
+        title="Clips",
+        seed_url="http://blog.test/",
+        primary_host="blog.test",
+        archive_path="Unfiled/clips",
+    )
+    db.add(site)
+    db.flush()
+    storage.ensure_site_dirs(settings, site.archive_path)
+
+    capture = Capture(
+        site_id=site.id,
+        kind="full",
+        engine_id="wget-warc",
+        dir_name="20260814-120000",
+        status="ok",
+        started_at=utcnow(),
+    )
+    db.add(capture)
+    db.flush()
+    storage.ensure_capture_dirs(settings, site.archive_path, capture.dir_name)
+
+    block = {"found": len(items or []), "items": items or []}
+    manifest = storage.manifest_path(settings, site.archive_path, capture.dir_name)
+    manifest.write_text(json.dumps({"stats": {"media": block}}), encoding="utf-8")
+    db.commit()
+    return site.id, site.archive_path, capture.dir_name
+
+
+def test_media_is_off_until_a_site_asks(authed, db, settings) -> None:
+    site_id, _, _ = _site_with_media(db, settings)
+    body = authed.get(f"/api/sites/{site_id}/media").json()
+    assert body["policy"]["enabled"] is False
+    assert body["override"] == {}
+    assert body["items"] == []
+
+
+def test_a_site_override_wins_over_the_instance_default(authed, db, settings) -> None:
+    """Built-in under instance setting under site override, and the endpoint
+    reports the merged result rather than any one layer."""
+    from cairn.services import settings_store
+
+    site_id, _, _ = _site_with_media(db, settings)
+    settings_store.put(db, media.SETTING, {"enabled": True, "max_items": 5})
+    db.commit()
+
+    inherited = authed.get(f"/api/sites/{site_id}/media").json()["policy"]
+    assert inherited["enabled"] is True
+    assert inherited["max_items"] == 5
+
+    saved = authed.put(f"/api/sites/{site_id}/media", json={"max_items": 2}, headers=XHR).json()
+    assert saved["policy"]["max_items"] == 2
+    # Still on, from the instance layer the override said nothing about.
+    assert saved["policy"]["enabled"] is True
+    # And the untouched built-in is still underneath both.
+    assert saved["policy"]["format"] == media.DEFAULT_POLICY["format"]
+
+
+def test_an_empty_body_returns_the_site_to_inheriting(authed, db, settings) -> None:
+    site_id, _, _ = _site_with_media(db, settings)
+    authed.put(f"/api/sites/{site_id}/media", json={"enabled": True}, headers=XHR)
+    assert authed.get(f"/api/sites/{site_id}/media").json()["override"] == {"enabled": True}
+
+    cleared = authed.put(f"/api/sites/{site_id}/media", json={}, headers=XHR).json()
+    assert cleared["override"] == {}
+    assert cleared["policy"]["enabled"] is False
+
+
+def test_the_limits_are_enforced_on_the_server(authed, db, settings) -> None:
+    """The form applies these too; a request that skips the form must not be
+    able to set an unbounded per-capture budget."""
+    site_id, _, _ = _site_with_media(db, settings)
+    for bad in ({"max_items": -1}, {"max_items": 100_000}, {"max_total_bytes": -5}, {"format": ""}):
+        response = authed.put(f"/api/sites/{site_id}/media", json=bad, headers=XHR)
+        assert response.status_code == 422, (bad, response.text)
+
+
+def test_the_listing_reports_refusals_and_why(authed, db, settings) -> None:
+    """A capture that found six embeds and was refused five leaves one file and
+    five explanations, and the explanations are the point."""
+    site_id, _, _ = _site_with_media(
+        db,
+        settings,
+        items=[
+            {
+                "url": "http://a.test/1",
+                "status": "downloaded",
+                "filename": "generic-1.mp4",
+                "bytes": 2048,
+                "title": "One",
+            },
+            {
+                "url": "http://lan.test/2",
+                "status": "skipped",
+                "reason": "lan.test resolves to 10.0.0.5, which is not a public address",
+            },
+        ],
+    )
+    body = authed.get(f"/api/sites/{site_id}/media").json()
+    assert len(body["items"]) == 2
+    refused = [i for i in body["items"] if i["status"] == "skipped"]
+    assert "not a public address" in refused[0]["reason"]
+    assert body["total_bytes"] == 2048
+
+
+def test_a_recorded_file_that_is_gone_is_not_offered_as_playable(authed, db, settings) -> None:
+    """Retention or a hand-deletion can remove the file while the manifest
+    keeps the record. The record stays; the link does not."""
+    site_id, _, _ = _site_with_media(
+        db,
+        settings,
+        items=[
+            {
+                "url": "http://a.test/1",
+                "status": "downloaded",
+                "filename": "generic-1.mp4",
+                "bytes": 2048,
+            }
+        ],
+    )
+    item = authed.get(f"/api/sites/{site_id}/media").json()["items"][0]
+    assert item["playable"] is False
+
+
+def test_a_downloaded_file_can_be_played_back(authed, db, settings) -> None:
+    site_id, archive_path, capture_dir = _site_with_media(
+        db,
+        settings,
+        items=[
+            {
+                "url": "http://a.test/1",
+                "status": "downloaded",
+                "filename": "generic-1.mp4",
+                "bytes": len(MP4),
+            }
+        ],
+    )
+    target = media.media_dir(settings, archive_path, capture_dir)
+    target.mkdir(parents=True, exist_ok=True)
+    (target / "generic-1.mp4").write_bytes(MP4)
+
+    assert authed.get(f"/api/sites/{site_id}/media").json()["items"][0]["playable"] is True
+
+    response = authed.get(f"/api/sites/{site_id}/media/{capture_dir}/generic-1.mp4")
+    assert response.status_code == 200
+    assert response.content == MP4
+    assert response.headers["content-type"] == "video/mp4"
+    assert response.headers["x-content-type-options"] == "nosniff"
+
+
+def test_the_media_server_will_not_serve_anything_it_could_be_tricked_into(
+    authed, db, settings
+) -> None:
+    """Two guards, and they are not interchangeable.
+
+    The extension allowlist is what stops a served file choosing to be HTML —
+    yt-dlp names the file from the remote's `%(ext)s`, so the extension is not
+    ours. `resolve_within` is what stops it being a file outside the media
+    directory.
+
+    Testing traversal with a `.yaml` target proves only the first guard, since
+    the extension check fires before the path is ever resolved — measured, and
+    it is why the escape attempts below all end in `.mp4`. That is also the
+    shape a real one would take: the point of escaping is to be served, and
+    only an allowlisted extension is served.
+    """
+    site_id, archive_path, capture_dir = _site_with_media(db, settings)
+    target = media.media_dir(settings, archive_path, capture_dir)
+    target.mkdir(parents=True, exist_ok=True)
+    (target / "evil.html").write_bytes(b"<script>alert(1)</script>")
+
+    assert authed.get(f"/api/sites/{site_id}/media/{capture_dir}/evil.html").status_code == 404
+
+    # A real file outside the media directory, so an escape that worked would
+    # return something recognisable rather than a 404 for being absent.
+    outside = settings.data_dir / "escaped.mp4"
+    outside.write_bytes(b"NOT-YOURS")
+
+    # Refused, rather than a particular status. The HTTP client collapses dot
+    # segments before the request is sent, so several of these never reach the
+    # handler at all and come back 422 from some other route — pinning 404
+    # would be asserting on httpx's URL normalisation rather than on this
+    # application. What matters is that none of them return the file.
+    for attempt in (
+        "../../../../escaped.mp4",
+        "..%2f..%2f..%2f..%2fescaped.mp4",
+        "sub/../../../../escaped.mp4",
+        "..\\..\\..\\..\\escaped.mp4",
+    ):
+        response = authed.get(f"/api/sites/{site_id}/media/{capture_dir}/{attempt}")
+        assert response.status_code != 200, attempt
+        assert b"NOT-YOURS" not in response.content, attempt
+
+    # And this is the assertion that actually exercises the guard: the same
+    # strings handed straight to the resolver, with no router in between.
+    for attempt in ("../../../../escaped.mp4", "sub/../../../../escaped.mp4"):
+        with pytest.raises(storage.StoragePathError):
+            media.file_path(settings, archive_path, capture_dir, attempt)

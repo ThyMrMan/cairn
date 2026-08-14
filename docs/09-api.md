@@ -143,6 +143,26 @@ Anything a filter can express must survive a round trip through both serializati
 | `POST` | `/api/captures/{id}/reindex` | Rebuild the site index |
 | `POST` | `/api/captures/{id}/export/wacz` | `202 {job_id}` — this capture alone |
 
+### Embedded media
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/api/sites/{id}/media` | Effective policy, whether `yt-dlp` is present, and every item recent captures downloaded **or refused, with the reason** |
+| `PUT` | `/api/sites/{id}/media` | `{enabled?, max_item_bytes?, max_total_bytes?, max_items?, format?, allow_private_hosts?}`. An empty body clears the site's override and returns it to the instance default |
+| `GET` | `/api/sites/{id}/media/{capture_dir}/{filename}` | The file itself, answering Range requests so it can be played in place |
+
+`policy` comes back merged — built-in under the `media.download` instance
+setting under the site's own override — because a form that edits one layer
+while displaying another is a form that lies. `override` carries only what this
+site sets, which is what a "back to default" control needs.
+
+The file endpoint serves **inline**, unlike a WACZ export, because a video
+nobody can play is not much of an archive. What makes that safe is that the
+type is never inferred: a short extension allowlist maps to one fixed content
+type and everything else is a 404, with `nosniff` and a `sandbox` CSP on top.
+yt-dlp takes the extension from the remote server, so it is precisely the sort
+of attacker-influenced string that must not be allowed to pick its own type.
+
 ---
 
 ## Jobs & events

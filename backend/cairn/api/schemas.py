@@ -734,6 +734,27 @@ class RetentionPolicy(BaseModel):
     min_age_days: int | None = Field(default=None, ge=0, le=3650)
 
 
+class MediaPolicy(BaseModel):
+    """A site's embedded-media rules, all optional and layered like retention.
+
+    The ceilings are generous rather than tight — this is somebody's own NAS
+    and the point of the feature is to keep video that is about to disappear.
+    They exist because these three numbers are the only thing standing between
+    an unattended nightly capture and a full disk, so "no limit" is not one of
+    the things that can be typed here.
+    """
+
+    enabled: bool | None = None
+    max_item_bytes: int | None = Field(default=None, ge=0, le=64 * 1024**3)
+    max_total_bytes: int | None = Field(default=None, ge=0, le=512 * 1024**3)
+    max_items: int | None = Field(default=None, ge=0, le=1000)
+    # Reaches yt-dlp as a format selector, never a shell string. Bounded only
+    # in length; yt-dlp rejects a malformed one and the failure is reported
+    # per item, which is a better error than anything guessed at here.
+    format: str | None = Field(default=None, min_length=1, max_length=200)
+    allow_private_hosts: bool | None = None
+
+
 class MetricsSettings(BaseModel):
     """The token is write-only. Reads report whether one is set, never what."""
 

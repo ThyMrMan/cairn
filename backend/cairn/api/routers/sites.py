@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Query, Request, Response, status
+from fastapi.responses import FileResponse
 from sqlalchemy import func, select
 
 from cairn.api.deps import AppSettings, ClientIp, Csrf, CurrentUser, DbSession
@@ -16,6 +17,7 @@ from cairn.api.schemas import (
     CaptureSummary,
     HostRuleModel,
     JobAccepted,
+    MediaPolicy,
     MoveOutcome,
     Ok,
     Page,
@@ -31,13 +33,13 @@ from cairn.config import Settings
 from cairn.db.models import Capture, Folder, Job, Site
 from cairn.db.types import utcnow
 from cairn.engines.registry import EngineConfigError, EngineError
-from cairn.services import audit, moves, symlinks, thumbnail, trash
+from cairn.services import audit, media, moves, symlinks, thumbnail, trash
 from cairn.services import folders as folder_service
 from cairn.services import sites as site_service
 from cairn.services import tags as tag_service
 from cairn.services.filters import FilterError, SiteFilter
 from cairn.services.scope import HostRule, Scope, ScopeError, to_wget_args
-from cairn.services.storage import CrossDeviceMoveError
+from cairn.services.storage import CrossDeviceMoveError, StoragePathError
 
 router = APIRouter(tags=["sites"], dependencies=[Csrf])
 
@@ -654,6 +656,131 @@ def start_capture(
     db.commit()
     supervisor.notify()
     return JobAccepted(job_id=job.id)
+
+
+# ── embedded media ───────────────────────────────────────────────────────
+#
+# The post-processor that downloads embedded video has been in the chain since
+# M9, and until now nothing could switch it on: the policy lives in
+# `scope_settings["media"]` and no endpoint wrote it, so the only way to enable
+# the feature was to edit the database by hand. These three endpoints are what
+# make it a feature rather than an implementation.
+
+
+def _media_captures(db: DbSession, site: Site, limit: int = 50) -> list[Capture]:
+    return list(
+        db.scalars(
+            select(Capture)
+            .where(Capture.site_id == site.id)
+            .order_by(Capture.started_at.desc())
+            .limit(limit)
+        ).all()
+    )
+
+
+@router.get("/sites/{site_id}/media")
+def get_media(
+    site_id: int, db: DbSession, settings: AppSettings, _user: CurrentUser
+) -> dict[str, Any]:
+    """The effective policy, whether it can run, and what it has collected.
+
+    `policy` is already merged — built-in under instance setting under site
+    override — because the layering is invisible in the UI and a form that
+    edits one layer while displaying another is a form that lies.
+    """
+    site = _require_site(db, site_id)
+    ok, reason = media.available()
+    return {
+        "policy": media.policy_for(db, site),
+        "override": (site.scope_settings or {}).get("media") or {},
+        "available": ok,
+        "unavailable_reason": reason,
+        "hosts": list(media.EMBED_HOSTS),
+        **media.library(settings, site, _media_captures(db, site)),
+    }
+
+
+@router.put("/sites/{site_id}/media")
+def set_media(
+    site_id: int,
+    body: MediaPolicy,
+    db: DbSession,
+    settings: AppSettings,
+    user: CurrentUser,
+    ip: ClientIp,
+) -> dict[str, Any]:
+    """Set this site's media policy. Only the fields sent are overridden."""
+    site = _require_site(db, site_id)
+    override = body.model_dump(exclude_none=True)
+    scope_settings = dict(site.scope_settings or {})
+    if override:
+        scope_settings["media"] = override
+    else:
+        # An empty body clears the override and returns the site to whatever
+        # the instance default is, which is the only way back to "inherit".
+        scope_settings.pop("media", None)
+    site.scope_settings = scope_settings
+    db.flush()
+    audit.record(
+        db,
+        "media.policy",
+        actor=user.username,
+        target=site.slug,
+        ip=ip,
+        detail=override,
+    )
+    ok, reason = media.available()
+    return {
+        "policy": media.policy_for(db, site),
+        "override": override,
+        "available": ok,
+        "unavailable_reason": reason,
+        "hosts": list(media.EMBED_HOSTS),
+        **media.library(settings, site, _media_captures(db, site)),
+    }
+
+
+@router.get("/sites/{site_id}/media/{capture_dir}/{filename}")
+def media_file(
+    site_id: int,
+    capture_dir: str,
+    filename: str,
+    db: DbSession,
+    settings: AppSettings,
+    _user: CurrentUser,
+) -> FileResponse:
+    """Serve one downloaded file, so an archived video can be watched.
+
+    Unlike a WACZ export — a zip of untrusted archived bytes, always an
+    attachment — this is offered inline, because a video nobody can play is
+    not much of an archive. What makes that safe is that the type is never
+    inferred: `media.content_type` maps a short extension allowlist to one
+    fixed value and refuses everything else, and `nosniff` stops the browser
+    reconsidering. yt-dlp takes the extension from the remote server, so it is
+    exactly the sort of attacker-influenced string that must not choose its
+    own content type.
+
+    `FileResponse` also answers Range requests, which is what lets somebody
+    seek in a two-hour recording instead of downloading it first.
+    """
+    site = _require_site(db, site_id)
+    try:
+        path = media.file_path(settings, site.archive_path, capture_dir, filename)
+    except (media.MediaError, StoragePathError):
+        raise ApiError("not_found", "No such media file.", status_code=404) from None
+    if not path.is_file():
+        raise ApiError("not_found", "No such media file.", status_code=404)
+    return FileResponse(
+        path,
+        media_type=media.content_type(filename),
+        headers={
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "private, max-age=300",
+            # Archived third-party bytes: never let this page host script or
+            # be framed by anything, whatever the browser decides it is.
+            "Content-Security-Policy": "default-src 'none'; media-src 'self'; sandbox",
+        },
+    )
 
 
 @router.get("/sites/{site_id}/captures", response_model=list[CaptureSummary])
