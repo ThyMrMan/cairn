@@ -4,7 +4,7 @@ import { useState } from "react";
 import type { Feed, FeedCandidate } from "../lib/api";
 import { ApiError, endpoints } from "../lib/api";
 import { relative } from "../lib/format";
-import { Alert, Spinner } from "./ui";
+import { Alert, PanelHeader, Spinner, useCollapsible } from "./ui";
 
 /**
  * Watching a site for new content.
@@ -24,6 +24,7 @@ import { Alert, Spinner } from "./ui";
  */
 export function Feeds({ siteId }: { siteId: number }) {
   const [adding, setAdding] = useState(false);
+  const { open, toggle } = useCollapsible("feeds", true);
   const feeds = useQuery({ queryKey: ["feeds", siteId], queryFn: () => endpoints.feeds(siteId) });
 
   const rows = feeds.data ?? [];
@@ -31,34 +32,40 @@ export function Feeds({ siteId }: { siteId: number }) {
 
   return (
     <section className="card p-5">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h2 className="text-sm font-medium">Feeds and watchers</h2>
-          <p className="hint mt-0.5">
-            New posts are archived into this site's own folder, without re-crawling it.
-          </p>
-        </div>
-        <button className="btn-ghost text-xs" onClick={() => setAdding((v) => !v)}>
-          {adding ? "Cancel" : "+ Add a feed"}
-        </button>
-      </div>
+      <PanelHeader
+        title="Feeds and watchers"
+        hint={
+          // The count belongs in the header, because it is the thing you would
+          // have opened the panel to find out.
+          rows.length > 0
+            ? `${rows.length} watched${pending > 0 ? `, ${pending} pending` : ""}.`
+            : "New posts are archived into this site's own folder, without re-crawling it."
+        }
+        open={open}
+        onToggle={toggle}
+        extra={
+          <button className="btn-ghost text-xs" onClick={() => setAdding((v) => !v)}>
+            {adding ? "Cancel" : "+ Add a feed"}
+          </button>
+        }
+      />
 
-      {adding && (
+      {open && adding && (
         <div className="mt-4">
           <AddFeed siteId={siteId} onDone={() => setAdding(false)} />
         </div>
       )}
 
-      {feeds.isLoading && <Spinner className="mt-4 h-4 w-4 text-muted" />}
+      {open && feeds.isLoading && <Spinner className="mt-4 h-4 w-4 text-muted" />}
 
-      {!feeds.isLoading && rows.length === 0 && !adding && (
+      {open && !feeds.isLoading && rows.length === 0 && !adding && (
         <p className="mt-4 text-sm text-muted">
           Nothing is being watched. Add a feed, or press <em>Index</em> on this site — discovery
           attaches whatever it finds.
         </p>
       )}
 
-      {rows.length > 0 && (
+      {open && rows.length > 0 && (
         <ul className="mt-4 space-y-2">
           {rows.map((feed) => (
             <FeedRow key={feed.id} feed={feed} siteId={siteId} />
@@ -66,7 +73,7 @@ export function Feeds({ siteId }: { siteId: number }) {
         </ul>
       )}
 
-      {pending > 0 && (
+      {open && pending > 0 && (
         <p className="hint mt-3">
           {pending} item(s) are waiting to be captured. They go on the next scheduled pass, or
           use <em>Capture pending</em> on the feed to do it now.

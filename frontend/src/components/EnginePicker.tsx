@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 
 import type { Engine, SiteDetail } from "../lib/api";
 import { ApiError, endpoints } from "../lib/api";
-import { Alert, Spinner } from "./ui";
+import { Alert, PanelHeader, Spinner, useCollapsible } from "./ui";
 
 /**
  * Choosing how a site gets captured.
@@ -23,6 +23,10 @@ export function EnginePicker({ site }: { site: SiteDetail }) {
   const [chosen, setChosen] = useState(site.engine_id);
   const [config, setConfig] = useState<Record<string, unknown>>(site.engine_config);
   const [saved, setSaved] = useState(false);
+  // Open by default: it is where the capability warnings live, and this panel
+  // exists to say something *before* a capture rather than after. Collapsing
+  // it is a choice somebody makes, not one made for them.
+  const { open, toggle } = useCollapsible("engine", true);
 
   const engines = useQuery({ queryKey: ["engines"], queryFn: endpoints.engines });
   const schema = useQuery({
@@ -53,10 +57,14 @@ export function EnginePicker({ site }: { site: SiteDetail }) {
 
   return (
     <section className="card p-5">
-      <h2 className="text-sm font-medium">Capture engine</h2>
-      <p className="hint mt-0.5">How this site is fetched. Existing captures are unaffected.</p>
+      <PanelHeader
+        title="Capture engine"
+        hint="How this site is fetched. Existing captures are unaffected."
+        open={open}
+        onToggle={toggle}
+      />
 
-      <div className="mt-4 space-y-4">
+      {open && <div className="mt-4 space-y-4">
         <div className="grid gap-2 sm:grid-cols-2">
           {list
             .filter((e) => e.enabled)
@@ -121,7 +129,7 @@ export function EnginePicker({ site }: { site: SiteDetail }) {
             ))}
           </Alert>
         )}
-      </div>
+      </div>}
     </section>
   );
 }

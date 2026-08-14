@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type { ReactNode } from "react";
 
 export function Logo({ className = "h-7 w-7" }: { className?: string }) {
@@ -98,6 +99,80 @@ export function Stat({ label, value, sub }: { label: string; value: string; sub?
       <p className="text-xs font-medium uppercase tracking-wide text-muted">{label}</p>
       <p className="mt-1.5 text-2xl font-semibold tabular-nums text-fg">{value}</p>
       {sub && <p className="hint mt-0.5">{sub}</p>}
+    </div>
+  );
+}
+
+/**
+ * A panel's open/closed state, remembered across page loads.
+ *
+ * Without the remembering this is a toy: collapsing a section you never use
+ * only helps if it is still collapsed the next time you open the page, and
+ * per-render state resets on every navigation.
+ *
+ * Kept in localStorage rather than on the site, because it is a preference of
+ * whoever is looking rather than a property of the archive — two people using
+ * one instance should not fight over each other's layout.
+ */
+export function useCollapsible(key: string, defaultOpen: boolean) {
+  const storageKey = `cairn.panel.${key}`;
+  const [open, setOpen] = useState(() => {
+    try {
+      const saved = localStorage.getItem(storageKey);
+      return saved === null ? defaultOpen : saved === "1";
+    } catch {
+      // Private mode, or storage disabled. A remembered panel is a nicety;
+      // losing the whole page because of it is not a trade worth making.
+      return defaultOpen;
+    }
+  });
+
+  const toggle = () =>
+    setOpen((wasOpen) => {
+      const next = !wasOpen;
+      try {
+        localStorage.setItem(storageKey, next ? "1" : "0");
+      } catch {
+        /* see above */
+      }
+      return next;
+    });
+
+  return { open, toggle };
+}
+
+/**
+ * The clickable header of a collapsible card, matching the one the replay and
+ * export panels already use: title and hint on the left, Hide/Show on the
+ * right, the whole row a button.
+ *
+ * `extra` is for a control that must sit in the header without being swallowed
+ * by it — Feeds has an "Add a feed" button there, and nesting one button
+ * inside another is invalid and un-clickable.
+ */
+export function PanelHeader({
+  title,
+  hint,
+  open,
+  onToggle,
+  extra,
+}: {
+  title: string;
+  hint?: string;
+  open: boolean;
+  onToggle: () => void;
+  extra?: ReactNode;
+}) {
+  return (
+    <div className="flex flex-wrap items-start justify-between gap-3">
+      <button className="flex flex-1 items-start justify-between text-left" onClick={onToggle}>
+        <div>
+          <h2 className="text-sm font-medium">{title}</h2>
+          {hint && <p className="hint mt-0.5">{hint}</p>}
+        </div>
+        <span className="ml-3 shrink-0 text-xs text-muted">{open ? "Hide" : "Show"}</span>
+      </button>
+      {open && extra}
     </div>
   );
 }
