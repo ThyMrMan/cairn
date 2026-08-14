@@ -24,6 +24,10 @@ export function DomainPicker({ siteId, onChanged }: { siteId: number; onChanged?
   const [draft, setDraft] = useState<Record<string, HostRule> | null>(null);
   const [rejects, setRejects] = useState<string[] | null>(null);
   const [cap, setCap] = useState<number | null | undefined>(undefined);
+  // undefined = untouched, so the saved value shows through until somebody
+  // actually changes it. A plain `useState(true)` would quietly turn robots
+  // back on for any site that had it off, on the next unrelated scope save.
+  const [robots, setRobots] = useState<boolean | undefined>(undefined);
   const [saved, setSaved] = useState(false);
 
   const discovery = useQuery({
@@ -56,7 +60,7 @@ export function DomainPicker({ siteId, onChanged }: { siteId: number; onChanged?
       endpoints.putScope(siteId, {
         hosts: Object.values(draft ?? {}),
         reject_patterns: rejects ?? [],
-        obey_robots: scope.data?.obey_robots ?? true,
+        obey_robots: robots ?? scope.data?.obey_robots ?? true,
         max_pages: cap === undefined ? (scope.data?.max_pages ?? null) : cap,
         max_bytes: scope.data?.max_bytes ?? null,
         politeness: scope.data?.politeness ?? {},
@@ -85,12 +89,15 @@ export function DomainPicker({ siteId, onChanged }: { siteId: number; onChanged?
 
   const dirty = useMemo(() => {
     if (!draft || !discovery.data) return false;
+    // The robots toggle counts too, or flipping it alone leaves the page
+    // looking unchanged while holding an unsaved change.
+    if (robots !== undefined && robots !== (scope.data?.obey_robots ?? true)) return true;
     return discovery.data.hosts.some(
       (h) =>
         draft[h.host]?.crawl_pages !== h.crawl_pages ||
         draft[h.host]?.fetch_assets !== h.fetch_assets,
     );
-  }, [draft, discovery.data]);
+  }, [draft, discovery.data, robots, scope.data]);
 
   if (discovery.isLoading) return <Spinner className="h-5 w-5 text-muted" />;
 
@@ -231,6 +238,15 @@ export function DomainPicker({ siteId, onChanged }: { siteId: number; onChanged?
         }}
       />
 
+      <ObeyRobots
+        value={robots ?? scope.data?.obey_robots ?? true}
+        disallowed={discovery.data?.discovery?.summary?.robots?.disallowed ?? []}
+        onChange={(next) => {
+          setSaved(false);
+          setRobots(next);
+        }}
+      />
+
       {save.error && <Alert kind="error">{(save.error as ApiError).message}</Alert>}
 
       <div className="flex items-center gap-3">
@@ -347,6 +363,72 @@ function HostRow({
  * the way in. The name is stuck; the label does not have to repeat the
  * mistake.
  */
+/**
+ * Whether the crawl honours robots.txt.
+ *
+ * It was in the scope model and in both engines, and nowhere in the UI — the
+ * save call passed the stored value straight back, so the only way to change
+ * it was the API. That mattered more than it looks: on Blogger it is the
+ * switch governing everything under /search, which is where the Older-posts
+ * trail lives, and advice to "turn it off" pointed at a control that did not
+ * exist.
+ *
+ * The disallowed list comes from the robots.txt discovery already fetched, so
+ * this says what is actually being excluded on *this* site rather than
+ * explaining the idea of robots.txt in the abstract.
+ */
+function ObeyRobots({
+  value,
+  disallowed,
+  onChange,
+}: {
+  value: boolean;
+  disallowed: string[];
+  onChange: (next: boolean) => void;
+}) {
+  return (
+    <div className="card p-4">
+      <label className="flex items-start gap-3">
+        <input
+          type="checkbox"
+          className="mt-0.5"
+          checked={value}
+          onChange={(event) => onChange(event.target.checked)}
+        />
+        <span>
+          <span className="text-sm font-medium">Obey robots.txt</span>
+          <span className="hint mt-0.5 block">
+            On by default, and the polite thing for a site you do not own. Turning it off is
+            how you reach paths the site asks crawlers to skip — which on some platforms is
+            where the archive pagination lives, so a link in the archived page can be dead
+            with this on.
+          </span>
+        </span>
+      </label>
+
+      {disallowed.length > 0 && (
+        <div className="mt-3 border-t border-border pt-3">
+          <p className="hint">
+            This site&apos;s robots.txt disallows {disallowed.length} path
+            {disallowed.length === 1 ? "" : "s"}
+            {value ? ", and they are being skipped:" : ", and they are being crawled anyway:"}
+          </p>
+          <div className="mt-1.5 flex flex-wrap gap-1.5">
+            {disallowed.slice(0, 12).map((path) => (
+              <code key={path} className="rounded bg-raised px-1.5 py-0.5 text-[11px]">
+                {path}
+              </code>
+            ))}
+            {disallowed.length > 12 && (
+              <span className="text-[11px] text-muted">+{disallowed.length - 12} more</span>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function CrawlCap({
   value,
   onChange,

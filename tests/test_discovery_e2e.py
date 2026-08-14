@@ -306,6 +306,42 @@ def test_rerunning_discovery_keeps_a_user_edited_scope(
     assert [h["host"] for h in scope["hosts"]] == [BLOG], "the re-run overwrote a chosen scope"
 
 
+def test_obey_robots_round_trips_through_the_scope_api(
+    authed: TestClient, blogger_site: str
+) -> None:
+    """The setting the scope editor now has a control for.
+
+    It was in the model and in both engines and nowhere in the UI, so the only
+    way to change it was this call — which nothing exercised either. On Blogger
+    it governs everything under /search, including the blog's own Older-posts
+    trail, so advice to turn it off was advice to use the API.
+    """
+    site_id, _result = discovered_site(authed, blogger_site)
+    assert authed.get(f"/api/sites/{site_id}/scope").json()["obey_robots"] is True
+
+    saved = authed.put(
+        f"/api/sites/{site_id}/scope",
+        json={
+            "hosts": [{"host": BLOG, "crawl_pages": True, "fetch_assets": True}],
+            "obey_robots": False,
+        },
+        headers=XHR,
+    )
+    assert saved.status_code == 200, saved.text
+    assert authed.get(f"/api/sites/{site_id}/scope").json()["obey_robots"] is False
+
+    # And back, because a toggle that only goes one way is half a control.
+    authed.put(
+        f"/api/sites/{site_id}/scope",
+        json={
+            "hosts": [{"host": BLOG, "crawl_pages": True, "fetch_assets": True}],
+            "obey_robots": True,
+        },
+        headers=XHR,
+    )
+    assert authed.get(f"/api/sites/{site_id}/scope").json()["obey_robots"] is True
+
+
 def test_applying_a_preset_reports_what_it_changed(authed: TestClient, blogger_site: str) -> None:
     site_id, _result = discovered_site(authed, blogger_site)
     authed.put(
