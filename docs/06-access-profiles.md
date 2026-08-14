@@ -328,6 +328,35 @@ docker run --rm -p 9223:9223 -p 6080:6080 --shm-size=2g -e VNC_PASS=changeme \
 the first of the two silent export failures at the top of this document —
 handled here rather than left to the exporter.
 
+### One profile, many blogs
+
+The tarball is a whole Brave user-data-dir — `Default/Cookies`,
+`Default/Local Storage/leveldb`, `Default/Preferences` — not a per-site
+credential. Whether one covers a second blog depends entirely on what let you
+past the first:
+
+| What gated it | Covers other blogs? |
+|---|---|
+| A **Google account sign-in** | **Yes.** The session lives on `.google.com`, so any blog gating on "you must be signed in" is already satisfied |
+| A **Blogger content warning** | **Usually**, if the cookie is scoped `.blogspot.com` — but the domain varies by blog and locale, and the rule at the top of this document applies: do not assume it |
+| A blog on a **custom domain** | **No.** Its own click-through sets its own cookie |
+
+**So do not make one profile per blog. Make one session that visits them all.**
+The profile browser accumulates state across every origin you visit before
+committing, which its own control API will confirm as you go: `/ping` returns
+the origins it has collected, and it grows as you navigate. Measured —
+`["https://example.com"]` after the first load, then
+`["https://example.com","https://example.org"]` after a `POST /navigate` to
+the second, in one session and one tarball.
+
+Practically: start `create-login-profile` on the first blog, sign in or click
+through, use the VNC window (or `POST /navigate`) to visit each other blog and
+clear its gate too, check `/ping` lists them all, then `POST /createProfile`
+once. Upload that single tarball and point every one of those sites at it.
+
+`--cookieDays` still governs how long it lasts, so a shared profile expires as
+a unit and is re-made the same way.
+
 ### How it is stored
 
 Sealed under the same key as everything else, but **on disk** in
