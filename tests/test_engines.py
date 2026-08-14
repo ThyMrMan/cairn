@@ -516,3 +516,51 @@ def test_browsertrix_leaves_robots_alone_when_the_scope_overrides_it(tmp_path: P
     }
     spec = wget_spec(tmp_path, scope=scope, config={})
     assert "--useRobots" not in Runner(spec, EventWriter())._argv()
+
+
+def test_reject_patterns_reach_the_network_layer_not_just_the_page_queue(tmp_path: Path) -> None:
+    """`--exclude` is documented as "regex of **page URLs**" and that is the
+    whole problem.
+
+    It filters the crawl queue. A beacon fired by the page's own JavaScript is
+    never queued as a page, so no exclude rule can touch it — which is how
+    `/b/stats` stayed at 26% of every fetch across three real captures with an
+    exclude pattern that matched it perfectly. Measured against browsertrix
+    1.14.1 on a fixture whose page fetches a beacon from script:
+
+        --exclude only          4 records, beacon archived
+        --exclude + --blockRules 3 records, beacon gone
+
+    It also makes the engines agree. wget's `--reject-regex` has always applied
+    to everything it fetches, so "skip URLs matching" meant one thing on one
+    engine and something much weaker on the other.
+    """
+    from cairn.engines.browsertrix import Runner
+    from cairn.engines.protocol import EventWriter
+
+    scope = {
+        "seeds": ["https://b.blogspot.com/"],
+        "hosts": [{"host": "b.blogspot.com", "crawl_pages": True, "fetch_assets": True}],
+        "reject_patterns": [r"/b/stats\?", r"[?&]m=1"],
+    }
+    argv = Runner(wget_spec(tmp_path, scope=scope, config={}), EventWriter())._argv()
+
+    assert "--exclude" in argv
+    assert "--blockRules" in argv
+    assert argv[argv.index("--exclude") + 1] == argv[argv.index("--blockRules") + 1]
+    assert r"/b/stats\?" in argv[argv.index("--blockRules") + 1]
+
+
+def test_no_block_rules_when_nothing_is_rejected(tmp_path: Path) -> None:
+    """An empty regex would block everything."""
+    from cairn.engines.browsertrix import Runner
+    from cairn.engines.protocol import EventWriter
+
+    scope = {
+        "seeds": ["https://b.blogspot.com/"],
+        "hosts": [{"host": "b.blogspot.com", "crawl_pages": True, "fetch_assets": True}],
+        "reject_patterns": [],
+    }
+    argv = Runner(wget_spec(tmp_path, scope=scope, config={}), EventWriter())._argv()
+    assert "--blockRules" not in argv
+    assert "--exclude" not in argv

@@ -388,7 +388,23 @@ class Runner:
             argv += ["--useRobots"]
 
         if scope.reject_patterns:
-            argv += ["--exclude", "|".join(f"(?:{p})" for p in scope.reject_patterns)]
+            combined = "|".join(f"(?:{p})" for p in scope.reject_patterns)
+            # Both, because they cover different halves and `--exclude` alone
+            # covers the wrong one for most of these patterns.
+            #
+            # `--exclude` is documented as "regex of **page URLs**": it filters
+            # the crawl queue. A beacon fired by the page's own JavaScript is
+            # never queued as a page, so no exclude rule can touch it —
+            # measured, and painfully: `/b/stats` stayed at 26% of all fetches
+            # across three captures with an exclude pattern that matched it
+            # perfectly. `--blockRules` is the network-level one, and a plain
+            # string there is read as a URL regex with type "block".
+            #
+            # This also makes the two engines agree. wget's `--reject-regex`
+            # has always applied to everything it fetches, so "skip URLs
+            # matching" meant one thing on one engine and something much
+            # weaker on the other.
+            argv += ["--exclude", combined, "--blockRules", combined]
         if scope.max_pages:
             argv += ["--limit", str(scope.max_pages)]
         if scope.max_depth is not None:
