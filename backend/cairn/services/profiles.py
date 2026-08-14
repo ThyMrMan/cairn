@@ -34,8 +34,16 @@ log = get_logger(__name__)
 COOKIES_CONTEXT = "profile.cookies"
 SCRIPT_CONTEXT = "profile.script"
 STORAGE_CONTEXT = "profile.storage"
+BROWSER_PROFILE_CONTEXT = "profile.browser"
 COOKIE_FILE_NAME = "cookies.txt"
+BROWSER_PROFILE_FILE_NAME = "profile.tar.gz"
 MAX_COOKIE_BYTES = 1024 * 1024
+
+# A browsertrix profile tarball. Measured at 41 MB for one Google login, so
+# the ceiling is generous — and it is the reason this one material does not
+# live in a database column like the others: `list_profiles` would drag every
+# byte of it into memory on each page load.
+MAX_BROWSER_PROFILE_BYTES = 512 * 1024 * 1024
 NETSCAPE_FIELDS = 7
 HTTPONLY_PREFIX = "#HttpOnly_"
 
@@ -424,7 +432,120 @@ def storage_note(meta: dict[str, Any] | None) -> str | None:
     )
 
 
-def clear_material(session: Session, profile: AccessProfile) -> None:
+# ── browsertrix browser profiles ─────────────────────────────────────────
+#
+# The one credential this application does not mint. browsertrix runs Brave
+# and cannot take a cookie jar, so a profile built by our own Chromium is
+# accepted and silently ignored (docs/06) — which left gated sites with no
+# browser engine at all, and therefore no way to archive a site whose content
+# is built by script *and* sits behind a login.
+#
+# What closes it is browsertrix's own `create-login-profile`, running the same
+# browser in the same image, headful under Xvfb. That last part is why it gets
+# through sign-ins our CDP screencast cannot: the headless fingerprint is
+# simply absent. Cairn does not run it — it takes the tarball it produces.
+#
+# Stored on disk rather than in a column because it is two orders of magnitude
+# larger than every other material here, and sealed all the same: it is a live
+# browser session, which is a stronger credential than the cookie jar.
+
+
+def browser_profile_path(settings: Any, profile_id: int) -> Path:
+    """Where a sealed tarball lives. `personas_dir` was created at boot and
+    never used — the personas work ended up in `storage_enc` instead."""
+    return Path(settings.personas_dir) / f"{profile_id}.tar.gz.enc"
+
+
+def store_browser_profile(
+    session: Session, sealer: Sealer, profile: AccessProfile, settings: Any, source: Path
+) -> dict[str, Any]:
+    """Seal a browsertrix profile tarball and record what it is.
+
+    The digest is over the *plaintext*, so it identifies the tarball rather
+    than this particular encryption of it — two seals of one file differ byte
+    for byte, and "did the profile change?" is the question worth answering.
+    """
+    raw = source.read_bytes()
+    if not raw:
+        raise ProfileError("That file is empty.")
+    if len(raw) > MAX_BROWSER_PROFILE_BYTES:
+        raise ProfileError(
+            f"That file is larger than {MAX_BROWSER_PROFILE_BYTES // (1024 * 1024)} MB."
+        )
+    # Cheap sanity check with a real payoff: uploading the *log* instead of the
+    # tarball would otherwise be discovered as a crawl that archived the login
+    # page several thousand times.
+    if not raw.startswith(b"\x1f\x8b"):
+        raise ProfileError(
+            "That is not a gzip file. Upload the profile.tar.gz that "
+            "create-login-profile wrote, not its log or a folder."
+        )
+
+    target = browser_profile_path(settings, profile.id)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    sealed = sealer.seal(raw, context=BROWSER_PROFILE_CONTEXT)
+    fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as fh:
+        fh.write(sealed)
+
+    meta = {
+        "size": len(raw),
+        "sha256": hashlib.sha256(raw).hexdigest()[:16],
+        "stored_at": to_iso(utcnow()),
+    }
+    profile.cookie_meta = {**(profile.cookie_meta or {}), "browser_profile": meta}
+    profile.updated_at = utcnow()
+    session.flush()
+    log.info("browser profile stored", extra={"profile": profile.id, "bytes": len(raw)})
+    return meta
+
+
+def has_browser_profile(profile: AccessProfile) -> bool:
+    return bool((profile.cookie_meta or {}).get("browser_profile"))
+
+
+def write_browser_profile(
+    sealer: Sealer, profile: AccessProfile, settings: Any, target: Path
+) -> Path | None:
+    """Unseal the tarball into a job's temp directory, or None if there isn't one.
+
+    Streams nothing: it is one read and one write of a few tens of megabytes,
+    and a chunked frame format would be a second thing to get wrong for no
+    benefit at this size.
+    """
+    if not has_browser_profile(profile):
+        return None
+    source = browser_profile_path(settings, profile.id)
+    if not source.is_file():
+        log.warning(
+            "profile claims a browser profile that is not on disk",
+            extra={"profile": profile.id, "path": str(source)},
+        )
+        return None
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as fh:
+        fh.write(sealer.unseal(source.read_bytes(), context=BROWSER_PROFILE_CONTEXT))
+    return target
+
+
+def clear_browser_profile(session: Session, profile: AccessProfile, settings: Any) -> None:
+    meta = dict(profile.cookie_meta or {})
+    meta.pop("browser_profile", None)
+    profile.cookie_meta = meta or None
+    profile.updated_at = utcnow()
+    browser_profile_path(settings, profile.id).unlink(missing_ok=True)
+    session.flush()
+
+
+def clear_material(session: Session, profile: AccessProfile, settings: Any = None) -> None:
+    # `settings` is optional only so the service tests can call this without
+    # one. Pass it from anything with a filesystem: dropping `cookie_meta`
+    # forgets that a browser profile exists, and without this the sealed
+    # tarball stays on disk with nothing left pointing at it.
+    if settings is not None:
+        browser_profile_path(settings, profile.id).unlink(missing_ok=True)
     profile.cookies_enc = None
     profile.script_enc = None
     profile.storage_enc = None
@@ -444,43 +565,62 @@ def load_cookies(sealer: Sealer, profile: AccessProfile) -> str | None:
 
 @dataclass(slots=True)
 class Material:
-    cookies_file: Path
+    # Optional since a browsertrix profile is a complete credential on its own
+    # and comes with no jar — that engine has no cookie option to hand one to.
+    cookies_file: Path | None
     user_agent: str | None
     # The full browser state, for the callers that can use one. Held in memory
     # rather than written beside the jar: nothing outside this process reads
     # it, and a second plaintext credential on disk is a second thing to leak.
     storage_state: dict[str, Any] | None = None
+    # The unsealed browsertrix tarball, for the engine that takes `--profile`.
+    profile_file: Path | None = None
 
 
 def materialize(
-    session: Session, sealer: Sealer, profile_id: int, temp_dir: Path
+    session: Session, sealer: Sealer, profile_id: int, temp_dir: Path, settings: Any = None
 ) -> Material | None:
-    """Write the plaintext jar into a job's temp directory.
+    """Write the plaintext material into a job's temp directory.
 
-    This is the only place the material exists unencrypted, it never touches
-    the archive tree, and the supervisor deletes the directory when the job
-    ends — with a boot sweep of /data/tmp closing the crash window (docs/06).
+    This is the only place it exists unencrypted, it never touches the archive
+    tree, and the supervisor deletes the directory when the job ends — with a
+    boot sweep of /data/tmp closing the crash window (docs/06).
+
+    Returns None only when there is *nothing* to hand over. A profile holding
+    a browsertrix tarball and no jar is a complete credential for the engine
+    that can use one, and refusing it here would be the same silent failure
+    this whole feature exists to remove.
     """
     profile = session.get(AccessProfile, profile_id)
     if profile is None:
         return None
-    text = load_cookies(sealer, profile)
-    if text is None:
-        log.warning("site has a profile with no cookies stored", extra={"profile": profile_id})
-        return None
 
     temp_dir.mkdir(parents=True, exist_ok=True)
-    target = temp_dir / COOKIE_FILE_NAME
-    # Written 600 before any content lands in it: creating world-readable and
-    # narrowing afterwards leaves a window where any process could read it.
-    fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        fh.write(text if text.endswith("\n") else text + "\n")
+    target: Path | None = None
+    text = load_cookies(sealer, profile)
+    if text is not None:
+        target = temp_dir / COOKIE_FILE_NAME
+        # Written 600 before any content lands in it: creating world-readable
+        # and narrowing afterwards leaves a window where anything could read it.
+        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text if text.endswith("\n") else text + "\n")
+
+    tarball: Path | None = None
+    if settings is not None:
+        tarball = write_browser_profile(
+            sealer, profile, settings, temp_dir / BROWSER_PROFILE_FILE_NAME
+        )
+
+    if target is None and tarball is None:
+        log.warning("site has a profile with nothing stored in it", extra={"profile": profile_id})
+        return None
 
     return Material(
         cookies_file=target,
         user_agent=profile.user_agent,
         storage_state=load_storage_state(sealer, profile),
+        profile_file=tarball,
     )
 
 
@@ -540,10 +680,18 @@ def summary(profile: AccessProfile) -> dict[str, Any]:
         "hosts_covered": meta.get("hosts_covered", []),
         "sensitive": meta.get("sensitive", []),
         "warnings": meta.get("warnings", []),
-        "has_material": profile.cookies_enc is not None or profile.script_enc is not None,
+        "has_material": (
+            profile.cookies_enc is not None
+            or profile.script_enc is not None
+            or has_browser_profile(profile)
+        ),
         "has_cookies": profile.cookies_enc is not None,
         "has_script": profile.script_enc is not None,
         "has_storage": profile.storage_enc is not None,
+        "has_browser_profile": has_browser_profile(profile),
+        # Size and digest only. A tarball is a live browser session, so the
+        # same rule applies as everywhere else here: never the material.
+        "browser_profile": meta.get("browser_profile"),
         "storage": meta.get("storage") or {},
         "storage_note": storage_note(meta),
         "script": meta.get("script"),

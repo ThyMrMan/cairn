@@ -378,6 +378,10 @@ class SiteDetail(SiteSummary):
     scope: ScopeResponse
     capture_count: int
     running_job_id: int | None
+    # Whether this site's access profile carries a browsertrix browser
+    # profile. The engine picker warns about a gate the chosen engine cannot
+    # pass, and a tarball is the one thing that gets browsertrix through one.
+    profile_has_browser_profile: bool = False
 
 
 # ── captures ─────────────────────────────────────────────────────────────

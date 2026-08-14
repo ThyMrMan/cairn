@@ -326,6 +326,8 @@ export type SiteDetail = Site & {
   scope: Scope;
   capture_count: number;
   running_job_id: number | null;
+  /** Detail only — the summary would need a profile lookup per row. */
+  profile_has_browser_profile: boolean;
 };
 
 export type Capture = {
@@ -375,6 +377,16 @@ export type Job = {
   attempts: number;
 };
 
+/**
+ * A browsertrix browser-profile tarball, described but never sent. Size and a
+ * truncated digest are enough to answer "is one attached, and did it change?"
+ */
+export type BrowserProfileMeta = {
+  size: number;
+  sha256: string;
+  stored_at: string;
+};
+
 export type Profile = {
   id: number;
   name: string;
@@ -390,6 +402,9 @@ export type Profile = {
   has_cookies: boolean;
   has_script: boolean;
   has_storage: boolean;
+  has_browser_profile: boolean;
+  /** Size and digest only — never the tarball, which is a live session. */
+  browser_profile: BrowserProfileMeta | null;
   /** Counts only — never a key and never a value (docs/06). */
   storage?: { cookies: number; origins: string[]; local_items: number };
   /** Present when the profile holds more than the wget engine can use. */
@@ -1318,6 +1333,13 @@ export const endpoints = {
     api.post<{ result: MintResult; profile: Profile }>(`/profiles/${id}/mint`),
   verifyProfile: (id: number) => api.post<VerifyResult>(`/profiles/${id}/verify`),
   clearMaterial: (id: number) => api.del<{ ok: boolean }>(`/profiles/${id}/material`),
+  uploadBrowserProfile: (id: number, file: File) =>
+    api.upload<{ browser_profile: BrowserProfileMeta; profile: Profile }>(
+      `/profiles/${id}/browser-profile`,
+      file,
+    ),
+  clearBrowserProfile: (id: number) =>
+    api.del<{ ok: boolean }>(`/profiles/${id}/browser-profile`),
 
   // ── interactive ────────────────────────────────────────────────────────
   startInteractive: (id: number, url?: string) =>

@@ -32,14 +32,32 @@ passed a shorter list that dropped `autofetch` — the behavior that fetches
 lazily-referenced resources, which is most of the reason to use this engine.
 The lazy-image fixture went from three images to one.
 
-**It cannot take a cookie jar, and no bridge is possible.** `crawl --help` has
-no cookie option at all; `--profile` takes a tar.gz of a browser profile. A
-profile built with our own Chromium is *accepted* and its cookies are ignored,
-because browsertrix runs Brave and we ship Google Chrome for Testing — a
-different browser, so a different cookie-encryption key. Verified end to end
-against a gated fixture: the crawl archived the interstitial. The engine
-therefore declares no cookie capability and says so before the crawl, rather
-than quietly archiving a content warning several thousand times.
+**It cannot take a cookie jar, and the bridge is a tarball, not a jar.**
+`crawl --help` has no cookie option at all; `--profile` takes a tar.gz of a
+browser profile. A profile built with our own Chromium is *accepted* and its
+cookies are ignored, because browsertrix runs Brave and we ship Google Chrome
+for Testing — a different browser, so a different cookie-encryption key.
+Verified end to end against a gated fixture: the crawl archived the
+interstitial.
+
+M7 concluded from that that no bridge existed, and that was one step short.
+The crawler's own image ships `create-login-profile`, which drives *the same
+browser* and writes a tarball this accepts — so the mismatch is not between
+browsertrix and profiles, it is between browsertrix and profiles built
+elsewhere. Two things follow, both measured against 1.14.1:
+
+- It runs **headful under Xvfb** (`--headless` defaults to false, and both
+  Xvfb and x11vnc are in the image). That is why it gets through sign-ins the
+  CDP screencast in docs/06 cannot: the headless fingerprint is simply absent.
+  Confirmed against a real Google login, which is the case docs/06 records as
+  out of reach.
+- The interactive session commits over its own control API on port 9223 —
+  `POST /createProfile` writes `/crawls/profiles/profile.tar.gz` and nothing
+  in the VNC window says so. Measured at 41 MB for one Google login.
+
+Cairn does not run that tool; it takes the tarball, seals it, and hands it
+back through `--profile`. A cookie jar with no tarball still gets the warning,
+because for this engine a jar really is unusable.
 """
 
 from __future__ import annotations
@@ -61,6 +79,11 @@ from cairn.services.scope import Scope
 # Where browsertrix keeps its working tree inside its own container.
 CRAWLS = "/crawls"
 COLLECTION = "capture"
+
+# Where the job's temp directory appears to the crawler when a browser profile
+# is being passed. Deliberately not under /crawls: that tree is the crawler's
+# to write, and this is one file it only reads.
+PROFILE_MOUNT = "/cairn/auth"
 
 DEFAULT_IMAGE = "webrecorder/browsertrix-crawler:1.14.1"
 
@@ -145,22 +168,48 @@ class Runner:
         )
         return code or 1
 
+    def _profile_tarball(self) -> Path | None:
+        """The browser profile to crawl with, if the job carries one.
+
+        Checked for existence rather than trusted: the supervisor writes it
+        into the temp directory, and a `--profile` pointing at nothing makes
+        browsertrix start a clean browser and archive the login page, which is
+        the failure this is here to prevent.
+        """
+        named = self.spec.auth.profile_file
+        if not named:
+            return None
+        path = Path(named)
+        return path if path.is_file() else None
+
     def _warn_about_auth(self) -> None:
-        """Say before the crawl that a cookie jar will not be used.
+        """Say before the crawl what will and will not get past a gate.
 
         Otherwise a site behind a content warning is archived as several
         thousand copies of the content warning, and the only sign is that the
         pages look wrong when somebody eventually reads them.
         """
+        if self._profile_tarball() is not None:
+            self.events.log("crawling with the profile's browsertrix browser profile")
+            return
+        if self.spec.auth.profile_file:
+            self.events.warning(
+                "auth_unsupported",
+                "This site's profile names a browsertrix browser profile that is not on "
+                "disk, so the crawl is starting from a clean browser and anything behind "
+                "the gate will be archived as the gate. Re-upload the tarball.",
+            )
+            return
         if not self.spec.auth.cookies_file:
             return
         self.events.warning(
             "auth_unsupported",
             "This site has a cookie-based access profile, and browsertrix cannot use one — "
             "it has no cookie option, and it runs a different browser from the one that "
-            "minted the jar, so a browser profile does not carry across either. Anything "
-            "behind the gate will be archived as the gate. Use the wget engine for gated "
-            "sites, or a custom behavior that clicks through the warning.",
+            "minted the jar, so cookies do not carry across. Anything behind the gate will "
+            "be archived as the gate. Either use the wget engine, or attach a browsertrix "
+            "browser profile to this access profile — `create-login-profile` in the "
+            "crawler's own image builds one that it will accept.",
         )
 
     def _stats(self, started: float) -> dict[str, Any]:
@@ -185,10 +234,17 @@ class Runner:
     async def _crawl(self, http: Any, image: str, work: Path, started: float) -> int:
         from cairn.services import containers
 
+        mounts = [(work, CRAWLS)]
+        if self._profile_tarball() is not None:
+            # Its own directory, read by the crawler and nothing else. The
+            # temp directory it sits in also holds the cookie jar, and there
+            # is no reason to show that to a container that cannot read one.
+            mounts.append((self.tmp, PROFILE_MOUNT))
+
         run = containers.RunSpec(
             image=image,
             argv=self._argv(),
-            mounts=[(work, CRAWLS)],
+            mounts=mounts,
             job_id=self.spec.job_id,
             shm_size=str(self.config.get("shm_size") or "2g"),
             memory=str(self.config.get("memory_limit") or ""),
@@ -318,6 +374,8 @@ class Runner:
             argv += ["--behaviors", behaviors]
         if agent := self.spec.auth.user_agent:
             argv += ["--userAgent", agent]
+        if (tarball := self._profile_tarball()) is not None:
+            argv += ["--profile", f"{PROFILE_MOUNT}/{tarball.name}"]
         if self.config.get("extract_text", True):
             argv += ["--text", "to-warc"]
         return argv

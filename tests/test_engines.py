@@ -347,3 +347,73 @@ def test_every_argument_is_a_separate_list_item(tmp_path: Path) -> None:
     argv = build_argv(spec, tmp_path / "out", tmp_path / "tmp", tmp_path / "tmp")
     assert "https://example.com/; rm -rf /" in argv
     assert all(isinstance(a, str) for a in argv)
+
+
+# ── browsertrix browser profiles ─────────────────────────────────────────
+#
+# The bridge M7 concluded did not exist. It does, but only through the
+# crawler's own `create-login-profile`, which drives the same browser — so
+# what has to be right here is the *container-side* path, since the file the
+# supervisor writes is at one path for us and another for the crawler.
+#
+# Proven against browsertrix 1.14.1 with a real 41 MB tarball: mounted at
+# /cairn/auth, passed as --profile, the crawl logged "With Browser Profile"
+# and archived a 200. These tests hold the shape that made that work.
+
+
+def browsertrix_runner(tmp_path: Path, **auth: object):
+    from cairn.engines.browsertrix import Runner
+    from cairn.engines.protocol import EventWriter
+
+    spec = wget_spec(tmp_path, auth=auth, config={})
+    return Runner(spec, EventWriter())
+
+
+def test_a_browser_profile_is_passed_at_the_path_the_crawler_will_see(tmp_path: Path) -> None:
+    """Not the path we wrote it to — the crawler is in another container."""
+    from cairn.engines.browsertrix import PROFILE_MOUNT
+
+    tarball = tmp_path / "tmp" / "profile.tar.gz"
+    tarball.parent.mkdir(parents=True, exist_ok=True)
+    tarball.write_bytes(b"\x1f\x8b" + b"\x00" * 32)
+
+    argv = browsertrix_runner(tmp_path, profile_file=str(tarball))._argv()
+    assert "--profile" in argv
+    assert argv[argv.index("--profile") + 1] == f"{PROFILE_MOUNT}/profile.tar.gz"
+    assert str(tarball) not in argv, "our own path means nothing inside the crawler"
+
+
+def test_no_profile_flag_when_the_file_is_missing(tmp_path: Path) -> None:
+    """A `--profile` pointing at nothing is worse than none at all.
+
+    browsertrix does not fall back — it quits with `Profile setup failed`, or
+    on an older path starts clean and archives the login page. Measured: the
+    fatal is real, so the flag has to be earned by the file existing.
+    """
+    runner = browsertrix_runner(tmp_path, profile_file=str(tmp_path / "gone.tar.gz"))
+    assert runner._profile_tarball() is None
+    assert "--profile" not in runner._argv()
+
+
+def test_a_cookie_jar_alone_still_warns(tmp_path: Path) -> None:
+    """The M7 finding stands where no tarball is attached: this engine has no
+    cookie option, so a jar means the gate gets archived."""
+    runner = browsertrix_runner(tmp_path, cookies_file=str(tmp_path / "cookies.txt"))
+    warnings: list[tuple[str, str]] = []
+    runner.events.warning = lambda code, message: warnings.append((code, message))  # type: ignore[method-assign]
+    runner._warn_about_auth()
+    assert warnings and warnings[0][0] == "auth_unsupported"
+
+
+def test_a_browser_profile_replaces_that_warning(tmp_path: Path) -> None:
+    tarball = tmp_path / "tmp" / "profile.tar.gz"
+    tarball.parent.mkdir(parents=True, exist_ok=True)
+    tarball.write_bytes(b"\x1f\x8b" + b"\x00" * 32)
+
+    runner = browsertrix_runner(
+        tmp_path, cookies_file=str(tmp_path / "cookies.txt"), profile_file=str(tarball)
+    )
+    warnings: list[tuple[str, str]] = []
+    runner.events.warning = lambda code, message: warnings.append((code, message))  # type: ignore[method-assign]
+    runner._warn_about_auth()
+    assert warnings == []

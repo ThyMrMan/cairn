@@ -276,3 +276,74 @@ built with one is accepted and silently ignored by the other — verified agains
 a gated fixture, which it archived the interstitial of. The value of storing
 full browser state is the browser paths *inside* this application, not a bridge
 to that one.
+
+---
+
+## Mode 4 — a browsertrix browser profile
+
+M7 concluded from the above that no bridge existed. That was one step short,
+and the step is this: **the mismatch is not between browsertrix and profiles,
+it is between browsertrix and profiles built elsewhere.** Its own image ships
+`create-login-profile`, which drives the same browser the crawl will use and
+writes a tarball `--profile` therefore reads rather than ignores.
+
+Cairn does not run that tool. It takes the tarball, seals it, and hands it
+back at crawl time. Upload it on the profile card; the card also carries the
+commands, because two of the steps are not discoverable from the tool itself.
+
+### Why this gets past a Google sign-in when mode 3 cannot
+
+`--headless` **defaults to false** — the profile browser starts Xvfb and runs
+headful, with x11vnc streaming it to port 6080. That is exactly the
+configuration considered and rejected for this image above ("would remove the
+headless fingerprint natively"), and browsertrix already has the X server.
+
+Confirmed against a real Google account login, which the section above records
+as out of reach. It remains true that Google looks at more than the headless
+flag and that defeating a detector is not a game worth playing — the point is
+that no defeating is involved here. It is an ordinary headful browser.
+
+### The two steps nothing tells you
+
+**The page is on 9223, not 6080.** 6080 carries the websockified stream; the
+noVNC page is served from 9223 at `/vnc/`, and the tool builds its own URL as
+`http://$HOST:9223/vnc/?host=$HOST&port=6080&password=$VNC_PASS`. Publish
+both, open only the first.
+
+**Signing in does not save anything.** The session is committed over the
+control API on 9223 — `POST /createProfile` writes
+`/crawls/profiles/profile.tar.gz` and answers *Profile Created!*. Nothing in
+the VNC window says so, and a container closed without it loses the login.
+`/ping` returns the origins the browser has visited, which is worth checking
+first. Measured at **41 MB** for one Google login.
+
+```bash
+docker run --rm -p 9223:9223 -p 6080:6080 --shm-size=2g -e VNC_PASS=changeme \
+  -v /mnt/user/appdata/cairn/btrix:/crawls \
+  webrecorder/browsertrix-crawler:1.14.1 \
+  create-login-profile --url "https://example.blogspot.com/" --cookieDays 30
+```
+
+`--cookieDays` rewrites session cookies to a fixed duration on save, which is
+the first of the two silent export failures at the top of this document —
+handled here rather than left to the exporter.
+
+### How it is stored
+
+Sealed under the same key as everything else, but **on disk** in
+`personas_dir` rather than in a column: it is two orders of magnitude larger
+than any other material here, and `GET /api/profiles` would otherwise read
+every byte of it to render a list. Unsealed only into the job's temp directory
+at 600, deleted with the job, swept at boot like the jar.
+
+`GET /api/profiles/{id}` reports `size`, a truncated `sha256` and `stored_at`
+— enough to answer "is one attached, and did it change?" and nothing more. A
+browser profile is a live session, so the rule that a profile never serializes
+its material applies with more force here, not less.
+
+### What still does not work
+
+A cookie jar remains unusable by browsertrix, and the engine still says so
+before a crawl when one is attached without a tarball. The two are
+alternatives: wget takes the jar, browsertrix takes the tarball, and neither
+reads the other's.

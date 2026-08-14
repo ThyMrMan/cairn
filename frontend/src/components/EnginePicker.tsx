@@ -165,11 +165,22 @@ function CapabilityNotes({ engine, site }: { engine: Engine; site: SiteDetail })
   const auth = (caps.auth as string[] | undefined) ?? [];
   const notes: string[] = [];
 
-  if (site.profile_id && !auth.includes("cookies")) {
+  // A browser profile is the other way past a gate, and the only one this
+  // engine has. Warning about the cookie jar while one is attached would be
+  // telling somebody a solved problem is unsolved.
+  const passesTheGate =
+    auth.includes("cookies") ||
+    (auth.includes("browser_profile") && site.profile_has_browser_profile);
+
+  if (site.profile_id && !passesTheGate) {
     notes.push(
-      `This site has an access profile, and ${engine.name} cannot use a cookie jar. ` +
-        "Anything behind the gate will be archived as the gate — use an engine that " +
-        "declares cookie support, or check the capture afterwards.",
+      auth.includes("browser_profile")
+        ? `This site has an access profile, and ${engine.name} cannot use a cookie jar — ` +
+            "it has no cookie option at all. Attach a browsertrix browser profile to that " +
+            "access profile, or anything behind the gate will be archived as the gate."
+        : `This site has an access profile, and ${engine.name} cannot use a cookie jar. ` +
+            "Anything behind the gate will be archived as the gate — use an engine that " +
+            "declares cookie support, or check the capture afterwards.",
     );
   }
   if (!caps.javascript) {

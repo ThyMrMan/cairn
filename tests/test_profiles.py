@@ -11,6 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
+from cairn.config import Settings
 from cairn.crypto.sealing import Sealer
 from cairn.db.models import AccessProfile
 from cairn.db.types import utcnow
@@ -314,3 +315,135 @@ def test_the_mint_says_which_field_is_missing_rather_than_failing_vaguely(
     error = refused.json()["error"]
     assert error["code"] == "no_verify_url"
     assert "verify url" in error["message"].lower()
+
+
+# ── browsertrix browser profiles ─────────────────────────────────────────
+#
+# Stored on disk rather than in a column, because it is two orders of
+# magnitude larger than everything else here — 41 MB measured for one Google
+# login. Sealed all the same: a browser profile is a live session, which is a
+# stronger credential than the jar, not a weaker one.
+
+GZIP = b"\x1f\x8b" + b"payload that stands in for a browser profile" * 8
+
+
+def test_a_browser_profile_round_trips_through_the_seal(
+    db: Session, sealer: Sealer, tmp_path: Path
+) -> None:
+    settings = Settings(
+        config_dir=tmp_path / "config", data_dir=tmp_path / "data",
+        secret_key="x" * 40, _env_file=None,
+    )  # fmt: skip
+    profile = make_profile(db)
+    source = tmp_path / "profile.tar.gz"
+    source.write_bytes(GZIP)
+
+    meta = profiles.store_browser_profile(db, sealer, profile, settings, source)
+    assert meta["size"] == len(GZIP)
+    assert profiles.has_browser_profile(profile)
+
+    sealed = profiles.browser_profile_path(settings, profile.id)
+    assert sealed.is_file()
+    assert GZIP not in sealed.read_bytes(), "material must be sealed at rest"
+
+    out = profiles.write_browser_profile(sealer, profile, settings, tmp_path / "job" / "p.tar.gz")
+    assert out is not None
+    assert out.read_bytes() == GZIP
+
+
+def test_a_file_that_is_not_a_tarball_is_refused(
+    db: Session, sealer: Sealer, tmp_path: Path
+) -> None:
+    """Uploading the crawler's *log* instead of its tarball would otherwise be
+    discovered as a capture that archived the login page a few thousand times."""
+    settings = Settings(
+        config_dir=tmp_path / "config", data_dir=tmp_path / "data",
+        secret_key="x" * 40, _env_file=None,
+    )  # fmt: skip
+    profile = make_profile(db)
+    source = tmp_path / "crawl.log"
+    source.write_bytes(b'{"logLevel":"info"}\n')
+
+    with pytest.raises(profiles.ProfileError, match="not a gzip"):
+        profiles.store_browser_profile(db, sealer, profile, settings, source)
+    assert not profiles.has_browser_profile(profile)
+
+
+def test_clearing_material_removes_the_tarball_from_disk(
+    db: Session, sealer: Sealer, tmp_path: Path
+) -> None:
+    """Dropping cookie_meta forgets that one exists; without this the sealed
+    session stays on disk with nothing pointing at it."""
+    settings = Settings(
+        config_dir=tmp_path / "config", data_dir=tmp_path / "data",
+        secret_key="x" * 40, _env_file=None,
+    )  # fmt: skip
+    profile = make_profile(db)
+    source = tmp_path / "profile.tar.gz"
+    source.write_bytes(GZIP)
+    profiles.store_browser_profile(db, sealer, profile, settings, source)
+    sealed = profiles.browser_profile_path(settings, profile.id)
+    assert sealed.is_file()
+
+    profiles.clear_material(db, profile, settings)
+    assert not sealed.exists()
+    assert not profiles.has_browser_profile(profile)
+
+
+def test_materialize_hands_over_a_tarball_with_no_cookies_at_all(
+    db: Session, sealer: Sealer, tmp_path: Path
+) -> None:
+    """A browsertrix profile is a complete credential on its own.
+
+    Returning None here because there is no jar would refuse the only thing
+    that engine can actually use, which is the silent failure this exists to
+    remove.
+    """
+    settings = Settings(
+        config_dir=tmp_path / "config", data_dir=tmp_path / "data",
+        secret_key="x" * 40, _env_file=None,
+    )  # fmt: skip
+    profile = make_profile(db)
+    source = tmp_path / "profile.tar.gz"
+    source.write_bytes(GZIP)
+    profiles.store_browser_profile(db, sealer, profile, settings, source)
+
+    material = profiles.materialize(db, sealer, profile.id, tmp_path / "job-1", settings)
+    assert material is not None
+    assert material.cookies_file is None
+    assert material.profile_file is not None
+    assert material.profile_file.read_bytes() == GZIP
+
+
+def test_the_upload_route_never_leaves_the_plaintext_behind(authed: TestClient) -> None:
+    created = authed.post(
+        "/api/profiles", json={"name": "btrix", "mode": "interactive"}, headers=XHR
+    )
+    profile_id = created.json()["id"]
+
+    uploaded = authed.put(
+        f"/api/profiles/{profile_id}/browser-profile",
+        files={"file": ("profile.tar.gz", GZIP, "application/gzip")},
+        headers=XHR,
+    )
+    assert uploaded.status_code == 200, uploaded.text
+    body = uploaded.json()
+    assert body["browser_profile"]["size"] == len(GZIP)
+    assert body["profile"]["has_browser_profile"] is True
+    # Metadata only, like every other material here.
+    assert "payload" not in repr(body)
+
+
+def test_the_upload_route_rejects_a_non_tarball(authed: TestClient) -> None:
+    created = authed.post(
+        "/api/profiles", json={"name": "btrix-bad", "mode": "interactive"}, headers=XHR
+    )
+    profile_id = created.json()["id"]
+
+    refused = authed.put(
+        f"/api/profiles/{profile_id}/browser-profile",
+        files={"file": ("crawl.log", b"not a tarball", "text/plain")},
+        headers=XHR,
+    )
+    assert refused.status_code == 422
+    assert refused.json()["error"]["code"] == "invalid_browser_profile"

@@ -8,13 +8,15 @@ ever transmitting it.
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, File, Query, UploadFile, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from cairn.api.deps import AppSealer, ClientIp, Csrf, CurrentUser, DbSession
+from cairn.api.deps import AppSealer, AppSettings, ClientIp, Csrf, CurrentUser, DbSession
 from cairn.api.errors import ApiError
 from cairn.api.schemas import (
     CookieUploadResponse,
@@ -160,9 +162,81 @@ async def upload_cookies(
 
 
 @router.delete("/profiles/{profile_id}/material", response_model=Ok)
-def clear_material(profile_id: int, db: DbSession, user: CurrentUser, ip: ClientIp) -> Ok:
+def clear_material(
+    profile_id: int, db: DbSession, settings: AppSettings, user: CurrentUser, ip: ClientIp
+) -> Ok:
     profile = _require_profile(db, profile_id)
-    profile_service.clear_material(db, profile)
+    profile_service.clear_material(db, profile, settings)
+    audit.record(db, audit.PROFILE_MATERIAL_CLEAR, actor=user.username, target=profile.name, ip=ip)
+    return Ok()
+
+
+@router.put("/profiles/{profile_id}/browser-profile")
+async def upload_browser_profile(
+    profile_id: int,
+    db: DbSession,
+    sealer: AppSealer,
+    settings: AppSettings,
+    user: CurrentUser,
+    ip: ClientIp,
+    file: UploadFile = File(...),
+) -> dict[str, Any]:
+    """Upload a browsertrix browser-profile tarball. Write-only.
+
+    The one credential this application does not produce. browsertrix will not
+    read a cookie jar and ignores a profile built by our Chromium, so the only
+    thing it accepts is a tarball from its own `create-login-profile` — run
+    against the crawler's own image, where the browser is the same one the
+    crawl will use (docs/06).
+
+    Spooled to a file rather than read into memory: these are tens of
+    megabytes, and `UploadFile` already spills to disk past a threshold.
+    """
+    profile = _require_profile(db, profile_id)
+
+    spool = Path(settings.tmp_dir) / f"upload-profile-{profile.id}.tar.gz"
+    spool.parent.mkdir(parents=True, exist_ok=True)
+    total = 0
+    try:
+        fd = os.open(spool, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "wb") as out:
+            while chunk := await file.read(1024 * 1024):
+                total += len(chunk)
+                if total > profile_service.MAX_BROWSER_PROFILE_BYTES:
+                    raise ApiError(
+                        "payload_too_large",
+                        f"That file is larger than "
+                        f"{profile_service.MAX_BROWSER_PROFILE_BYTES // (1024 * 1024)} MB.",
+                        status_code=413,
+                    )
+                out.write(chunk)
+
+        try:
+            meta = profile_service.store_browser_profile(db, sealer, profile, settings, spool)
+        except profile_service.ProfileError as exc:
+            raise ApiError("invalid_browser_profile", str(exc), status_code=422) from exc
+    finally:
+        # The plaintext tarball is a live browser session. It does not outlive
+        # the request under any exit path, including the two raises above.
+        spool.unlink(missing_ok=True)
+
+    audit.record(
+        db,
+        audit.PROFILE_MATERIAL_WRITE,
+        actor=user.username,
+        target=profile.name,
+        ip=ip,
+        detail={"kind": "browser_profile", "bytes": meta["size"]},
+    )
+    return {"browser_profile": meta, "profile": profile_service.summary(profile)}
+
+
+@router.delete("/profiles/{profile_id}/browser-profile", response_model=Ok)
+def clear_browser_profile(
+    profile_id: int, db: DbSession, settings: AppSettings, user: CurrentUser, ip: ClientIp
+) -> Ok:
+    profile = _require_profile(db, profile_id)
+    profile_service.clear_browser_profile(db, profile, settings)
     audit.record(db, audit.PROFILE_MATERIAL_CLEAR, actor=user.username, target=profile.name, ip=ip)
     return Ok()
 

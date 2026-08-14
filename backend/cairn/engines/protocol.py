@@ -59,9 +59,15 @@ class JobAuth(BaseModel):
     `cookies_file` points into the job's temp directory and is deleted when
     the job ends, including after a crash via the boot sweep (docs/06). The
     file itself is never in the archive tree.
+
+    `profile_file` is a browsertrix browser-profile tarball, under the same
+    terms. It exists because browsertrix has no cookie option at all and will
+    not read a jar — the two are alternatives, not a pair, and an engine reads
+    whichever one it declares support for.
     """
 
     cookies_file: str | None = None
+    profile_file: str | None = None
     user_agent: str | None = None
     headers: dict[str, str] = Field(default_factory=dict)
 

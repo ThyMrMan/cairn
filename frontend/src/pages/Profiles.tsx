@@ -370,6 +370,8 @@ function ProfileCard({ profile }: { profile: Profile }) {
         </div>
       )}
 
+      <BrowserProfile profile={profile} />
+
       <VerifyUrl profile={profile} />
 
       {profile.has_script && !profile.verify_url && (
@@ -444,6 +446,121 @@ function ProfileCard({ profile }: { profile: Profile }) {
       )}
     </div>
   );
+}
+
+/**
+ * The browsertrix browser profile: the one credential this app cannot mint.
+ *
+ * browsertrix will not read a cookie jar, and it ignores a profile built by
+ * our own Chromium because it runs Brave. The only thing it accepts is a
+ * tarball from its own `create-login-profile` — which is also headful under
+ * Xvfb, and therefore gets through sign-ins the in-app browser cannot.
+ *
+ * The instructions are here rather than in the docs because nothing in that
+ * tool's own VNC window mentions the step that actually saves the profile.
+ */
+function BrowserProfile({ profile }: { profile: Profile }) {
+  const client = useQueryClient();
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [showHow, setShowHow] = useState(false);
+
+  const refresh = () => client.invalidateQueries({ queryKey: ["profiles"] });
+
+  const upload = useMutation({
+    mutationFn: (file: File) => endpoints.uploadBrowserProfile(profile.id, file),
+    onSuccess: async () => {
+      setError(null);
+      await refresh();
+    },
+    onError: (err) => setError((err as ApiError).message),
+  });
+
+  const remove = useMutation({
+    mutationFn: () => endpoints.clearBrowserProfile(profile.id),
+    onSuccess: refresh,
+  });
+
+  return (
+    <div className="rounded-md border border-border p-3 text-xs">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <p className="font-medium">browsertrix browser profile</p>
+          <p className="mt-0.5 text-muted">
+            {profile.browser_profile
+              ? `${megabytes(profile.browser_profile.size)} · ${profile.browser_profile.sha256} · stored ${relative(profile.browser_profile.stored_at)}`
+              : "None. The browsertrix engine cannot use a cookie jar; this is what gets it past a login."}
+          </p>
+        </div>
+        <div className="flex gap-2">
+          <input
+            ref={fileRef}
+            type="file"
+            accept=".gz,.tgz,application/gzip"
+            className="hidden"
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              if (file) upload.mutate(file);
+              event.target.value = "";
+            }}
+          />
+          <button className="btn-ghost" onClick={() => setShowHow((v) => !v)}>
+            {showHow ? "Hide steps" : "How do I make one?"}
+          </button>
+          <button className="btn-ghost" onClick={() => fileRef.current?.click()}>
+            {upload.isPending && <Spinner />}
+            {profile.has_browser_profile ? "Replace" : "Upload profile.tar.gz"}
+          </button>
+          {profile.has_browser_profile && (
+            <button className="btn-ghost" onClick={() => remove.mutate()}>
+              Remove
+            </button>
+          )}
+        </div>
+      </div>
+
+      {error && (
+        <div className="mt-3">
+          <Alert kind="error">{error}</Alert>
+        </div>
+      )}
+
+      {showHow && (
+        <div className="mt-3 space-y-2 border-t border-border pt-3">
+          <p>
+            Run the crawler&apos;s own profile browser, sign in, then commit it. It has to be
+            that tool: it runs the same browser the crawl will, and it is headful under Xvfb,
+            which is why a Google sign-in works there and not in the browser on this page.
+          </p>
+          <pre className="overflow-x-auto rounded bg-raised p-2 font-mono text-[11px]">
+            {`docker run --rm -p 9223:9223 -p 6080:6080 \\
+  --shm-size=2g -e VNC_PASS=changeme \\
+  -v /mnt/user/appdata/cairn/btrix:/crawls \\
+  webrecorder/browsertrix-crawler:1.14.1 \\
+  create-login-profile --url "${profile.verify_url || "https://example.com/"}" --cookieDays 30`}
+          </pre>
+          <p>
+            Open <code className="font-mono">http://NAS-IP:9223/vnc/?host=NAS-IP&amp;port=6080&amp;password=changeme</code>{" "}
+            and sign in. Then commit it — nothing in that window does this for you, and closing
+            the container without it loses the login:
+          </p>
+          <pre className="overflow-x-auto rounded bg-raised p-2 font-mono text-[11px]">
+            {`curl -X POST -H "Content-Type: application/json" -d '{}' \\
+  http://NAS-IP:9223/createProfile`}
+          </pre>
+          <p>
+            Upload the <code className="font-mono">profiles/profile.tar.gz</code> it wrote. It is
+            sealed here with everything else, and unsealed only into the job&apos;s temp
+            directory while a capture runs.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function megabytes(bytes: number): string {
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 /**

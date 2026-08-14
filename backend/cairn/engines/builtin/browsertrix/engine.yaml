@@ -26,7 +26,12 @@ capabilities:
   # no cookie option, and a browser profile built with our Chromium is
   # accepted but ignored because it runs Brave — a different browser, so a
   # different cookie-encryption key. A gated site archives as the gate.
-  auth: [user_agent]
+  #
+  # `browser_profile` is the way in: a tarball from the crawler's own
+  # `create-login-profile`, which drives the same browser, so it is read
+  # rather than ignored. It is also headful under Xvfb, which is why it gets
+  # through sign-ins the in-app browser cannot.
+  auth: [user_agent, browser_profile]
   # It has its own dedup, driven by Redis across a crawl cluster, which does
   # not read wget's CDX. `incremental.dedup_cdx` is ignored.
   incremental: false

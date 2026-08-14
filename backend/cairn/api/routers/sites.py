@@ -35,6 +35,7 @@ from cairn.db.types import utcnow
 from cairn.engines.registry import EngineConfigError, EngineError
 from cairn.services import audit, media, moves, symlinks, thumbnail, trash
 from cairn.services import folders as folder_service
+from cairn.services import profiles as profile_service
 from cairn.services import sites as site_service
 from cairn.services import tags as tag_service
 from cairn.services.filters import FilterError, SiteFilter
@@ -214,6 +215,12 @@ def _detail(db: DbSession, settings: Settings, site: Site) -> SiteDetail:
         scope=_scope_response(db, site),
         capture_count=captures,
         running_job_id=running,
+        # Only the detail view carries this, not the summary: the engine picker
+        # is the one thing that needs it, and putting it on the summary would
+        # be a profile lookup per row on every list page.
+        profile_has_browser_profile=(
+            site.profile is not None and profile_service.has_browser_profile(site.profile)
+        ),
     )
 
 

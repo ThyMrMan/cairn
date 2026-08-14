@@ -220,7 +220,9 @@ A stalled reader must never apply backpressure to a crawl, so each subscriber ha
 | `PATCH` | `/api/profiles/{id}` | Non-secret fields |
 | `PUT` | `/api/profiles/{id}/cookies` | `multipart` upload of `cookies.txt`; write-only. Returns the parse report |
 | `PUT` | `/api/profiles/{id}/script` | Upload `.user.js`; write-only. Returns parsed metadata + shim warnings |
-| `DELETE` | `/api/profiles/{id}/material` | Clear stored secrets |
+| `PUT` | `/api/profiles/{id}/browser-profile` | `multipart` upload of a browsertrix `profile.tar.gz`; write-only. Returns size, digest and stored time |
+| `DELETE` | `/api/profiles/{id}/browser-profile` | Remove the browser profile, leaving the jar alone |
+| `DELETE` | `/api/profiles/{id}/material` | Clear stored secrets, including the browser profile on disk |
 | `POST` | `/api/profiles/{id}/mint` | Run the script in a browser → `{result, profile}` |
 | `POST` | `/api/profiles/{id}/verify` | Fetch `verify_url` with the jar → `{ok, reason, status, final_url}` |
 | `GET` | `/api/profiles/{id}/coverage?site_id=N` | Which of a site's scope hosts the jar covers |

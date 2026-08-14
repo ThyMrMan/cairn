@@ -428,7 +428,11 @@ class JobSupervisor:
                 temp_dir.mkdir(parents=True, exist_ok=True)
                 material = profiles.materialize(session, self._sealer, site.profile_id, temp_dir)
                 if material is not None:
-                    options["cookies_file"] = str(material.cookies_file)
+                    # Discovery has no use for a browsertrix tarball, so a
+                    # profile holding only one leaves this unset rather than
+                    # stringifying a None into a path.
+                    if material.cookies_file is not None:
+                        options["cookies_file"] = str(material.cookies_file)
                     if material.user_agent:
                         options["user_agent"] = material.user_agent
                     # Only the browser path can use this, and only it is given
@@ -1168,9 +1172,14 @@ class JobSupervisor:
 
             auth: dict[str, Any] = {"user_agent": config.get("user_agent"), "headers": {}}
             if site.profile_id is not None:
-                material = profiles.materialize(session, self._sealer, site.profile_id, temp_dir)
+                material = profiles.materialize(
+                    session, self._sealer, site.profile_id, temp_dir, self._settings
+                )
                 if material is not None:
-                    auth["cookies_file"] = str(material.cookies_file)
+                    if material.cookies_file is not None:
+                        auth["cookies_file"] = str(material.cookies_file)
+                    if material.profile_file is not None:
+                        auth["profile_file"] = str(material.profile_file)
                     if material.user_agent:
                         auth["user_agent"] = material.user_agent
                 warnings.extend(_credential_warnings(session, site.profile_id))
