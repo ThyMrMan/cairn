@@ -296,7 +296,10 @@ class Runner:
             if now - last_progress >= 2.0:
                 last_progress = now
                 self.events.progress(
-                    self.pages, unit="pages", bytes=_warc_bytes(self.tmp / "crawls")
+                    self.pages,
+                    unit="pages",
+                    failed=self.failed,
+                    bytes=_warc_bytes(self.tmp / "crawls"),
                 )
 
     def _handle(self, text: str, stream: int) -> None:

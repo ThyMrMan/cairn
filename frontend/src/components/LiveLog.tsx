@@ -29,6 +29,7 @@ export function LiveLog({
     done: number;
     bytes: number;
     unit?: string;
+    failed?: number;
   } | null>(null);
   const [status, setStatus] = useState<string>("running");
   const boxRef = useRef<HTMLDivElement>(null);
@@ -82,6 +83,7 @@ export function LiveLog({
         done: Number(d.done ?? 0),
         bytes: Number(d.bytes ?? 0),
         unit: typeof d.unit === "string" ? d.unit : undefined,
+        failed: typeof d.failed === "number" ? d.failed : undefined,
       }),
     );
     on("status", (d) => {
@@ -134,6 +136,9 @@ export function LiveLog({
         {progress && (
           <span className="tabular-nums text-xs text-muted">
             {progress.done} {progress.unit ?? "URLs"} · {(progress.bytes / 1024 / 1024).toFixed(1)} MB
+            {progress.failed ? (
+              <span className="ml-2 text-warn">{progress.failed} failed</span>
+            ) : null}
           </span>
         )}
       </div>
