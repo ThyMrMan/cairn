@@ -440,17 +440,40 @@ def test_a_socket_that_cannot_be_opened_fails_the_preflight(tmp_path, monkeypatc
     ok, reason = containers.available()
     assert not ok
     assert "cannot open it" in reason
-    assert "group-add" in reason, "the message has to carry the fix, not just the symptom"
+    # It must *not* send anybody to `--group-add`. That is the obvious fix and
+    # it does nothing on its own: Docker puts the gid on PID 1, and
+    # `s6-setuidgid abc` rebuilds the group list from /etc/group and discards
+    # it. Measured in the shipped image — PID 1 has groups 0,281 and the app
+    # has 1000. The image joins the group itself in init-perms instead.
+    assert "group-add" not in reason
+    assert "update it and restart" in reason
 
 
 def test_a_missing_socket_still_says_it_is_missing(tmp_path, monkeypatch) -> None:
-    """The two failures have different fixes and must not be merged."""
+    """The three failures have different fixes and must not be merged."""
     from cairn.services import containers
 
     monkeypatch.setattr(containers, "SOCKET_PATH", str(tmp_path / "absent.sock"))
     ok, reason = containers.available()
     assert not ok
     assert "not mounted" in reason
+
+
+def test_a_socket_that_cannot_be_stat_ed_is_not_reported_as_missing(monkeypatch) -> None:
+    """`Path.exists()` catches OSError broadly, so a socket this process is not
+    allowed to stat came back as "not mounted" — sending somebody to fix a
+    mount that was already correct. The reason has to survive to the message.
+    """
+    from cairn.services import containers
+
+    def denied(_path: str) -> None:
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(containers.os, "stat", denied)
+    ok, reason = containers.available()
+    assert not ok
+    assert "not mounted" not in reason
+    assert "not allowed to look at it" in reason
 
 
 def test_an_openable_socket_passes(tmp_path, monkeypatch) -> None:

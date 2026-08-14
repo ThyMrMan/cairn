@@ -9,6 +9,46 @@ groupmod -o -g "$PGID" abc 2>/dev/null || true
 usermod  -o -u "$PUID" abc 2>/dev/null || true
 umask "$UMASK"
 
+# ── the Docker socket's group ────────────────────────────────────────────
+#
+# `--group-add` on the container does not survive to the application.
+# It adds the gid to PID 1's supplementary groups, but this image drops
+# privileges with `s6-setuidgid abc`, which rebuilds the group list from
+# `/etc/group` for that user — and a gid Docker injected is not in there, so
+# it is discarded. The app then runs as 99:100 with no supplementary groups
+# and cannot open a socket that is mode 660, root:docker.
+#
+# Reported as exactly that: socket gid 281, `--group-add 281` correctly set,
+# still Permission denied. The config was right; the drop threw it away.
+#
+# So put the group in `/etc/group` and make `abc` a member, which is what
+# `s6-setuidgid` reads. The kernel checks numeric gids, so the group's name
+# is irrelevant and `--group-add` is not needed at all once this has run.
+if [ -S /var/run/docker.sock ]; then
+  SOCK_GID="$(stat -c '%g' /var/run/docker.sock 2>/dev/null || echo '')"
+  if [ -z "$SOCK_GID" ]; then
+    :
+  elif [ "$SOCK_GID" = "0" ]; then
+    # Group 0 is not the docker group, it is root's. Joining it would grant
+    # far more than socket access, so this is the one case left to a human.
+    echo "[init-perms] docker socket is group-owned by root (gid 0); not joining" \
+         "group 0 automatically — chgrp the socket to a docker group on the host," \
+         "or container engines will be unavailable"
+  else
+    SOCK_GROUP="$(getent group "$SOCK_GID" 2>/dev/null | cut -d: -f1)"
+    if [ -z "$SOCK_GROUP" ]; then
+      SOCK_GROUP=dockersock
+      groupadd -o -g "$SOCK_GID" "$SOCK_GROUP" 2>/dev/null || true
+    fi
+    if usermod -aG "$SOCK_GROUP" abc 2>/dev/null; then
+      echo "[init-perms] docker socket gid $SOCK_GID: abc added to '$SOCK_GROUP'"
+    else
+      echo "[init-perms] could not add abc to the docker socket's group ($SOCK_GID);" \
+           "container engines will be unavailable"
+    fi
+  fi
+fi
+
 mkdir -p /config /config/engines /config/backups \
          /data /data/archives /data/personas /data/tmp /data/trash /data/by-tag
 

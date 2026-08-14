@@ -117,16 +117,39 @@ def available() -> tuple[bool, str]:
     surfaces as `[Errno 13] Permission denied` at the bottom of an httpx
     traceback — from a preflight whose entire job was to say this in one line.
     """
-    socket = Path(SOCKET_PATH)
-    if not socket.exists():
+    # `os.stat` rather than `Path.exists()`, which catches OSError broadly and
+    # so reports a socket it is not allowed to stat as one that is not there.
+    # That sends somebody to fix a mount that was already correct.
+    try:
+        os.stat(SOCKET_PATH)
+    except FileNotFoundError:
         return False, (
             "The Docker socket is not mounted, so container engines cannot run. "
             "Add `-v /var/run/docker.sock:/var/run/docker.sock` to this container "
             "— and read docs/11 first: it grants root-equivalent control of the host."
         )
-    if not os.access(socket, os.R_OK | os.W_OK):
+    except PermissionError:
+        return False, (
+            "The Docker socket is mounted but this container is not allowed to look at "
+            "it — the path itself is unreadable, which usually means a directory above "
+            f"it is not traversable by this user. {_ids()} Add `--group-add <gid>` with "
+            "the socket's group on the host, or run as a user that can reach it."
+        )
+    except OSError as exc:  # pragma: no cover — an unusual filesystem state
+        return False, f"The Docker socket cannot be read: {exc}"
+
+    if not os.access(SOCKET_PATH, os.R_OK | os.W_OK):
         return False, _permission_message()
     return True, ""
+
+
+def _ids() -> str:
+    """This process's uid and gid, when the platform has them."""
+    getuid = getattr(os, "getuid", None)
+    getgid = getattr(os, "getgid", None)
+    if not (getuid and getgid):
+        return ""
+    return f"This process runs as uid {getuid()}, gid {getgid()}."
 
 
 def _permission_message() -> str:
@@ -152,9 +175,11 @@ def _permission_message() -> str:
         )
     return (
         "The Docker socket is mounted but this container cannot open it, so container "
-        f"engines cannot run.{detail} Add `--group-add <gid>` with the socket's group "
-        "to this container's Extra Parameters, or run it as a user that can reach the "
-        "socket. Nothing else about the capture is wrong."
+        f"engines cannot run.{detail} The image normally joins the socket's group at "
+        "startup by itself, so this usually means an older image — update it and "
+        "restart, then check the log for an `[init-perms] docker socket gid` line. If "
+        "the socket is group-owned by root (gid 0), that is deliberately not automatic: "
+        "chgrp it to a docker group on the host. Nothing else about the capture is wrong."
     )
 
 
