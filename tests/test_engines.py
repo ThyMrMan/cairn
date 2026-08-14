@@ -417,3 +417,47 @@ def test_a_browser_profile_replaces_that_warning(tmp_path: Path) -> None:
     runner.events.warning = lambda code, message: warnings.append((code, message))  # type: ignore[method-assign]
     runner._warn_about_auth()
     assert warnings == []
+
+
+# ── the Docker socket preflight ──────────────────────────────────────────
+
+
+def test_a_socket_that_cannot_be_opened_fails_the_preflight(tmp_path, monkeypatch) -> None:
+    """Existing is not the same as usable.
+
+    Reported from a real Unraid install: the socket was mounted, the preflight
+    passed, and the capture died with `[Errno 13] Permission denied` at the
+    bottom of an httpx traceback — from a check whose only job was to say this
+    in one line beforehand.
+    """
+    from cairn.services import containers
+
+    socket = tmp_path / "docker.sock"
+    socket.write_bytes(b"")
+    monkeypatch.setattr(containers, "SOCKET_PATH", str(socket))
+    monkeypatch.setattr(containers.os, "access", lambda *_args, **_kw: False)
+
+    ok, reason = containers.available()
+    assert not ok
+    assert "cannot open it" in reason
+    assert "group-add" in reason, "the message has to carry the fix, not just the symptom"
+
+
+def test_a_missing_socket_still_says_it_is_missing(tmp_path, monkeypatch) -> None:
+    """The two failures have different fixes and must not be merged."""
+    from cairn.services import containers
+
+    monkeypatch.setattr(containers, "SOCKET_PATH", str(tmp_path / "absent.sock"))
+    ok, reason = containers.available()
+    assert not ok
+    assert "not mounted" in reason
+
+
+def test_an_openable_socket_passes(tmp_path, monkeypatch) -> None:
+    from cairn.services import containers
+
+    socket = tmp_path / "docker.sock"
+    socket.write_bytes(b"")
+    monkeypatch.setattr(containers, "SOCKET_PATH", str(socket))
+    monkeypatch.setattr(containers.os, "access", lambda *_args, **_kw: True)
+    assert containers.available() == (True, "")

@@ -110,14 +110,52 @@ class RunSpec:
 
 
 def available() -> tuple[bool, str]:
-    """Whether sibling containers can be started, and if not, what to say."""
-    if not Path(SOCKET_PATH).exists():
+    """Whether sibling containers can be started, and if not, what to say.
+
+    Both halves are needed. Checking only that the socket exists passes a
+    container that has it mounted but cannot open it, and the failure then
+    surfaces as `[Errno 13] Permission denied` at the bottom of an httpx
+    traceback — from a preflight whose entire job was to say this in one line.
+    """
+    socket = Path(SOCKET_PATH)
+    if not socket.exists():
         return False, (
             "The Docker socket is not mounted, so container engines cannot run. "
             "Add `-v /var/run/docker.sock:/var/run/docker.sock` to this container "
             "— and read docs/11 first: it grants root-equivalent control of the host."
         )
+    if not os.access(socket, os.R_OK | os.W_OK):
+        return False, _permission_message()
     return True, ""
+
+
+def _permission_message() -> str:
+    """Why the socket cannot be opened, with the numbers needed to fix it.
+
+    The gid is the whole answer on Unraid — the socket is group-owned by
+    `docker` on the host, that group does not exist in this image, and the
+    template runs as 99:100. Telling somebody to "fix permissions" without
+    the number they need is telling them to go and look it up.
+    """
+    detail = ""
+    # getuid/getgid are POSIX-only. This path is unreachable on Windows, but
+    # read through `getattr` so it type-checks there too — and so the message
+    # is never itself the thing that raises.
+    getuid = getattr(os, "getuid", None)
+    getgid = getattr(os, "getgid", None)
+    with suppress(OSError):
+        info = os.stat(SOCKET_PATH)
+        ours = f"; this process runs as uid {getuid()}, gid {getgid()}" if getuid and getgid else ""
+        detail = (
+            f" The socket is owned by uid {info.st_uid}, gid {info.st_gid}, "
+            f"mode {info.st_mode & 0o777:o}{ours}."
+        )
+    return (
+        "The Docker socket is mounted but this container cannot open it, so container "
+        f"engines cannot run.{detail} Add `--group-add <gid>` with the socket's group "
+        "to this container's Extra Parameters, or run it as a user that can reach the "
+        "socket. Nothing else about the capture is wrong."
+    )
 
 
 def client(*, timeout: float = 60.0) -> httpx.AsyncClient:

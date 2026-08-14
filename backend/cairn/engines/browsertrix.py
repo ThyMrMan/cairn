@@ -73,6 +73,8 @@ from pathlib import Path
 from types import FrameType
 from typing import Any
 
+import httpx
+
 from cairn.engines.protocol import EventWriter, JobSpec
 from cairn.services.scope import Scope
 
@@ -146,6 +148,18 @@ class Runner:
                 code = await self._crawl(http, image, work, started)
             except containers.ContainerError as exc:
                 self.events.result("failed", self._stats(started), error=str(exc))
+                return 1
+            except httpx.HTTPError as exc:
+                # The socket went away, or was never openable in the first
+                # place. Reaching here means the preflight missed it, and a
+                # job log is no place for an httpx traceback — say what broke
+                # and re-run the preflight to say why.
+                _, reason = containers.available()
+                self.events.result(
+                    "failed",
+                    self._stats(started),
+                    error=reason or f"lost contact with the Docker socket: {exc}",
+                )
                 return 1
 
         warcs = self._collect(work)
