@@ -23,6 +23,7 @@ export function DomainPicker({ siteId, onChanged }: { siteId: number; onChanged?
   const client = useQueryClient();
   const [draft, setDraft] = useState<Record<string, HostRule> | null>(null);
   const [rejects, setRejects] = useState<string[] | null>(null);
+  const [cap, setCap] = useState<number | null | undefined>(undefined);
   const [saved, setSaved] = useState(false);
 
   const discovery = useQuery({
@@ -47,6 +48,7 @@ export function DomainPicker({ siteId, onChanged }: { siteId: number; onChanged?
     }
     setDraft(initial);
     setRejects(scope.data.reject_patterns);
+    setCap(scope.data.max_pages);
   }, [discovery.data, scope.data, draft]);
 
   const save = useMutation({
@@ -55,7 +57,7 @@ export function DomainPicker({ siteId, onChanged }: { siteId: number; onChanged?
         hosts: Object.values(draft ?? {}),
         reject_patterns: rejects ?? [],
         obey_robots: scope.data?.obey_robots ?? true,
-        max_pages: scope.data?.max_pages ?? null,
+        max_pages: cap === undefined ? (scope.data?.max_pages ?? null) : cap,
         max_bytes: scope.data?.max_bytes ?? null,
         politeness: scope.data?.politeness ?? {},
       }),
@@ -221,6 +223,14 @@ export function DomainPicker({ siteId, onChanged }: { siteId: number; onChanged?
         }}
       />
 
+      <CrawlCap
+        value={cap === undefined ? (scope.data?.max_pages ?? null) : cap}
+        onChange={(next) => {
+          setSaved(false);
+          setCap(next);
+        }}
+      />
+
       {save.error && <Alert kind="error">{(save.error as ApiError).message}</Alert>}
 
       <div className="flex items-center gap-3">
@@ -324,6 +334,58 @@ function HostRow({
         </tr>
       )}
     </>
+  );
+}
+
+/**
+ * The stop switch.
+ *
+ * Called `max_pages` everywhere in the code and the API, and it does not count
+ * pages: the supervisor counts every `url` event, which includes each image,
+ * stylesheet and font. On a photo blog that is three or four times the post
+ * count, so a cap set as though it meant pages stops the crawl a quarter of
+ * the way in. The name is stuck; the label does not have to repeat the
+ * mistake.
+ */
+function CrawlCap({
+  value,
+  onChange,
+}: {
+  value: number | null;
+  onChange: (next: number | null) => void;
+}) {
+  const [draft, setDraft] = useState(value === null ? "" : String(value));
+
+  return (
+    <div className="card p-4">
+      <h3 className="text-sm font-medium">Stop after</h3>
+      <p className="hint mt-0.5">
+        Counted in <strong>URLs, not pages</strong> — every image and stylesheet is one. Empty
+        for no limit. This is what stops a crawl that has found a corner of the site it can
+        generate forever, like a paginated tag archive.
+      </p>
+      <div className="mt-3 flex items-center gap-2">
+        <input
+          className="input w-40 text-sm"
+          type="number"
+          min={0}
+          step={1000}
+          placeholder="no limit"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={() => {
+            const trimmed = draft.trim();
+            if (!trimmed) {
+              onChange(null);
+              return;
+            }
+            const next = Number(trimmed);
+            if (Number.isFinite(next) && next >= 0) onChange(Math.round(next));
+          }}
+        />
+        <span className="text-xs text-muted">URLs</span>
+      </div>
+    </div>
   );
 }
 

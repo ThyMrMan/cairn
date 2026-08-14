@@ -1001,6 +1001,34 @@ export type MediaItem = {
   playable: boolean;
 };
 
+export type CrawlProjection = {
+  running: boolean;
+  urls: number;
+  bytes: number;
+  elapsed_s: number;
+  per_minute: number;
+  max_pages: number | null;
+  remaining_to_cap: number | null;
+  eta_to_cap_s: number | null;
+  /** Pages the index expected — a different quantity from `urls`, on purpose. */
+  index_estimate: number | null;
+};
+
+export type UrlShape = {
+  /** The path with varying segments replaced, and the query reduced to keys. */
+  shape: string;
+  count: number;
+  bytes: number;
+  example: string;
+};
+
+export type UrlShapes = {
+  total: number;
+  distinct_shapes: number;
+  shapes: UrlShape[];
+  truncated: boolean;
+};
+
 /** The instance-wide default, with no site's override on top. */
 export type MediaDefaults = {
   policy: Required<MediaPolicy>;
@@ -1249,6 +1277,9 @@ export const endpoints = {
   captureLog: (id: number, tail = 500) => api.text(`/captures/${id}/log?tail=${tail}`),
   captureUrls: (id: number, params: Record<string, string | number | undefined> = {}) =>
     api.get<Page<CaptureUrl>>(`/captures/${id}/urls${query(params)}`),
+  /** What a capture is fetching, grouped by URL shape. Works mid-crawl. */
+  captureUrlShapes: (id: number, limit = 30) =>
+    api.get<UrlShapes>(`/captures/${id}/url-shapes${query({ limit })}`),
   deleteCapture: (id: number, force = false) =>
     api.del<{ ok: boolean }>(`/captures/${id}?force=${force}`),
 
@@ -1256,6 +1287,8 @@ export const endpoints = {
   jobs: (params: Record<string, string | number | undefined> = {}) =>
     api.get<Page<Job>>(`/jobs${query(params)}`),
   job: (id: number) => api.get<Job>(`/jobs/${id}`),
+  /** Rate and distance-to-cap for a running crawl. No invented percentage. */
+  jobProjection: (id: number) => api.get<CrawlProjection>(`/jobs/${id}/projection`),
   cancelJob: (id: number) => api.post<{ ok: boolean }>(`/jobs/${id}/cancel`),
 
   // ── profiles ───────────────────────────────────────────────────────────

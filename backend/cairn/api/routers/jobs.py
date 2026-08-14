@@ -13,6 +13,7 @@ from cairn.api.deps import ClientIp, Csrf, CurrentUser, DbSession
 from cairn.api.errors import ApiError
 from cairn.api.schemas import JobSummary, Ok, Page
 from cairn.db.models import Job, Site
+from cairn.db.types import utcnow
 from cairn.services import audit
 from cairn.services.events import EV_STATUS, BusEvent, EventBus, format_sse
 
@@ -92,6 +93,78 @@ def get_job(job_id: int, db: DbSession, _user: CurrentUser) -> JobSummary:
     if job is None:
         raise ApiError("not_found", "That job does not exist.", status_code=404)
     return _summary(db, job)
+
+
+@router.get("/jobs/{job_id}/projection")
+def job_projection(job_id: int, db: DbSession, _user: CurrentUser) -> dict[str, Any]:
+    """Where a running crawl is heading.
+
+    Deliberately does *not* invent a percentage. Nothing knows how many URLs a
+    site has until the crawl has found them, and a progress bar built on the
+    index's page estimate would have read "370% complete" on the crawl that
+    prompted this — which is worse than no bar, because it looks like an
+    answer. What can be said honestly is the rate, how far it is from its own
+    cap, and how it compares with what the index expected; a reader draws
+    "this is not converging" from those in a second.
+    """
+    job = db.get(Job, job_id)
+    if job is None:
+        raise ApiError("not_found", "That job does not exist.", status_code=404)
+
+    progress = job.progress or {}
+    urls = int(progress.get("done") or 0)
+    started = job.started_at
+    elapsed = (utcnow() - started).total_seconds() if started else 0.0
+    per_minute = (urls / elapsed * 60) if elapsed > 0 and urls else 0.0
+
+    cap: int | None = None
+    estimate: int | None = None
+    if job.site_id is not None:
+        site = db.get(Site, job.site_id)
+        if site is not None:
+            cap = _scope_cap(db, site)
+            estimate = _index_estimate(db, site)
+
+    remaining = max(cap - urls, 0) if cap else None
+    return {
+        "running": job.status == "running",
+        "urls": urls,
+        "bytes": int(progress.get("bytes") or 0),
+        "elapsed_s": round(elapsed, 1),
+        "per_minute": round(per_minute, 1),
+        "max_pages": cap,
+        "remaining_to_cap": remaining,
+        # None rather than 0 when it cannot be known, so the UI shows nothing
+        # instead of "0s remaining".
+        "eta_to_cap_s": round(remaining / per_minute * 60) if remaining and per_minute else None,
+        "index_estimate": estimate,
+    }
+
+
+def _scope_cap(db: DbSession, site: Site) -> int | None:
+    from cairn.services import sites as site_service
+
+    try:
+        return site_service.resolved_scope(db, site).max_pages
+    except Exception:  # pragma: no cover — a broken scope must not break this
+        return None
+
+
+def _index_estimate(db: DbSession, site: Site) -> int | None:
+    """What discovery thought the site was, for contrast.
+
+    Pages, not URLs — the two are different quantities and the UI says so.
+    Showing it anyway is the point: a crawl at four times the page estimate is
+    either a site with a lot of images or a crawl in a hole, and the number
+    that starts that thought is this one.
+    """
+    from cairn.services import discovery_service
+
+    discovery = discovery_service.latest_discovery(db, site.id)
+    if discovery is None:
+        return None
+    found = getattr(discovery, "urls_found", None)
+    return int(found) if found else None
 
 
 @router.post("/jobs/{job_id}/cancel", response_model=Ok)

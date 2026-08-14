@@ -275,6 +275,25 @@ Scope preview
 
 Rough numbers, but they catch the two mistakes that waste hours: a scope that accidentally includes a neighboring blog, and a missing `?m=1` reject.
 
+### Why the crawl is always bigger than this number
+
+**Pages to crawl** counts pages, on crawlable hosts, after rejects. The live counter during a capture counts **every URL the engine fetches** — images, stylesheets, fonts, everything. On a photo blog three or four assets per post is ordinary, so a crawl running at 3–4× the preview is not a fault, and a progress bar drawn from one against the other would be nonsense.
+
+It is also an extrapolation rather than an enumeration: the preview scales the surviving fraction of discovery's sample by `urls_found / len(sample)`, and discovery itself crawls at most `max_pages` (100 by default) to depth 3.
+
+So the ratio is the signal, not the difference. Somewhere past **10×** the crawl has usually found a corner of the site it can generate forever. Real example, on a Blogger blog whose index found 38,000 posts and whose crawl passed 140,000 URLs:
+
+```
+Shape                                    Count      %
+/search/label/*?max-results&updated-max  148,893   ~⅓
+```
+
+Label archives paginate through `updated-max`, and every label page links every other label — combinatorial, and it does not terminate in any useful time. The posts were coming from the sitemap regardless; the crawl was spending its life on the pagination.
+
+**`What it fetched`**, on each capture, is the report that answers this without guessing. It groups the capture's URLs by shape — varying path segments replaced, the query reduced to its key names — so a hundred thousand label URLs become one row with a count. It works while the crawl is still running, which is when it matters. Grouping is by cardinality *within a prefix*: nothing about `/search/label/Travel` in isolation says the last segment is a value, and only the four hundred siblings say so.
+
+**The stop switch is `max_pages`, and it counts URLs rather than pages** despite the name — the supervisor counts every `url` event, assets included. Set it as though it meant pages and the crawl stops at roughly a quarter of the site. The scope editor labels it in URLs for that reason.
+
 ---
 
 ## Re-running discovery

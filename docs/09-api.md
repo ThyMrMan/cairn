@@ -9,6 +9,8 @@ Conventions:
 - Errors: `{"error": {"code": "scope_invalid", "message": "…", "detail": {…}}}` — stable machine-readable `code`, human `message`.
 - Timestamps are UTC ISO 8601 with `Z`.
 - Long operations return `202` with `{"job_id": N}`; progress comes over SSE.
+- **`GET` requires no CSRF header** — only mutating methods do, so a read endpoint can be opened straight from a browser address bar while logged in. Worth knowing when diagnosing something by hand.
+- **`?q=` is a literal substring, not a pattern.** `%` and `_` are SQL `LIKE` wildcards and are escaped, so searching `100%` finds the rows containing a percent sign rather than every row in the table. They were not escaped until it was noticed making three different URL-pattern counts each come back as the size of the whole archive.
 
 ---
 
@@ -72,7 +74,7 @@ Reparenting needs `reparent: true` alongside `parent_id`, because JSON cannot ot
 | `POST` | `/api/sites/{id}/restore` | Undelete from trash |
 | `POST` | `/api/sites/{id}/move` | `{folder_id}` → `MoveOutcome` |
 | `POST` | `/api/sites/bulk` | `{site_ids, add_tags?, remove_tags?, folder_id?}` |
-| `GET` | `/api/sites/{id}/urls` | Captured URLs; `?status=&mime=&host=&q=&errors_only=` |
+| ~~`GET`~~ | ~~`/api/sites/{id}/urls`~~ | **Never existed.** Captured URLs are per capture — see `/api/captures/{id}/urls` |
 | `GET` | `/api/sites/{id}/stats` | Sizes, counts, capture history, growth over time |
 
 ### Filtering
@@ -138,7 +140,8 @@ Anything a filter can express must survive a round trip through both serializati
 | `GET` | `/api/captures/{id}` | Manifest, WARC files, stats |
 | `DELETE` | `/api/captures/{id}` | `409` if it's the only capture unless `?force=true`; triggers reindex |
 | `GET` | `/api/captures/{id}/log` | Plain text; `?tail=500` |
-| `GET` | `/api/captures/{id}/urls` | With `?errors_only=true` |
+| `GET` | `/api/captures/{id}/urls` | With `?errors_only=true`, `?host=`, `?q=` |
+| `GET` | `/api/captures/{id}/url-shapes` | What the capture is fetching, grouped by URL shape, biggest first. Works mid-crawl |
 | `POST` | `/api/captures/{id}/retry-failed` | New capture seeded from this one's failures |
 | `POST` | `/api/captures/{id}/reindex` | Rebuild the site index |
 | `POST` | `/api/captures/{id}/export/wacz` | `202 {job_id}` — this capture alone |
@@ -179,10 +182,13 @@ of attacker-influenced string that must not be allowed to pick its own type.
 |---|---|---|
 | `GET` | `/api/jobs` | `?status=&type=&site_id=` |
 | `GET` | `/api/jobs/{id}` | State, progress, error |
+| `GET` | `/api/jobs/{id}/projection` | Rate, distance to `max_pages`, and the index's estimate for contrast. No percentage — see below |
 | `POST` | `/api/jobs/{id}/cancel` | SIGTERM → grace → SIGKILL |
 | `POST` | `/api/jobs/{id}/resume` | For `interrupted` jobs |
 | `GET` | `/api/jobs/{id}/events` | **SSE** |
 | `GET` | `/api/events` | **SSE** — global firehose for the activity sidebar |
+
+**`/projection` reports no percentage, and that is the design.** Nothing knows how many URLs a site has until the crawl has found them. A bar drawn against the index's page estimate would have read *370% complete* on the crawl that prompted this endpoint — worse than showing nothing, because it looks like an answer. What it returns instead is the rate, the distance to the site's own cap, and the index estimate beside the live count; "this is not converging" reads off those in a second. See [04](04-discovery-and-scoping.md#why-the-crawl-is-always-bigger-than-this-number).
 
 ### SSE
 

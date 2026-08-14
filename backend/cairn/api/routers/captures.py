@@ -12,7 +12,8 @@ from cairn.api.deps import AppSettings, ClientIp, Csrf, CurrentUser, DbSession
 from cairn.api.errors import ApiError
 from cairn.api.schemas import CaptureDetail, CaptureUrlEntry, Ok, Page
 from cairn.db.models import Capture, CaptureUrl, Site
-from cairn.services import audit, search, storage, textextract
+from cairn.services import audit, search, storage, textextract, urlshapes
+from cairn.services.filters import LIKE_ESCAPE, like_contains
 
 router = APIRouter(tags=["captures"], dependencies=[Csrf])
 
@@ -119,7 +120,7 @@ def capture_urls(
     if host:
         stmt = stmt.where(CaptureUrl.host == host)
     if q:
-        stmt = stmt.where(CaptureUrl.url.ilike(f"%{q.strip()}%"))
+        stmt = stmt.where(CaptureUrl.url.ilike(like_contains(q.strip()), escape=LIKE_ESCAPE))
 
     total = db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
     rows = db.scalars(
@@ -144,6 +145,22 @@ def capture_urls(
         page=page,
         per_page=per_page,
     )
+
+
+@router.get("/captures/{capture_id}/url-shapes")
+def capture_url_shapes(
+    capture_id: int,
+    db: DbSession,
+    _user: CurrentUser,
+    limit: Annotated[int, Query(ge=1, le=200)] = 30,
+) -> dict[str, Any]:
+    """What this capture is fetching, grouped by URL shape, biggest first.
+
+    The answer to "the index said 38,000 and the crawl is past 140,000 — on
+    what?". Works on a capture still in flight, which is when it matters.
+    """
+    capture = _require_capture(db, capture_id)
+    return urlshapes.summarize(db, capture.id, limit=limit)
 
 
 @router.delete("/captures/{capture_id}", response_model=Ok)

@@ -14,6 +14,7 @@ from urllib.parse import parse_qs
 import pytest
 from fastapi.testclient import TestClient
 
+from cairn.db.types import utcnow
 from cairn.services.filters import FilterError, SiteFilter
 from tests.conftest import XHR
 
@@ -170,3 +171,68 @@ def test_an_unreadable_filter_is_a_400_not_a_500(authed: TestClient) -> None:
 
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "invalid_filter"
+
+
+# ── LIKE wildcards in what somebody typed ────────────────────────────────
+
+
+def test_a_percent_sign_is_searched_for_rather_than_matching_everything(
+    authed: TestClient,
+) -> None:
+    """`%` and `_` are SQL LIKE wildcards and both occur in ordinary text.
+
+    Unescaped, searching for `%` returned every row — found for real on a
+    capture URL list, where it made three different pattern counts all come
+    back as the size of the whole archive and hid what the crawl was doing.
+    """
+    _site(authed, "hundred.example.com", title="100% cotton")
+    _site(authed, "under.example.com", title="my_site notes")
+    _site(authed, "plain.example.com", title="Nothing special")
+
+    def titles(q: str) -> set[str]:
+        page = authed.get("/api/sites", params={"q": q}).json()
+        return {row["title"] for row in page["items"]}
+
+    assert titles("%") == {"100% cotton"}
+    assert titles("_") == {"my_site notes"}
+    assert titles("100%") == {"100% cotton"}
+    assert titles("my_site") == {"my_site notes"}
+    # And an ordinary search still works.
+    assert titles("special") == {"Nothing special"}
+
+
+def test_the_capture_url_search_escapes_them_too(authed: TestClient) -> None:
+    from cairn.db.models import Capture, CaptureUrl
+
+    site_id = _site(authed, "urls.example.com")["id"]
+    factory = authed.app.state.sessionmaker  # type: ignore[attr-defined]
+    with factory() as session:
+        capture = Capture(
+            site_id=site_id,
+            kind="full",
+            engine_id="wget-warc",
+            dir_name="20260814-1",
+            status="ok",
+            started_at=utcnow(),
+        )
+        session.add(capture)
+        session.flush()
+        for url in (
+            "http://urls.example.com/plain.html",
+            "http://urls.example.com/discount-100%-off.html",
+            "http://urls.example.com/my_site/page.html",
+        ):
+            session.add(
+                CaptureUrl(capture_id=capture.id, url=url, host="urls.example.com", status_code=200)
+            )
+        capture_id = capture.id
+        session.commit()
+
+    def total(q: str) -> int:
+        response = authed.get(f"/api/captures/{capture_id}/urls", params={"q": q, "per_page": 1})
+        return int(response.json()["total"])
+
+    assert total("%") == 1
+    assert total("_") == 1
+    assert total("plain") == 1
+    assert total("zzz-nothing") == 0

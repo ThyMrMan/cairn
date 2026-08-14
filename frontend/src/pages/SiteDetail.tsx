@@ -111,6 +111,8 @@ export default function SiteDetail() {
 
       {start.error && <Alert kind="error">{(start.error as ApiError).message}</Alert>}
 
+      {watching !== null && <CrawlProjection jobId={watching} />}
+
       {watching !== null && (
         <LiveLog
           jobId={watching}
@@ -649,9 +651,141 @@ function CaptureRow({ captureId }: { captureId: number }) {
             </ul>
           </div>
 
+          <UrlShapes captureId={captureId} />
           <CaptureUrls captureId={captureId} errorCount={data.error_count} />
           <CaptureLog captureId={captureId} />
         </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Where a running crawl is heading.
+ *
+ * No progress bar, deliberately. Nothing knows how many URLs a site has until
+ * the crawl has found them, and a bar drawn against the index's page estimate
+ * would have read "370% complete" on the crawl that prompted this — which is
+ * worse than showing nothing, because it looks like an answer. A rate and a
+ * distance to the cap let somebody conclude "this is not converging" in about
+ * a second, which is the actual job.
+ */
+function CrawlProjection({ jobId }: { jobId: number }) {
+  const projection = useQuery({
+    queryKey: ["projection", jobId],
+    queryFn: () => endpoints.jobProjection(jobId),
+    refetchInterval: 5000,
+  });
+  const data = projection.data;
+  if (!data) return null;
+
+  const overIndex =
+    data.index_estimate && data.urls > data.index_estimate * 2
+      ? Math.round((data.urls / data.index_estimate) * 10) / 10
+      : null;
+
+  return (
+    <section className="card p-4">
+      <div className="grid gap-4 sm:grid-cols-4">
+        <Metric label="URLs so far" value={data.urls.toLocaleString()} />
+        <Metric label="Rate" value={`${Math.round(data.per_minute).toLocaleString()}/min`} />
+        <Metric
+          label="Stop after"
+          value={data.max_pages ? data.max_pages.toLocaleString() : "no limit"}
+        />
+        <Metric
+          label="Reaches the cap"
+          value={data.eta_to_cap_s ? relativeSeconds(data.eta_to_cap_s) : "—"}
+        />
+      </div>
+
+      {overIndex && (
+        <Alert kind="warn" title={`${overIndex}x what the index expected`}>
+          The index found {data.index_estimate?.toLocaleString()} pages and this crawl has
+          fetched {data.urls.toLocaleString()} URLs. Some of that is normal — the index counts
+          pages and this counts every image and stylesheet too — but a multiple this large
+          usually means the crawl has found a corner of the site it can generate forever.
+          Open a capture below and use <strong>What it fetched</strong> to see what it is
+          spending itself on.
+        </Alert>
+      )}
+    </section>
+  );
+}
+
+/** Seconds as something readable, for an ETA rather than a timestamp. */
+function relativeSeconds(seconds: number): string {
+  if (seconds < 90) return `${Math.round(seconds)}s`;
+  const minutes = seconds / 60;
+  if (minutes < 90) return `${Math.round(minutes)} min`;
+  const hours = minutes / 60;
+  return hours < 48 ? `${Math.round(hours)} h` : `${Math.round(hours / 24)} days`;
+}
+
+/**
+ * What this capture is actually fetching.
+ *
+ * The list below it answers "which URLs"; this answers "on what", which is the
+ * question when the number is larger than the index said it would be. Closed by
+ * default because it reads the capture's URLs twice — cheap on a normal capture,
+ * a few seconds on the runaway one that makes somebody open it.
+ */
+function UrlShapes({ captureId }: { captureId: number }) {
+  const [open, setOpen] = useState(false);
+  const shapes = useQuery({
+    queryKey: ["url-shapes", captureId],
+    queryFn: () => endpoints.captureUrlShapes(captureId),
+    enabled: open,
+  });
+  const data = shapes.data;
+
+  return (
+    <div>
+      <button
+        className="mb-1.5 flex w-full items-center justify-between text-left"
+        onClick={() => setOpen((v) => !v)}
+      >
+        <h3 className="text-xs font-medium uppercase text-muted">
+          What it fetched
+          {data ? ` (${data.distinct_shapes.toLocaleString()} shapes)` : ""}
+        </h3>
+        <span className="text-xs text-muted">{open ? "Hide" : "Show"}</span>
+      </button>
+
+      {open && shapes.isLoading && <Spinner className="h-4 w-4 text-muted" />}
+      {open && data && (
+        <>
+          <div className="max-h-72 overflow-y-auto rounded border border-border">
+            <table className="w-full text-[11px]">
+              <tbody>
+                {data.shapes.map((row) => (
+                  <tr key={row.shape} className="border-b border-border last:border-0">
+                    <td className="w-16 px-2 py-1 text-right tabular-nums">
+                      {row.count.toLocaleString()}
+                    </td>
+                    <td className="w-12 px-1 py-1 text-right text-muted tabular-nums">
+                      {data.total ? `${Math.round((row.count / data.total) * 100)}%` : ""}
+                    </td>
+                    <td className="truncate px-2 py-1 font-mono" title={row.example}>
+                      {row.shape}
+                    </td>
+                    <td className="w-20 px-2 py-1 text-right text-muted tabular-nums">
+                      {bytes(row.bytes)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="hint mt-1.5">
+            {/* `#` and `*` are the report's own notation, and nobody can be
+                expected to guess what they mean from the table alone. */}
+            <code>#</code> is a number, <code>*</code> is a varying segment, and a{" "}
+            <code>?</code> lists the query keys rather than their values. Hover a row for a
+            real example.
+            {data.truncated && " Only the largest shapes are shown."}
+          </p>
+        </>
       )}
     </div>
   );

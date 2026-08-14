@@ -30,6 +30,32 @@ from sqlalchemy.orm import Session
 
 from cairn.db.models import Capture, Folder, Site, SiteTag, Tag
 
+# The character `like_contains` escapes with. Passed to every `ilike` that uses
+# it; SQLite and Postgres both take an explicit ESCAPE clause.
+LIKE_ESCAPE = "\\"
+
+
+def like_contains(value: str) -> str:
+    """A LIKE pattern matching rows that *contain* `value` literally.
+
+    `%` and `_` are wildcards in SQL LIKE, and both turn up in ordinary input:
+    `100%` is a thing somebody types, `my_site` is a plausible slug, and a
+    URL-encoded search term is mostly percent signs. Unescaped, `%` matched
+    every row in the table rather than the rows containing a percent sign —
+    measured against the capture URL list, where searching for `%` returned
+    the entire archive.
+
+    Callers must pass `escape=LIKE_ESCAPE` alongside the pattern, or the
+    backslashes this adds are matched literally instead of escaping.
+    """
+    escaped = (
+        value.replace(LIKE_ESCAPE, LIKE_ESCAPE * 2)
+        .replace("%", f"{LIKE_ESCAPE}%")
+        .replace("_", f"{LIKE_ESCAPE}_")
+    )
+    return f"%{escaped}%"
+
+
 SORT_COLUMNS = {
     "title": Site.title,
     "created_at": Site.created_at,
@@ -151,7 +177,7 @@ class SiteFilter:
         if self.profile_id is not None:
             stmt = stmt.where(Site.profile_id == self.profile_id)
         if self.host:
-            stmt = stmt.where(Site.primary_host.ilike(f"%{self.host}%"))
+            stmt = stmt.where(Site.primary_host.ilike(like_contains(self.host), escape=LIKE_ESCAPE))
         if self.never_captured is not None:
             stmt = stmt.where(
                 Site.last_capture_at.is_(None)
@@ -170,13 +196,13 @@ class SiteFilter:
         if self.size_max is not None:
             stmt = stmt.where(Site.size_bytes <= self.size_max)
         if self.q:
-            needle = f"%{self.q.strip()}%"
+            needle = like_contains(self.q.strip())
             stmt = stmt.where(
                 or_(
-                    Site.title.ilike(needle),
-                    Site.seed_url.ilike(needle),
-                    Site.primary_host.ilike(needle),
-                    Site.notes.ilike(needle),
+                    Site.title.ilike(needle, escape=LIKE_ESCAPE),
+                    Site.seed_url.ilike(needle, escape=LIKE_ESCAPE),
+                    Site.primary_host.ilike(needle, escape=LIKE_ESCAPE),
+                    Site.notes.ilike(needle, escape=LIKE_ESCAPE),
                 )
             )
         return stmt
