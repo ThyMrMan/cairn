@@ -33,6 +33,15 @@ class Preset:
     hosts_off: list[str] = field(default_factory=list)
     extensionless_ok: list[str] = field(default_factory=list)
     reject_patterns: list[tuple[str, str]] = field(default_factory=list)
+    # Patterns this preset used to ship and no longer stands behind.
+    #
+    # Applying a preset merges patterns *in*, which is right — it must never
+    # discard something added by hand. But it meant a preset could only ever
+    # grow, so correcting a pattern reached new sites and never existing ones:
+    # the wrong rule stayed in every scope that already had it, with no way to
+    # tell it from a deliberate choice. Naming the retired ones is what makes
+    # a correction propagate.
+    retired_patterns: list[str] = field(default_factory=list)
     sitemap_paths: tuple[str, ...] = ()
     feed_paths: tuple[str, ...] = ()
     notes: str = ""
@@ -144,6 +153,10 @@ BLOGGER_PRESET = Preset(
             "plain feed is left alone — discovery reads it",
         ),
     ],
+    # Shipped until the Older-posts trail turned out to be a dead link in the
+    # archive rather than an infinite loop. Sites that already have it keep
+    # blocking their own pagination until the preset is applied again.
+    retired_patterns=[r"/search\?updated-(max|min)="],
     sitemap_paths=("/sitemap.xml",),
     feed_paths=("/feeds/posts/default",),
     notes=(

@@ -195,6 +195,13 @@ def apply_preset_to_scope(scope: Scope, preset: Preset, hosts_seen: list[str]) -
                 rule.allow_extensionless = True
                 changes.append(f"allowed extension-less URLs on {host}")
 
+    # Retired first, so a pattern that is both retired and re-added in a
+    # different form ends up in its current shape rather than its old one.
+    for pattern in preset.retired_patterns:
+        if pattern in scope.reject_patterns:
+            scope.reject_patterns.remove(pattern)
+            changes.append(f"removed reject {pattern} (the preset no longer recommends it)")
+
     existing = set(scope.reject_patterns)
     for pattern, note in preset.reject_patterns:
         if pattern not in existing:

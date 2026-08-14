@@ -482,3 +482,46 @@ def test_base_href_is_honoured() -> None:
     body = b'<html><head><base href="https://cdn.example/app/"></head><img src="x.png"></html>'
     page = parse_page(body, "https://example.com/page.html")
     assert "https://cdn.example/app/x.png" in page.assets
+
+
+def test_applying_a_preset_retires_a_pattern_it_no_longer_stands_behind() -> None:
+    """Merging in was only half of it.
+
+    Applying a preset must never discard a pattern somebody added by hand, so
+    it only ever added — which meant a *correction* could not propagate. The
+    Blogger preset used to reject the blog's own Older-posts trail as an
+    infinite loop; every scope that already had that pattern went on blocking
+    its own pagination, with nothing to distinguish the stale rule from a
+    deliberate one.
+    """
+    from cairn.discovery.platform import BLOGGER_PRESET
+    from cairn.services.discovery_service import apply_preset_to_scope
+
+    stale = r"/search\?updated-(max|min)="
+    assert stale in BLOGGER_PRESET.retired_patterns
+    scope = Scope(
+        seeds=["https://b.blogspot.com/"],
+        hosts=[HostRule("b.blogspot.com", crawl_pages=True, fetch_assets=True)],
+        reject_patterns=[stale, r"[?&]m=1", r"^https?://mine\.example/"],
+    )
+
+    changes = apply_preset_to_scope(scope, BLOGGER_PRESET, ["b.blogspot.com"])
+
+    assert stale not in scope.reject_patterns
+    assert any("removed reject" in c for c in changes), "a removal has to be reported"
+    # A hand-added pattern is not a preset's business.
+    assert r"^https?://mine\.example/" in scope.reject_patterns
+    # And the current rules are merged in.
+    assert any("/b/stats" in p for p in scope.reject_patterns)
+
+
+def test_retiring_is_idempotent_and_quiet_when_there_is_nothing_to_retire() -> None:
+    from cairn.discovery.platform import BLOGGER_PRESET
+    from cairn.services.discovery_service import apply_preset_to_scope
+
+    scope = Scope(
+        seeds=["https://b.blogspot.com/"],
+        hosts=[HostRule("b.blogspot.com", crawl_pages=True, fetch_assets=True)],
+        reject_patterns=[p for p, _ in BLOGGER_PRESET.reject_patterns],
+    )
+    assert apply_preset_to_scope(scope, BLOGGER_PRESET, ["b.blogspot.com"]) == []
