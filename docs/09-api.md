@@ -184,6 +184,10 @@ of attacker-influenced string that must not be allowed to pick its own type.
 | `GET` | `/api/jobs/{id}` | State, progress, error |
 | `GET` | `/api/jobs/{id}/projection` | Rate, distance to `max_pages`, and the index's estimate for contrast. No percentage — see below |
 | `POST` | `/api/jobs/{id}/cancel` | SIGTERM → grace → SIGKILL |
+| `DELETE` | `/api/jobs/{id}` | Remove a finished job from the list. `409 job_is_active` if it is queued or running — cancel it first |
+| `POST` | `/api/jobs/clear` | Bulk delete finished jobs. Optional `status`, `type`, `site_id`; nothing set clears every finished job. Returns `{deleted}`. Never touches a queued or running job, and `status: "running"` is a `422` rather than a silent `deleted: 0` |
+
+> Clearing the job list does not touch archives. `captures.job_id`, `discoveries.job_id` and `feed_polls.job_id` are all `ON DELETE SET NULL`, so a capture outlives the job that made it and simply stops naming it.
 | `POST` | `/api/jobs/{id}/resume` | For `interrupted` jobs |
 | `GET` | `/api/jobs/{id}/events` | **SSE** |
 | `GET` | `/api/events` | **SSE** — global firehose for the activity sidebar |

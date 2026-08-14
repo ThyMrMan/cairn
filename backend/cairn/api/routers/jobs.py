@@ -11,7 +11,7 @@ from sqlalchemy import func, select
 
 from cairn.api.deps import ClientIp, Csrf, CurrentUser, DbSession
 from cairn.api.errors import ApiError
-from cairn.api.schemas import JobSummary, Ok, Page
+from cairn.api.schemas import JobsClear, JobsCleared, JobSummary, Ok, Page
 from cairn.db.models import Job, Site
 from cairn.db.types import utcnow
 from cairn.services import audit
@@ -189,6 +189,92 @@ async def cancel_job(
     if not await supervisor.cancel(job_id):
         raise ApiError("not_cancellable", "That job could not be cancelled.", status_code=409)
     return Ok()
+
+
+# ── clearing finished jobs ───────────────────────────────────────────────
+#
+# A run of failures is what a list of jobs looks like while something is being
+# got working, and there was no way to clear them — every attempt stayed at
+# the top of the page forever.
+#
+# Deleting a job row is the whole operation. Its events live in the in-memory
+# bus, and nothing on disk is keyed by job id: an engine's log is written into
+# the capture directory, and the job's temp directory is swept when it ends.
+# The three tables that reference a job do so `ON DELETE SET NULL` with
+# `PRAGMA foreign_keys=ON`, so a capture outlives the job that made it and
+# simply stops naming it.
+
+ACTIVE_STATUSES = ("queued", "running")
+
+
+@router.delete("/jobs/{job_id}", response_model=Ok)
+def delete_job(
+    job_id: int,
+    db: DbSession,
+    user: CurrentUser,
+    ip: ClientIp,
+    request: Request,
+) -> Ok:
+    job = db.get(Job, job_id)
+    if job is None:
+        raise ApiError("not_found", "That job does not exist.", status_code=404)
+    if job.status in ACTIVE_STATUSES:
+        raise ApiError(
+            "job_is_active",
+            f"This job is {job.status}. Cancel it first — deleting the row would leave "
+            "the process running with nothing watching it.",
+            status_code=409,
+        )
+    db.delete(job)
+    _bus(request).forget(job_id)
+    audit.record(db, "job.delete", actor=user.username, target=str(job_id), ip=ip)
+    return Ok()
+
+
+@router.post("/jobs/clear", response_model=JobsCleared)
+def clear_jobs(
+    body: JobsClear,
+    db: DbSession,
+    user: CurrentUser,
+    ip: ClientIp,
+    request: Request,
+) -> JobsCleared:
+    """Delete finished jobs, optionally narrowed to one status, type or site.
+
+    Never touches a queued or running job, whatever the filter says. Clearing
+    a list is a tidying action and must not be a way to lose track of work
+    that is still happening — so the guard is on the delete, not on the caller
+    remembering to exclude them.
+    """
+    stmt = select(Job).where(Job.status.not_in(ACTIVE_STATUSES))
+    if body.status:
+        if body.status in ACTIVE_STATUSES:
+            raise ApiError(
+                "job_is_active",
+                f"{body.status} jobs are still running; cancel them instead.",
+                status_code=422,
+            )
+        stmt = stmt.where(Job.status == body.status)
+    if body.type:
+        stmt = stmt.where(Job.type == body.type)
+    if body.site_id is not None:
+        stmt = stmt.where(Job.site_id == body.site_id)
+
+    jobs = db.scalars(stmt).all()
+    bus = _bus(request)
+    for job in jobs:
+        bus.forget(job.id)
+        db.delete(job)
+
+    audit.record(
+        db,
+        "job.clear",
+        actor=user.username,
+        target=body.status or "finished",
+        ip=ip,
+        detail={"count": len(jobs), "type": body.type, "site_id": body.site_id},
+    )
+    return JobsCleared(deleted=len(jobs))
 
 
 # ── SSE ──────────────────────────────────────────────────────────────────

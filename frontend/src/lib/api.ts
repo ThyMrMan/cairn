@@ -1312,6 +1312,10 @@ export const endpoints = {
   /** Rate and distance-to-cap for a running crawl. No invented percentage. */
   jobProjection: (id: number) => api.get<CrawlProjection>(`/jobs/${id}/projection`),
   cancelJob: (id: number) => api.post<{ ok: boolean }>(`/jobs/${id}/cancel`),
+  deleteJob: (id: number) => api.del<{ ok: boolean }>(`/jobs/${id}`),
+  /** Deletes finished jobs only; queued and running ones are never touched. */
+  clearJobs: (body: { status?: string; type?: string; site_id?: number }) =>
+    api.post<{ deleted: number }>("/jobs/clear", body),
 
   // ── profiles ───────────────────────────────────────────────────────────
   profiles: () => api.get<Profile[]>("/profiles"),

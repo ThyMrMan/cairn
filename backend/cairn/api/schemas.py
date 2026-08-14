@@ -446,6 +446,21 @@ class JobSummary(BaseModel):
     attempts: int
 
 
+class JobsClear(BaseModel):
+    """Which finished jobs to delete. Everything is optional; nothing set
+    means every job that is not queued or running."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    status: str | None = Field(default=None, max_length=16)
+    type: str | None = Field(default=None, max_length=32)
+    site_id: int | None = None
+
+
+class JobsCleared(BaseModel):
+    deleted: int
+
+
 # ── profiles ─────────────────────────────────────────────────────────────
 
 
