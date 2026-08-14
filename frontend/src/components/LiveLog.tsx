@@ -23,7 +23,13 @@ export function LiveLog({
   onFinished?: (status: string) => void;
 }) {
   const [lines, setLines] = useState<Line[]>([]);
-  const [progress, setProgress] = useState<{ done: number; bytes: number } | null>(null);
+  // `unit` because the engines do not count the same thing: browsertrix has
+  // no per-URL record on stdout and reports pages, wget reports URLs.
+  const [progress, setProgress] = useState<{
+    done: number;
+    bytes: number;
+    unit?: string;
+  } | null>(null);
   const [status, setStatus] = useState<string>("running");
   const boxRef = useRef<HTMLDivElement>(null);
   const pinnedRef = useRef(true);
@@ -72,7 +78,11 @@ export function LiveLog({
     on("artifact", (d) => push("artifact", "info", `wrote ${d.path}`));
     on("lagged", (d) => push("lagged", "warning", String(d.message ?? "Some events were dropped.")));
     on("progress", (d) =>
-      setProgress({ done: Number(d.done ?? 0), bytes: Number(d.bytes ?? 0) }),
+      setProgress({
+        done: Number(d.done ?? 0),
+        bytes: Number(d.bytes ?? 0),
+        unit: typeof d.unit === "string" ? d.unit : undefined,
+      }),
     );
     on("status", (d) => {
       const value = String(d.status ?? "");
@@ -123,7 +133,7 @@ export function LiveLog({
         </div>
         {progress && (
           <span className="tabular-nums text-xs text-muted">
-            {progress.done} URLs · {(progress.bytes / 1024 / 1024).toFixed(1)} MB
+            {progress.done} {progress.unit ?? "URLs"} · {(progress.bytes / 1024 / 1024).toFixed(1)} MB
           </span>
         )}
       </div>

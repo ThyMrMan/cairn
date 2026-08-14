@@ -564,3 +564,32 @@ def test_no_block_rules_when_nothing_is_rejected(tmp_path: Path) -> None:
     argv = Runner(wget_spec(tmp_path, scope=scope, config={}), EventWriter())._argv()
     assert "--blockRules" not in argv
     assert "--exclude" not in argv
+
+
+def test_browsertrix_progress_says_it_is_counting_pages(tmp_path: Path) -> None:
+    """The two engines do not count the same thing under the same label.
+
+    browsertrix's stdout carries no per-URL record — the archived list only
+    exists in the CDXJ it writes at the end — so its live counter is pages
+    crawled, while wget's is URLs fetched. Both rendered as "URLs", which made
+    a capture look 20x slower than the previous one when what had actually
+    changed was that a few hundred label pages stopped being crawled.
+    """
+    import io
+    import json as jsonlib
+
+    from cairn.engines.browsertrix import Runner
+    from cairn.engines.protocol import EventWriter
+
+    stream = io.StringIO()
+    runner = Runner(wget_spec(tmp_path, config={}), EventWriter(stream))
+    runner._handle(
+        jsonlib.dumps(
+            {"context": "crawlStatus", "message": "s", "details": {"crawled": 51, "total": 60}}
+        ),
+        1,
+    )
+    events = [jsonlib.loads(line) for line in stream.getvalue().splitlines()]
+    progress = next(e for e in events if e["type"] == "progress")
+    assert progress["done"] == 51
+    assert progress["unit"] == "pages"

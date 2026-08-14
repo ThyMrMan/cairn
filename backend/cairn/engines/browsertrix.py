@@ -295,7 +295,9 @@ class Runner:
             now = time.monotonic()
             if now - last_progress >= 2.0:
                 last_progress = now
-                self.events.progress(self.pages, bytes=_warc_bytes(self.tmp / "crawls"))
+                self.events.progress(
+                    self.pages, unit="pages", bytes=_warc_bytes(self.tmp / "crawls")
+                )
 
     def _handle(self, text: str, stream: int) -> None:
         if not text:
@@ -325,7 +327,13 @@ class Runner:
             self.pages = int(details.get("crawled") or self.pages)
             self.failed = int(details.get("failed") or self.failed)
             total = details.get("total")
-            self.events.progress(self.pages, total=int(total) if total else None)
+            # Pages, not URLs, and said so. Its stdout carries no per-URL
+            # record at all — the archived list only exists in the CDXJ it
+            # writes at the end — so this counter cannot be made to mean what
+            # wget's means. Labelling both "URLs" made a capture look 20x
+            # slower than the one before it when the real change was that a
+            # few hundred label pages had stopped being crawled.
+            self.events.progress(self.pages, unit="pages", total=int(total) if total else None)
             return
         if context == "worker" and message == "Starting page":
             self.events.log(f"page: {details.get('page')}")

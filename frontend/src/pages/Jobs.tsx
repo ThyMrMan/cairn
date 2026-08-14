@@ -138,7 +138,8 @@ function JobRow({
               : job.started_at
                 ? `started ${relative(job.started_at)}`
                 : `queued ${dateTime(job.queued_at)}`}
-            {job.progress?.done != null && ` · ${job.progress.done.toLocaleString()} URLs`}
+            {job.progress?.done != null &&
+              ` · ${job.progress.done.toLocaleString()} ${job.progress.unit ?? "URLs"}`}
             {job.progress?.bytes != null && ` · ${bytes(job.progress.bytes)}`}
           </p>
         </div>

@@ -369,7 +369,14 @@ export type Job = {
   site_id: number | null;
   site_title: string | null;
   status: string;
-  progress: { done?: number; total?: number; bytes?: number; eta_s?: number } | null;
+  /** `unit` says what `done` counts: browsertrix reports pages, wget URLs. */
+  progress: {
+    done?: number;
+    total?: number;
+    bytes?: number;
+    eta_s?: number;
+    unit?: string;
+  } | null;
   queued_at: string;
   started_at: string | null;
   finished_at: string | null;
