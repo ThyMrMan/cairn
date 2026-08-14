@@ -10,7 +10,7 @@ import { LiveLog } from "../components/LiveLog";
 import { Media } from "../components/Media";
 import { Replay } from "../components/Replay";
 import { Alert, EmptyState, Spinner } from "../components/ui";
-import { ApiError, endpoints } from "../lib/api";
+import { ApiError, endpoints, type Capture } from "../lib/api";
 import { bytes, dateTime, relative } from "../lib/format";
 import { StatusPill } from "./Sites";
 
@@ -171,7 +171,7 @@ export default function SiteDetail() {
         {captures.data && captures.data.length > 0 ? (
           <div className="grid gap-2">
             {captures.data.map((capture) => (
-              <CaptureRow key={capture.id} captureId={capture.id} />
+              <CaptureRow key={capture.id} summary={capture} />
             ))}
           </div>
         ) : (
@@ -582,16 +582,23 @@ function Seeds({ siteId, onChanged }: { siteId: number; onChanged?: () => void }
   );
 }
 
-function CaptureRow({ captureId }: { captureId: number }) {
+function CaptureRow({ summary }: { summary: Capture }) {
   const [open, setOpen] = useState(false);
+  // Only once the row is opened. The list already carries everything the
+  // closed row shows, and fetching each capture's detail on mount meant a site
+  // with a hundred captures fired a hundred requests the moment its page
+  // loaded. Browsers allow about six connections per host, so the rest queue —
+  // and the queue is shared, which is why the symptom was the *scope* section
+  // never loading rather than the capture list being slow. The request it was
+  // waiting for was stuck behind ninety-odd it did not need.
   const capture = useQuery({
-    queryKey: ["capture", captureId],
-    queryFn: () => endpoints.capture(captureId),
+    queryKey: ["capture", summary.id],
+    queryFn: () => endpoints.capture(summary.id),
+    enabled: open,
   });
 
-  if (!capture.data) return null;
   const data = capture.data;
-  const warnings = ((data.manifest?.stats as Record<string, unknown>)?.warnings ??
+  const warnings = ((data?.manifest?.stats as Record<string, unknown>)?.warnings ??
     []) as string[];
 
   return (
@@ -602,32 +609,38 @@ function CaptureRow({ captureId }: { captureId: number }) {
       >
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <span className="font-mono text-xs">{data.dir_name}</span>
-            <StatusPill status={data.status} />
+            <span className="font-mono text-xs">{summary.dir_name}</span>
+            <StatusPill status={summary.status} />
           </div>
           <p className="mt-0.5 text-xs text-muted">
-            {dateTime(data.started_at)} · {data.kind}
+            {dateTime(summary.started_at)} · {summary.kind}
           </p>
         </div>
         <dl className="flex shrink-0 gap-6 text-right text-xs">
           <div>
             <dt className="text-muted">URLs</dt>
-            <dd className="tabular-nums">{data.url_count.toLocaleString()}</dd>
+            <dd className="tabular-nums">{summary.url_count.toLocaleString()}</dd>
           </div>
           <div>
             <dt className="text-muted">Errors</dt>
-            <dd className={`tabular-nums ${data.error_count ? "text-warn" : ""}`}>
-              {data.error_count}
+            <dd className={`tabular-nums ${summary.error_count ? "text-warn" : ""}`}>
+              {summary.error_count}
             </dd>
           </div>
           <div>
             <dt className="text-muted">Size</dt>
-            <dd className="tabular-nums">{bytes(data.bytes_written)}</dd>
+            <dd className="tabular-nums">{bytes(summary.bytes_written)}</dd>
           </div>
         </dl>
       </button>
 
-      {open && (
+      {open && capture.isLoading && (
+        <div className="border-t border-border p-4">
+          <Spinner className="h-4 w-4 text-muted" />
+        </div>
+      )}
+
+      {open && data && (
         <div className="space-y-4 border-t border-border p-4">
           {warnings.length > 0 && (
             <Alert kind="warn" title="This capture has gaps worth knowing about">
@@ -651,9 +664,9 @@ function CaptureRow({ captureId }: { captureId: number }) {
             </ul>
           </div>
 
-          <UrlShapes captureId={captureId} />
-          <CaptureUrls captureId={captureId} errorCount={data.error_count} />
-          <CaptureLog captureId={captureId} />
+          <UrlShapes captureId={summary.id} />
+          <CaptureUrls captureId={summary.id} errorCount={summary.error_count} />
+          <CaptureLog captureId={summary.id} />
         </div>
       )}
     </div>
