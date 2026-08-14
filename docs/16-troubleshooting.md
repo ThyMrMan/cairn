@@ -113,6 +113,33 @@ file** rather than a folder, this is the fix: the link was written before its
 target directory existed, which types it as a file link. Linux resolves it
 either way, so only a Windows client ever sees the difference.
 
+## A site page freezes the browser when you scroll
+
+Almost always the archived page in the replay panel, not the app.
+
+The panel embeds a real website at its real weight. A photo blog's front page
+is tens of megabytes of full-resolution JPEGs, and a browser decodes those into
+bitmaps several times larger again — one 3000×2000 photo is 24 MB decoded, and
+a page of them will stall a tab. It shows up **on scroll** because that is when
+a browser decodes the images approaching the viewport, and it takes the app's
+own UI with it because replay on the same hostname shares a process with the
+app ([07](07-replay.md#the-same-trap-costs-performance-too)).
+
+Since this was reported, the archived page loads only when you ask for it —
+**Load the archived page** — so a site page costs nothing to visit. If it still
+stalls once loaded, that is the archived page itself being heavy, and the two
+things that help are:
+
+- **Give replay its own hostname**, which is worth doing anyway; the app can
+  then stay responsive while an archived page struggles.
+- **Use the reader view** for text. It reads extracted text rather than
+  rendering the page, so it is unaffected by how many photographs are on it.
+
+A useful check: does the app's own chrome — the URL bar, the capture selector —
+respond while the frame is stuck? If yes, it is the archived page. If the whole
+tab is dead before anything renders, it is not, and the browser console will
+say so.
+
 ## The replay tab is blank, and you changed the replay port
 
 Set `CAIRN_REPLAY_PUBLIC_PORT` to the port you published, and reload.

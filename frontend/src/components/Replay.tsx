@@ -45,6 +45,22 @@ export function Replay({
   // replaced a failed replay would make a half-captured site look fine.
   const [mode, setMode] = useState<"rendered" | "reader">(initialMode);
   const [readCapture, setReadCapture] = useState<string | null>(null);
+  // Whether the archived page has been asked for.
+  //
+  // The iframe renders a real website at its real weight. A photo blog's front
+  // page is tens of megabytes of full-resolution JPEGs, and a browser decodes
+  // those to bitmaps several times larger again — a 3000x2000 photo is 24 MB
+  // decoded, and twenty of them will stall the tab. Reported as a site page
+  // that froze on scroll, which is exactly when a browser decodes images that
+  // are coming into view.
+  //
+  // Loading it on arrival also meant merely *visiting* a site fetched an
+  // entire archived website through pywb, which is a lot of work to do on the
+  // chance somebody wanted to look.
+  //
+  // Arriving from a search result is different: that URL was asked for by
+  // name, so it loads without a second click.
+  const [loaded, setLoaded] = useState(Boolean(initialUrl));
 
   // The seed is the way in; everything else is reached by clicking.
   useEffect(() => {
@@ -164,6 +180,8 @@ export function Replay({
     e.preventDefault();
     setUrl(draft.trim());
     setTimestamp(null);
+    // Typing a URL and pressing Go is asking for it.
+    setLoaded(true);
   }
 
   return (
@@ -237,6 +255,20 @@ export function Replay({
         </Alert>
       )}
 
+      {!loaded ? (
+        <button
+          className="flex h-[70vh] w-full flex-col items-center justify-center gap-2 rounded-md
+                     border border-dashed border-border text-center hover:bg-raised"
+          onClick={() => setLoaded(true)}
+        >
+          <span className="text-sm font-medium">Load the archived page</span>
+          <span className="hint max-w-md">
+            This renders a real web page in your browser, at the size it was — a photo blog&rsquo;s
+            front page can be tens of megabytes of full-resolution images. Loading it only when
+            asked keeps visiting this page cheap.
+          </span>
+        </button>
+      ) : (
       <iframe
         // Keyed so switching capture or URL remounts rather than leaving the
         // previous page on screen while the next one loads.
@@ -251,6 +283,7 @@ export function Replay({
         sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
         referrerPolicy="no-referrer"
       />
+      )}
 
       <div className="flex items-center justify-between">
         <p className="hint">

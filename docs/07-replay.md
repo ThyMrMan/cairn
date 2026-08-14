@@ -144,6 +144,16 @@ Ports do not isolate cookies. `app.example.com:8080` and `app.example.com:8081` 
 
 **Therefore:** if the instance is exposed to the internet, replay must be on a distinct hostname. The reverse-proxy examples in [10](10-deployment-unraid.md) do this, and the app should detect the same-host case at startup and log a prominent warning — this is the kind of misconfiguration that looks fine forever until it doesn't.
 
+### The same trap costs performance too
+
+Browsers isolate processes by *site* — scheme plus registrable domain — not by origin. `host:8080` and `host:8081` are one site, and a bare IP is one site with itself, so on a default LAN install **the archived page renders in the same process as the app**.
+
+That matters because the archived page is a real web page at its real weight. A photo blog's front page is tens of megabytes of full-resolution JPEGs, and a browser decodes those to bitmaps several times larger again — one 3000×2000 photo is 24 MB decoded. Twenty of them will stall a tab, and because the process is shared, the stall takes the app's own UI with it.
+
+Reported in exactly that form: a site page that scrolled fine on an 8 MB test blog and froze Firefox on a 114 MB one, at the moment the iframe scrolled into view — which is when a browser decodes the images approaching the viewport. The replay panel therefore does not load the page until asked; a separate hostname is what removes the shared-process half of the problem.
+
+*(Reasoned from how site isolation is specified rather than measured here — the fix does not depend on it, but it is why the hostname advice above is worth taking even on a LAN.)*
+
 ---
 
 ## Raw record inspection
