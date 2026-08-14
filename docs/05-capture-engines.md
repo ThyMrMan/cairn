@@ -527,6 +527,8 @@ This is the most valuable second engine because it covers every wget limitation 
 >
 > **A browser fetches what the page asks for, not what the markup shows.** The same capture is the reason the Blogger preset now rejects five more things — the `/b/stats` view beacon, reCAPTCHA, the navbar and comment iframes, and the JSONP feed. Together they were about half of every request and 2.8 MB, and none of them can do anything against an origin that is gone. wget never saw them because wget cannot run the script that asks for them, so the preset had no reason to name them until now.
 >
+> **A preset is copied into a site's scope at discovery, not read at capture.** So improving one reaches new sites immediately and existing sites never — press **Index** on a site to merge in patterns it does not already have. This is easy to mistake for the change not working: the same follow-up capture showed the robots fix taking effect (the `/search/label/` pages were gone, because `obey_robots` is read from the stored scope at capture time) while the new reject patterns did nothing at all.
+>
 > **Do not override the container's working directory.** Its Dockerfile sets `WORKDIR /crawls` and it resolves its output tree from there, so pointing it elsewhere wrote the crawl where nobody was looking — and still exited 0, reporting two pages crawled and no archive.
 
 ### 2. `single-file-cli` — the one-file snapshot

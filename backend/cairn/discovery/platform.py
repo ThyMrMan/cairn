@@ -89,7 +89,18 @@ BLOGGER_PRESET = Preset(
         (r"[?&]m=1", "the mobile duplicate of every page — halves the crawl, loses nothing"),
         (r"[?&]replytocom=", "one permutation per comment reply"),
         (r"[?&]showComment=", "comment anchors"),
-        (r"/search\?updated-(max|min)=", "infinite archive pagination loops"),
+        # Pagination *within a label*, which is the combination that multiplies:
+        # one chain per label, and a blog with 60 labels has 60 of them. The
+        # plain `/search?updated-max=` chain is deliberately not rejected — it
+        # is the blog's own "Older posts" trail, it is bounded at roughly one
+        # page per five posts, and rejecting it made that link dead in replay
+        # for no saving worth having. Reported from a 43-post blog whose
+        # archive had a broken "Older posts" at the bottom of every page.
+        (
+            r"/search/label/[^?]*\?[^#]*updated-(max|min)=",
+            "archive pagination repeated once per label, which is where it "
+            "multiplies; the blog's own Older-posts trail is left alone",
+        ),
         (r"\?action=backlinks", "backlink stubs"),
         (
             r"^https?://www\.blogger\.com/dyn-css/",
@@ -138,10 +149,17 @@ BLOGGER_PRESET = Preset(
     notes=(
         "Blogger serves every post twice — the desktop URL and a ?m=1 mobile "
         "duplicate that most themes link to in the footer. Rejecting it halves "
-        "the crawl with no content loss. /search is robots-disallowed but is "
-        "where label pages live; turn off 'obey robots.txt' if you want them, "
-        "and expect several times more pages than the blog has posts — one "
-        "label page per label, each listing posts already captured."
+        "the crawl with no content loss.\n\n"
+        "Everything under /search is robots-disallowed, and that is one switch "
+        "covering two very different things. Label pages (/search/label/X) are "
+        "one per label and each re-lists posts you already have — a 43-post "
+        "blog produced 115 of them. The Older-posts trail (/search?updated-max=) "
+        "is the blog's own pagination, about one page per five posts, and "
+        "without it that link is dead in the archive.\n\n"
+        "So: turn off 'obey robots.txt' to get the Older-posts trail. Label "
+        "pages come with it — add a reject for /search/label/ in this site's "
+        "patterns if you do not want them. Pagination *inside* a label is "
+        "rejected either way, since that is the combination that multiplies."
     ),
 )
 

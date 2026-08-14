@@ -399,6 +399,30 @@ def test_blogger_furniture_a_browser_fetches_is_rejected() -> None:
         assert rejects.search(url), url
 
 
+def test_the_blogs_own_older_posts_trail_is_not_rejected() -> None:
+    """Reported: a broken "Older posts" at the bottom of every archived page.
+
+    `/search?updated-max=` is Blogger's own pagination — bounded at about one
+    page per five posts, and the only way to walk the archive by hand. It used
+    to be rejected as an "infinite pagination loop", which it is not; what
+    multiplies is the *label* form, one chain per label.
+    """
+    rejects = blogger_rejects()
+    trail = "https://b.blogspot.com/search?updated-max=2019-12-09T22:33:00%2B01:00&max-results=5"
+    assert not rejects.search(trail)
+    assert not rejects.search("https://b.blogspot.com/search?updated-min=2019-01-01T00:00:00-08:00")
+
+
+def test_pagination_inside_a_label_is_still_rejected() -> None:
+    """The combination that actually explodes: one chain per label."""
+    rejects = blogger_rejects()
+    assert rejects.search(
+        "https://b.blogspot.com/search/label/Recipes?updated-max=2019-12-09T22:33:00%2B01:00"
+    )
+    # …while the label page itself stays a robots-and-user decision.
+    assert not rejects.search("https://b.blogspot.com/search/label/Recipes")
+
+
 def test_the_plain_feed_and_the_posts_survive_those_rejects() -> None:
     """The two that would be silent disasters.
 
