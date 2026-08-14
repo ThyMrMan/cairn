@@ -8,12 +8,14 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
 from cairn.crypto.sealing import Sealer
 from cairn.db.models import AccessProfile
 from cairn.db.types import utcnow
 from cairn.services import profiles
+from tests.conftest import XHR
 
 FUTURE = int((utcnow() + timedelta(days=30)).timestamp())
 PAST = int((utcnow() - timedelta(days=30)).timestamp())
@@ -237,3 +239,78 @@ def test_materialize_returns_none_when_nothing_is_stored(
 ) -> None:
     profile = make_profile(db)
     assert profiles.materialize(db, sealer, profile.id, tmp_path / "job-1") is None
+
+
+# ── the verify URL ───────────────────────────────────────────────────────
+#
+# The mint runs the userscript against `verify_url` and refuses without one.
+# The create form asks for it and only insists for the mode chosen at that
+# moment — and the default mode is `cookies`, so the ordinary path (make a
+# profile, then upload a script to it) leaves the field empty. The profile
+# card now edits it, which is only worth anything if PATCH really takes it.
+
+
+def test_the_verify_url_can_be_set_after_the_profile_exists(authed: TestClient) -> None:
+    created = authed.post("/api/profiles", json={"name": "later", "mode": "cookies"}, headers=XHR)
+    assert created.status_code == 201, created.text
+    profile_id = created.json()["id"]
+    assert created.json()["verify_url"] is None
+
+    patched = authed.patch(
+        f"/api/profiles/{profile_id}",
+        json={"verify_url": "https://blog.example/gated"},
+        headers=XHR,
+    )
+    assert patched.status_code == 200, patched.text
+    assert patched.json()["verify_url"] == "https://blog.example/gated"
+    assert authed.get(f"/api/profiles/{profile_id}").json()["verify_url"] == (
+        "https://blog.example/gated"
+    )
+
+
+def test_patching_the_verify_url_leaves_the_rest_of_the_profile_alone(
+    authed: TestClient,
+) -> None:
+    """A partial update is partial — the card sends this field by itself."""
+    created = authed.post(
+        "/api/profiles",
+        json={"name": "keeps-its-name", "mode": "userscript", "user_agent": "Mozilla/5.0 (X)"},
+        headers=XHR,
+    )
+    profile_id = created.json()["id"]
+
+    patched = authed.patch(
+        f"/api/profiles/{profile_id}", json={"verify_url": "https://blog.example/"}, headers=XHR
+    )
+    body = patched.json()
+    assert body["name"] == "keeps-its-name"
+    assert body["user_agent"] == "Mozilla/5.0 (X)"
+    assert body["mode"] == "userscript"
+
+
+def test_the_mint_says_which_field_is_missing_rather_than_failing_vaguely(
+    authed: TestClient,
+) -> None:
+    """The 409 the UI now prevents — worth keeping honest behind it.
+
+    It must name the verify URL, because that is the only thing that tells
+    somebody looking at a live browser session that the mint is not reading
+    from it.
+    """
+    created = authed.post(
+        "/api/profiles", json={"name": "no-url", "mode": "userscript"}, headers=XHR
+    )
+    profile_id = created.json()["id"]
+    script = b"// ==UserScript==\n// @name probe\n// ==/UserScript==\nvoid 0;\n"
+    uploaded = authed.put(
+        f"/api/profiles/{profile_id}/script",
+        files={"file": ("probe.user.js", script, "text/javascript")},
+        headers=XHR,
+    )
+    assert uploaded.status_code == 200, uploaded.text
+
+    refused = authed.post(f"/api/profiles/{profile_id}/mint", headers=XHR)
+    assert refused.status_code == 409
+    error = refused.json()["error"]
+    assert error["code"] == "no_verify_url"
+    assert "verify url" in error["message"].lower()

@@ -370,10 +370,23 @@ function ProfileCard({ profile }: { profile: Profile }) {
         </div>
       )}
 
+      <VerifyUrl profile={profile} />
+
+      {profile.has_script && !profile.verify_url && (
+        <Alert kind="warn" title="Nothing to run the script against">
+          A userscript is stored, but the mint needs a page to run it on. Set the verify URL
+          above — a page behind the gate — and the button below will work.
+        </Alert>
+      )}
+
       {/* The actions that need a browser, and the one that does not. */}
       <div className="flex flex-wrap gap-2">
         {profile.has_script && (
-          <button className="btn-ghost" onClick={() => mint.mutate()} disabled={mint.isPending}>
+          <button
+            className="btn-ghost"
+            onClick={() => mint.mutate()}
+            disabled={mint.isPending || !profile.verify_url}
+          >
             {mint.isPending && <Spinner />}
             Run the script now
           </button>
@@ -429,6 +442,62 @@ function ProfileCard({ profile }: { profile: Profile }) {
           {profile.fingerprint} · stored {dateTime(profile.minted_at)}
         </p>
       )}
+    </div>
+  );
+}
+
+/**
+ * The verify URL, editable after the fact.
+ *
+ * It used to be settable only on the create form, which asks for it once and
+ * only insists when the mode chosen *at that moment* needs one. The default
+ * mode is `cookies`, so the ordinary path — make a profile, then upload a
+ * userscript to it — produced a card offering "Run the script now" whose only
+ * possible outcome was a 409 telling you to set a field nothing in the UI
+ * offered. The same gap hid the Test button from every cookies profile made
+ * without one.
+ *
+ * It is also the field people expect the interactive browser to set by
+ * navigating, which it does not: that browser and the mint's are two different
+ * browsers, and the mint reads this row rather than looking at what the other
+ * one is showing.
+ */
+function VerifyUrl({ profile }: { profile: Profile }) {
+  const client = useQueryClient();
+  const [value, setValue] = useState(profile.verify_url ?? "");
+  const dirty = value.trim() !== (profile.verify_url ?? "");
+
+  const save = useMutation({
+    mutationFn: () => endpoints.updateProfile(profile.id, { verify_url: value.trim() }),
+    onSuccess: () => client.invalidateQueries({ queryKey: ["profiles"] }),
+  });
+
+  return (
+    <div className="space-y-2">
+      <Field
+        label="Verify URL"
+        htmlFor={`verify-${profile.id}`}
+        hint="A page behind the gate. The userscript is run against this, and Test fetches it."
+      >
+        <div className="flex gap-2">
+          <input
+            id={`verify-${profile.id}`}
+            className="field"
+            placeholder="https://example.blogspot.com/"
+            value={value}
+            onChange={(event) => setValue(event.target.value)}
+          />
+          <button
+            className="btn-ghost"
+            disabled={!dirty || save.isPending}
+            onClick={() => save.mutate()}
+          >
+            {save.isPending && <Spinner />}
+            Save
+          </button>
+        </div>
+      </Field>
+      {save.error && <Alert kind="error">{(save.error as ApiError).message}</Alert>}
     </div>
   );
 }
