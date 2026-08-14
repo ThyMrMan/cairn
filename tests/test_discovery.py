@@ -371,6 +371,53 @@ def test_blogger_com_is_split_rather_than_dropped_wholesale() -> None:
     )
 
 
+def blogger_rejects() -> re.Pattern[str]:
+    scope = Scope(
+        seeds=["https://b.blogspot.com/"],
+        hosts=[HostRule("b.blogspot.com", crawl_pages=True, fetch_assets=True)],
+        reject_patterns=[p for p, _note in BLOGGER_PRESET.reject_patterns],
+    )
+    return re.compile(combine_patterns(build_reject_patterns(scope)))
+
+
+def test_blogger_furniture_a_browser_fetches_is_rejected() -> None:
+    """Measured on a real 43-post blog captured with the browser engine.
+
+    wget only asks for what it can see in the markup; a browser asks for
+    everything the page does, and on Blogger that is a beacon, a captcha, two
+    iframes and a JSONP feed — about half of every request made, and none of
+    it able to do anything once the origin is gone.
+    """
+    rejects = blogger_rejects()
+    for url in (
+        "https://b.blogspot.com/b/stats?style=BLACK_TRANSPARENT&timeRange=ALL_TIME&token=x",
+        "https://www.google.com/recaptcha/api2/anchor?ar=1&k=abc&size=invisible",
+        "https://www.blogger.com/navbar/8912?jsh=m&origin=https://b.blogspot.com&usegapi=1",
+        "https://www.blogger.com/comment/frame/8912?po=1&hl=en_GB&saa=1",
+        "https://b.blogspot.com/feeds/posts/default?alt=json-in-script&callback=cb&max-results=5",
+    ):
+        assert rejects.search(url), url
+
+
+def test_the_plain_feed_and_the_posts_survive_those_rejects() -> None:
+    """The two that would be silent disasters.
+
+    `/feeds/posts/default` is the preset's own feed path — discovery reads it,
+    and a pattern that caught the JSONP form plus the plain one would break
+    feed watching without any error. Label pages are a *choice*, governed by
+    robots.txt and the site's own setting; they must not be hard-rejected here.
+    """
+    rejects = blogger_rejects()
+    for url in (
+        "https://b.blogspot.com/feeds/posts/default",
+        "https://b.blogspot.com/feeds/posts/default?max-results=25",
+        "https://b.blogspot.com/2019/05/a-real-post.html",
+        "https://b.blogspot.com/search/label/Recipes",
+        "https://1.bp.blogspot.com/-abc/s1600/photo.jpg",
+    ):
+        assert not rejects.search(url), url
+
+
 def test_asset_only_host_is_enabled_even_without_a_preset() -> None:
     hosts = classify(
         seed_host="example.com",

@@ -523,6 +523,10 @@ This is the most valuable second engine because it covers every wget limitation 
 >
 > **Its stdout has no per-URL record.** Pages started and finished, and a periodic `crawlStatus` — the complete list of what was archived is only in the CDXJ it writes at the end, which is where the `url` events come from.
 >
+> **It ignores robots.txt unless told not to, and wget obeys it unless told not to.** The defaults are opposites, so `scope.obey_robots` — which defaults to *true* — meant nothing here until the adapter started passing `--useRobots`. A scope setting that constrains one engine and is silently inert in another is worse than no setting: it reads as a guarantee. Found on a real 43-post Blogger blog whose browsertrix capture hit its page cap, **115 of the crawled pages being `/search/label/*`** — which Blogger disallows in robots.txt, and which the preset deliberately leaves to robots rather than rejecting by pattern, because label pages are something a person may legitimately want.
+>
+> **A browser fetches what the page asks for, not what the markup shows.** The same capture is the reason the Blogger preset now rejects five more things — the `/b/stats` view beacon, reCAPTCHA, the navbar and comment iframes, and the JSONP feed. Together they were about half of every request and 2.8 MB, and none of them can do anything against an origin that is gone. wget never saw them because wget cannot run the script that asks for them, so the preset had no reason to name them until now.
+>
 > **Do not override the container's working directory.** Its Dockerfile sets `WORKDIR /crawls` and it resolves its output tree from there, so pointing it elsewhere wrote the crawl where nobody was looking — and still exited 0, reporting two pages crawled and no archive.
 
 ### 2. `single-file-cli` — the one-file snapshot

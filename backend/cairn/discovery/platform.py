@@ -101,6 +101,37 @@ BLOGGER_PRESET = Preset(
             r"^https?://www\.blogger\.com/[^?]*comment[_-]from[_-]post[_-]iframe",
             "the comment iframe bootstrap; the iframe it builds cannot work offline",
         ),
+        # The five below were measured on a real 43-post blog captured with a
+        # browser engine, which fetches everything a page asks for rather than
+        # only what wget can see in the markup. They came to roughly half of
+        # every request made and about 2.8 MB, and not one of them can do
+        # anything in a replayed page.
+        (
+            r"/b/stats\?",
+            "the view-counter beacon, fired on every page load — 22% of all "
+            "requests on the blog this was measured against, and it reports a "
+            "view to a server that is not there",
+        ),
+        (
+            r"^https?://(?:www\.)?google\.com/recaptcha/",
+            "the comment form's captcha; it cannot be solved offline and the "
+            "form it guards cannot submit anywhere",
+        ),
+        (
+            r"^https?://www\.blogger\.com/navbar/",
+            "the owner's admin navbar iframe — one per page, and signed out in "
+            "an archive even for the owner",
+        ),
+        (
+            r"^https?://www\.blogger\.com/comment/frame/",
+            "the comment iframe itself, which posts to a live endpoint. The "
+            "comments already in the page are part of the page and are kept",
+        ),
+        (
+            r"/feeds/posts/default\?[^#]*callback=",
+            "the JSONP form of the feed, called once per page by widgets. The "
+            "plain feed is left alone — discovery reads it",
+        ),
     ],
     sitemap_paths=("/sitemap.xml",),
     feed_paths=("/feeds/posts/default",),
@@ -108,7 +139,9 @@ BLOGGER_PRESET = Preset(
         "Blogger serves every post twice — the desktop URL and a ?m=1 mobile "
         "duplicate that most themes link to in the footer. Rejecting it halves "
         "the crawl with no content loss. /search is robots-disallowed but is "
-        "where label pages live; enable the robots override if you want them."
+        "where label pages live; turn off 'obey robots.txt' if you want them, "
+        "and expect several times more pages than the blog has posts — one "
+        "label page per label, each listing posts already captured."
     ),
 )
 

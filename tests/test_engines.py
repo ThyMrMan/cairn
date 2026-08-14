@@ -484,3 +484,35 @@ def test_an_openable_socket_passes(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(containers, "SOCKET_PATH", str(socket))
     monkeypatch.setattr(containers.os, "access", lambda *_args, **_kw: True)
     assert containers.available() == (True, "")
+
+
+def test_browsertrix_obeys_robots_when_the_scope_says_so(tmp_path: Path) -> None:
+    """A scope setting that binds one engine and is inert in another is worse
+    than no setting.
+
+    wget obeys robots.txt unless told not to; browsertrix ignores it unless
+    told to, and this engine never told it. Reported as a 43-post Blogger blog
+    that hit its page cap, 115 of the crawled pages being `/search/label/*` —
+    which Blogger disallows in robots.txt and the preset deliberately leaves
+    to robots rather than rejecting by pattern.
+    """
+    from cairn.engines.browsertrix import Runner
+    from cairn.engines.protocol import EventWriter
+
+    spec = wget_spec(tmp_path, config={})
+    assert spec.scope.get("obey_robots") in (None, True)
+    argv = Runner(spec, EventWriter())._argv()
+    assert "--useRobots" in argv
+
+
+def test_browsertrix_leaves_robots_alone_when_the_scope_overrides_it(tmp_path: Path) -> None:
+    from cairn.engines.browsertrix import Runner
+    from cairn.engines.protocol import EventWriter
+
+    scope = {
+        "seeds": ["https://example.blogspot.com/"],
+        "hosts": [{"host": "example.blogspot.com", "crawl_pages": True, "fetch_assets": True}],
+        "obey_robots": False,
+    }
+    spec = wget_spec(tmp_path, scope=scope, config={})
+    assert "--useRobots" not in Runner(spec, EventWriter())._argv()

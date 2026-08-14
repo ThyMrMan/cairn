@@ -374,6 +374,19 @@ class Runner:
         else:  # pragma: no cover — Scope.validate requires a crawlable host
             argv += ["--scopeType", _scope_type(self.config.get("scope_type"), scope)]
 
+        # wget obeys robots.txt unless told otherwise; browsertrix ignores it
+        # unless told to. So `obey_robots` — which defaults to true — meant
+        # nothing here, and a scope setting that constrains one engine and is
+        # silently inert in another is worse than no setting at all.
+        #
+        # Reported: a 43-post Blogger blog whose crawl hit its cap, 115 of the
+        # pages being `/search/label/*`. Blogger disallows `/search` in
+        # robots.txt, the preset says so and leaves those pages to it, and
+        # that arrangement quietly stopped holding the moment the engine
+        # changed.
+        if scope.obey_robots:
+            argv += ["--useRobots"]
+
         if scope.reject_patterns:
             argv += ["--exclude", "|".join(f"(?:{p})" for p in scope.reject_patterns)]
         if scope.max_pages:
