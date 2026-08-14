@@ -1001,14 +1001,22 @@ export type MediaItem = {
   playable: boolean;
 };
 
-export type MediaSettings = {
-  /** Already merged: built-in under instance setting under site override. */
+/** The instance-wide default, with no site's override on top. */
+export type MediaDefaults = {
   policy: Required<MediaPolicy>;
-  /** Only the fields this site overrides, which is what the form edits. */
   override: MediaPolicy;
   available: boolean;
   unavailable_reason: string;
   hosts: string[];
+};
+
+export type MediaSettings = MediaDefaults & {
+  /** Already merged: built-in under instance setting under site override. */
+  policy: Required<MediaPolicy>;
+  /** What the instance default contributes, so the UI can label inheritance. */
+  instance: MediaPolicy;
+  /** Only the fields this site overrides, which is what the form edits. */
+  override: MediaPolicy;
   items: MediaItem[];
   total_bytes: number;
 };
@@ -1170,6 +1178,9 @@ export const endpoints = {
   media: (siteId: number) => api.get<MediaSettings>(`/sites/${siteId}/media`),
   putMedia: (siteId: number, body: MediaPolicy) =>
     api.put<MediaSettings>(`/sites/${siteId}/media`, body),
+  /** The instance default a site inherits when it sets nothing of its own. */
+  mediaDefaults: () => api.get<MediaDefaults>("/media/settings"),
+  putMediaDefaults: (body: MediaPolicy) => api.put<MediaDefaults>("/media/settings", body),
   /** Playable straight from a <video>/<audio> element; it answers Range. */
   mediaUrl: (siteId: number, captureDir: string, filename: string) =>
     `/api/sites/${siteId}/media/${encodeURIComponent(captureDir)}/${encodeURIComponent(filename)}`,

@@ -678,26 +678,35 @@ def _media_captures(db: DbSession, site: Site, limit: int = 50) -> list[Capture]
     )
 
 
-@router.get("/sites/{site_id}/media")
-def get_media(
-    site_id: int, db: DbSession, settings: AppSettings, _user: CurrentUser
-) -> dict[str, Any]:
-    """The effective policy, whether it can run, and what it has collected.
+def _media_payload(db: DbSession, settings: Settings, site: Site) -> dict[str, Any]:
+    """One shape for both reading and writing, so they cannot drift.
 
     `policy` is already merged — built-in under instance setting under site
     override — because the layering is invisible in the UI and a form that
-    edits one layer while displaying another is a form that lies.
+    edits one layer while displaying another is a form that lies. `instance`
+    and `override` come along so the UI can say which of the two a value came
+    from, and offer a way back to the default.
     """
-    site = _require_site(db, site_id)
+    from cairn.services import settings_store
+
     ok, reason = media.available()
     return {
         "policy": media.policy_for(db, site),
+        "instance": settings_store.get(db, media.SETTING, {}) or {},
         "override": (site.scope_settings or {}).get("media") or {},
         "available": ok,
         "unavailable_reason": reason,
         "hosts": list(media.EMBED_HOSTS),
         **media.library(settings, site, _media_captures(db, site)),
     }
+
+
+@router.get("/sites/{site_id}/media")
+def get_media(
+    site_id: int, db: DbSession, settings: AppSettings, _user: CurrentUser
+) -> dict[str, Any]:
+    """The effective policy, whether it can run, and what it has collected."""
+    return _media_payload(db, settings, _require_site(db, site_id))
 
 
 @router.put("/sites/{site_id}/media")
@@ -729,15 +738,7 @@ def set_media(
         ip=ip,
         detail=override,
     )
-    ok, reason = media.available()
-    return {
-        "policy": media.policy_for(db, site),
-        "override": override,
-        "available": ok,
-        "unavailable_reason": reason,
-        "hosts": list(media.EMBED_HOSTS),
-        **media.library(settings, site, _media_captures(db, site)),
-    }
+    return _media_payload(db, settings, site)
 
 
 @router.get("/sites/{site_id}/media/{capture_dir}/{filename}")

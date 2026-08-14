@@ -150,11 +150,19 @@ Anything a filter can express must survive a round trip through both serializati
 | `GET` | `/api/sites/{id}/media` | Effective policy, whether `yt-dlp` is present, and every item recent captures downloaded **or refused, with the reason** |
 | `PUT` | `/api/sites/{id}/media` | `{enabled?, max_item_bytes?, max_total_bytes?, max_items?, format?, allow_private_hosts?}`. An empty body clears the site's override and returns it to the instance default |
 | `GET` | `/api/sites/{id}/media/{capture_dir}/{filename}` | The file itself, answering Range requests so it can be played in place |
+| `GET` | `/api/media/settings` | The instance-wide default every site inherits |
+| `PUT` | `/api/media/settings` | Same body. An empty one restores the built-in defaults |
 
 `policy` comes back merged — built-in under the `media.download` instance
 setting under the site's own override — because a form that edits one layer
-while displaying another is a form that lies. `override` carries only what this
-site sets, which is what a "back to default" control needs.
+while displaying another is a form that lies. The per-site response also
+carries `instance` and `override` separately, so the UI can say which layer a
+value came from and offer a way back to the one underneath.
+
+**Setting the instance default does not switch media on across an existing
+archive.** A site that has been given an explicit answer keeps it; the default
+decides what a site gets when nobody has said otherwise, which in practice is
+every site added afterwards.
 
 The file endpoint serves **inline**, unlike a WACZ export, because a video
 nobody can play is not much of an archive. What makes that safe is that the

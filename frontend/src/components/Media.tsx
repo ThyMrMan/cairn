@@ -1,7 +1,13 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
-import { ApiError, endpoints, type MediaItem, type MediaSettings } from "../lib/api";
+import {
+  ApiError,
+  endpoints,
+  type MediaItem,
+  type MediaPolicy,
+  type MediaSettings,
+} from "../lib/api";
 import { bytes } from "../lib/format";
 import { Alert, Spinner } from "./ui";
 
@@ -68,9 +74,22 @@ export function Media({ siteId }: { siteId: number }) {
 
           {data && (
             <>
-              <Policy data={data} onSave={(body) => save.mutate(body)} pending={save.isPending} />
-              {save.error && (
-                <Alert kind="error">{(save.error as ApiError).message}</Alert>
+              <MediaPolicyFields
+                policy={data.policy}
+                hosts={data.hosts}
+                pending={save.isPending}
+                onCommit={(body) => save.mutate(body)}
+                scope="site"
+              />
+              {save.error && <Alert kind="error">{(save.error as ApiError).message}</Alert>}
+              {Object.keys(data.override).length > 0 && (
+                <button
+                  className="btn-ghost text-xs"
+                  disabled={save.isPending}
+                  onClick={() => save.mutate({})}
+                >
+                  Use the instance default instead
+                </button>
               )}
               <Collected siteId={siteId} data={data} />
             </>
@@ -81,19 +100,27 @@ export function Media({ siteId }: { siteId: number }) {
   );
 }
 
-function Policy({
-  data,
-  onSave,
+/**
+ * The policy controls, shared by the per-site section and the instance-wide
+ * default in Settings. One component because they are the same six fields with
+ * the same bounds, and two copies would drift the moment one gained a seventh.
+ */
+export function MediaPolicyFields({
+  policy,
+  hosts,
+  onCommit,
   pending,
+  scope,
 }: {
-  data: MediaSettings;
-  onSave: (body: Record<string, unknown>) => void;
+  policy: Required<MediaPolicy>;
+  hosts: string[];
+  onCommit: (body: Record<string, unknown>) => void;
   pending: boolean;
+  scope: "site" | "instance";
 }) {
-  const policy = data.policy;
   // Every write sends the whole merged policy, so toggling one control cannot
   // silently drop a limit that was inherited rather than typed here.
-  const commit = (patch: Record<string, unknown>) => onSave({ ...policy, ...patch });
+  const commit = (patch: Record<string, unknown>) => onCommit({ ...policy, ...patch });
 
   return (
     <div className="space-y-3">
@@ -105,7 +132,9 @@ function Policy({
             disabled={pending}
             onChange={(e) => commit({ enabled: e.target.checked })}
           />
-          Download embedded media for this site
+          {scope === "site"
+            ? "Download embedded media for this site"
+            : "Download embedded media by default"}
         </label>
         {pending && <Spinner className="h-4 w-4 text-muted" />}
       </div>
@@ -169,7 +198,7 @@ function Policy({
           </label>
 
           <p className="hint">
-            Embeds are followed only for: {data.hosts.join(", ")}. Direct{" "}
+            Embeds are followed only for: {hosts.join(", ")}. Direct{" "}
             <code>&lt;video&gt;</code> and <code>&lt;audio&gt;</code> files are always followed.
           </p>
         </div>

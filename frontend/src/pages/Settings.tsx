@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState, type FormEvent } from "react";
 
+import { MediaPolicyFields } from "../components/Media";
 import { Alert, Field, Spinner } from "../components/ui";
 import { ApiError, endpoints } from "../lib/api";
 import { useAuth } from "../lib/auth";
@@ -19,6 +20,7 @@ export default function Settings() {
       <NotificationsSection />
       <IntegritySection />
       <ThumbnailSection />
+      <MediaDefaultsSection />
       <StorageSection />
       <MirrorSection />
       <BookmarkletSection />
@@ -499,6 +501,64 @@ function ThumbnailSection() {
       </div>
       {queued && <p className="mt-2 text-xs text-muted">{queued}</p>}
       {run.error && <p className="mt-2 text-xs text-danger">{(run.error as ApiError).message}</p>}
+      {save.error && <p className="mt-2 text-xs text-danger">{(save.error as ApiError).message}</p>}
+    </Section>
+  );
+}
+
+/**
+ * The embedded-media default every site inherits.
+ *
+ * A site that has been given its own answer keeps it, so switching this on
+ * does not start downloading video across an existing archive — it decides
+ * what a site gets when nobody has said otherwise, which in practice means
+ * every site added afterwards.
+ */
+function MediaDefaultsSection() {
+  const client = useQueryClient();
+  const config = useQuery({ queryKey: ["media-defaults"], queryFn: endpoints.mediaDefaults });
+  const save = useMutation({
+    mutationFn: (body: Record<string, unknown>) => endpoints.putMediaDefaults(body),
+    onSuccess: (data) => {
+      client.setQueryData(["media-defaults"], data);
+      // A site page showing an inherited value is now showing a stale one.
+      void client.invalidateQueries({ queryKey: ["media"] });
+    },
+  });
+
+  return (
+    <Section
+      title="Embedded video and audio"
+      description="No crawler captures a video stream, so an archived post with a YouTube embed keeps a dead rectangle. This is the default for sites that have not been given their own answer; each site can still override it on its own page."
+    >
+      {config.data && !config.data.available && (
+        <Alert kind="warn">
+          {config.data.unavailable_reason || "yt-dlp is not available."}
+        </Alert>
+      )}
+      {config.data && (
+        <MediaPolicyFields
+          policy={config.data.policy}
+          hosts={config.data.hosts}
+          pending={save.isPending}
+          onCommit={(body) => save.mutate(body)}
+          scope="instance"
+        />
+      )}
+      <p className="mt-3 text-xs text-muted">
+        Off by default, and worth leaving off unless you mean it: a blog&rsquo;s text and images
+        are megabytes, its embedded video is gigabytes, and this is the one setting here that can
+        fill a disk on a schedule set months ago.
+      </p>
+      {Object.keys(config.data?.override ?? {}).length > 0 && (
+        <button
+          className="btn-ghost mt-3 text-xs"
+          disabled={save.isPending}
+          onClick={() => save.mutate({})}
+        >
+          Back to the built-in defaults
+        </button>
+      )}
       {save.error && <p className="mt-2 text-xs text-danger">{(save.error as ApiError).message}</p>}
     </Section>
   );

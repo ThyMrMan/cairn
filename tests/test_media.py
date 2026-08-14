@@ -534,3 +534,50 @@ def test_the_media_server_will_not_serve_anything_it_could_be_tricked_into(
     for attempt in ("../../../../escaped.mp4", "sub/../../../../escaped.mp4"):
         with pytest.raises(storage.StoragePathError):
             media.file_path(settings, archive_path, capture_dir, attempt)
+
+
+def test_the_instance_default_is_settable_and_sites_inherit_it(authed, db, settings) -> None:
+    """The same gap one level up: `media.download` was in DEFAULT_SETTINGS and
+    read by `policy_for`, and nothing wrote it either."""
+    site_id, _, _ = _site_with_media(db, settings)
+    assert authed.get("/api/media/settings").json()["policy"]["enabled"] is False
+
+    saved = authed.put(
+        "/api/media/settings", json={"enabled": True, "max_items": 3}, headers=XHR
+    ).json()
+    assert saved["policy"]["enabled"] is True
+    assert saved["override"] == {"enabled": True, "max_items": 3}
+
+    # A site that has said nothing of its own now inherits it.
+    inherited = authed.get(f"/api/sites/{site_id}/media").json()
+    assert inherited["policy"]["enabled"] is True
+    assert inherited["policy"]["max_items"] == 3
+    assert inherited["override"] == {}
+    assert inherited["instance"] == {"enabled": True, "max_items": 3}
+
+
+def test_a_site_that_said_no_keeps_saying_no(authed, db, settings) -> None:
+    """Turning the instance default on must not switch media on for a site
+    somebody deliberately turned it off for — otherwise one checkbox starts
+    downloading video across an existing archive."""
+    site_id, _, _ = _site_with_media(db, settings)
+    authed.put(f"/api/sites/{site_id}/media", json={"enabled": False}, headers=XHR)
+    authed.put("/api/media/settings", json={"enabled": True}, headers=XHR)
+
+    site = authed.get(f"/api/sites/{site_id}/media").json()
+    assert site["policy"]["enabled"] is False
+    assert site["instance"] == {"enabled": True}
+
+
+def test_clearing_the_instance_default_restores_the_built_in(authed, db, settings) -> None:
+    authed.put("/api/media/settings", json={"enabled": True, "max_items": 3}, headers=XHR)
+    cleared = authed.put("/api/media/settings", json={}, headers=XHR).json()
+    assert cleared["override"] == {}
+    assert cleared["policy"]["enabled"] is False
+    assert cleared["policy"]["max_items"] == media.DEFAULT_POLICY["max_items"]
+
+
+def test_the_instance_default_is_bounded_too(authed) -> None:
+    for bad in ({"max_items": -1}, {"max_total_bytes": 10**15}, {"format": ""}):
+        response = authed.put("/api/media/settings", json=bad, headers=XHR)
+        assert response.status_code == 422, (bad, response.text)

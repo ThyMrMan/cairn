@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, Query, Request, status
 
 from cairn.api.deps import AppSettings, ClientIp, Csrf, CurrentUser, DbSession
 from cairn.api.errors import ApiError
-from cairn.api.schemas import JobAccepted, Ok, ThumbnailSettings, TrashEntry
+from cairn.api.schemas import JobAccepted, MediaPolicy, Ok, ThumbnailSettings, TrashEntry
 from cairn.db.models import Folder
 from cairn.services import audit, replay, symlinks, trash
 
@@ -141,6 +141,54 @@ def put_thumbnail_settings(
     settings_store.put(db, thumbnail.ENABLED_SETTING, body.enabled)
     db.commit()
     return body
+
+
+# ── embedded media, instance-wide ────────────────────────────────────────
+#
+# The default every site inherits when it sets nothing of its own. A site's own
+# policy still wins, and turning this on does NOT start downloading video
+# everywhere — `policy_for` merges instance over built-in, so `enabled` here is
+# what a newly added site gets, and any site that has been given an explicit
+# answer keeps it.
+
+
+@router.get("/media/settings")
+def media_settings(db: DbSession, _user: CurrentUser) -> dict[str, Any]:
+    from cairn.services import media, settings_store
+
+    ok, reason = media.available()
+    stored: dict[str, Any] = settings_store.get(db, media.SETTING, {}) or {}
+    return {
+        "policy": {**media.DEFAULT_POLICY, **stored},
+        "override": stored,
+        "available": ok,
+        "unavailable_reason": reason,
+        "hosts": list(media.EMBED_HOSTS),
+    }
+
+
+@router.put("/media/settings")
+def put_media_settings(
+    body: MediaPolicy, db: DbSession, user: CurrentUser, ip: ClientIp
+) -> dict[str, Any]:
+    """Set the instance default. An empty body restores the built-in one."""
+    from cairn.services import media, settings_store
+
+    override = body.model_dump(exclude_none=True)
+    settings_store.put(db, media.SETTING, override)
+    audit.record(
+        db, "media.defaults", actor=user.username, target="instance", ip=ip, detail=override
+    )
+    db.commit()
+
+    ok, reason = media.available()
+    return {
+        "policy": {**media.DEFAULT_POLICY, **override},
+        "override": override,
+        "available": ok,
+        "unavailable_reason": reason,
+        "hosts": list(media.EMBED_HOSTS),
+    }
 
 
 @router.post(
