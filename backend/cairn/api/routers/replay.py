@@ -58,6 +58,10 @@ def replay_status(
     # iframe is blocked by our own policy, so they share one implementation.
     origin = settings.replay_origin_for(request.url.scheme, request.url.hostname)
 
+    # The app's own external port, which is the only evidence in here that the
+    # deployment remaps ports at all. See `replay_port_is_assumed`.
+    external_port = request.url.port or (443 if request.url.scheme == "https" else 80)
+
     return {
         "collection": collection,
         "records": records,
@@ -70,6 +74,11 @@ def replay_status(
         "base_url": f"{origin}/{collection}" if origin else "",
         "seed_url": site.seed_url,
         "shares_host_with_app": settings.replay_shares_host_with_app(),
+        # Surfaced rather than silently hoped for: a wrong port here is a blank
+        # iframe with the reason only in the browser console, which is the one
+        # failure mode this whole tab cannot explain about itself.
+        "port_is_assumed": settings.replay_port_is_assumed(external_port),
+        "replay_port": settings.replay_public_port or settings.replay_port,
     }
 
 

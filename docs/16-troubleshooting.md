@@ -113,6 +113,32 @@ file** rather than a folder, this is the fix: the link was written before its
 target directory existed, which types it as a file link. Linux resolves it
 either way, so only a Windows client ever sees the difference.
 
+## The replay tab is blank, and you changed the replay port
+
+Set `CAIRN_REPLAY_PUBLIC_PORT` to the port you published, and reload.
+
+`CAIRN_REPLAY_PORT` is the port pywb **binds to inside the container**. The port
+your browser needs is the **host** side of the mapping, and those are the same
+number only when the container port is published unchanged. `-p 9081:8081` —
+which is precisely what changing "Replay Port" in the Unraid template produces —
+leaves pywb on 8081 inside while the world reaches it on 9081.
+
+Nothing inside the container can see the published port; a request to the *app*
+says nothing about how *replay* was mapped. So the app has to be told:
+
+```yaml
+environment:
+  - CAIRN_REPLAY_PUBLIC_PORT=9081
+```
+
+The failure is silent because the iframe is cross-origin — the browser refuses
+to say why it did not load, and the only trace is in the developer console. The
+replay tab now warns when it can tell that ports are being remapped, which it
+infers from the app itself being reached on a port other than the one it binds.
+
+Behind a reverse proxy, set `CAIRN_REPLAY_PUBLIC_URL` instead; a full URL wins
+over the port, because there the hostname changes too.
+
 ## Replay 404s after a restore or a move
 
 Re-point the collections. pywb picks the change up on the next request, with no

@@ -696,6 +696,10 @@ export type ReplayStatus = {
   base_url: string;
   seed_url: string;
   shares_host_with_app: boolean;
+  /** The replay port is a guess: this deployment remaps ports and never said
+   *  which one replay is published on. A wrong guess is a blank iframe. */
+  port_is_assumed: boolean;
+  replay_port: number;
 };
 
 export type CdxVersion = {

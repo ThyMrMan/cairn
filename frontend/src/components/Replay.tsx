@@ -168,6 +168,20 @@ export function Replay({
 
   return (
     <div className="space-y-3">
+      {data.port_is_assumed && (
+        <Alert kind="warn" title={`If this stays blank, check the replay port`}>
+          You reached this app on a different port from the one it listens on inside the
+          container, so the ports are being remapped — and nothing inside the container can
+          discover which port <em>replay</em> was published on. This tab is guessing{" "}
+          <code className="font-mono">{data.replay_port}</code>, and a wrong guess loads
+          nothing with no message.
+          <br />
+          If you changed the replay port in Unraid or Docker, set{" "}
+          <code className="mx-1 font-mono">CAIRN_REPLAY_PUBLIC_PORT</code>
+          to the port you published, and reload.
+        </Alert>
+      )}
+
       {data.shares_host_with_app && (
         <Alert kind="warn" title="Replay is not isolated from this app">
           Ports do not separate cookies, so a page in the archive could read your session.

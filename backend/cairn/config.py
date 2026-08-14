@@ -39,6 +39,14 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"  # noqa: S104 — container-internal; exposure is the operator's choice
     port: int = 8080
     replay_port: int = 8081
+    # The port a *browser* should use for replay, when it is not the port pywb
+    # binds to. These are the same number only when the container port is
+    # published unchanged: `-p 9081:8081` makes them 9081 and 8081, and a
+    # browser told 8081 reaches nothing. Unraid's template invites exactly that
+    # — its "Replay Port" field edits the host side of the mapping — so this is
+    # a normal configuration rather than an exotic one. 0 means "same as
+    # replay_port", which is right for every 1:1 mapping.
+    replay_public_port: int = 0
     replay_public_url: str = ""
     app_public_url: str = ""
 
@@ -165,12 +173,37 @@ class Settings(BaseSettings):
         Both the CSP's `frame-src` and the iframe's `src` come from here. They
         must agree exactly — a mismatch is a blank replay tab whose only
         explanation is in the browser console.
+
+        The port is `replay_public_port` when set, because the port pywb binds
+        to inside the container is not necessarily the port the world reaches
+        it on. Using the bind port here was a real bug: publish the container's
+        8081 on a different host port and replay went to an address with
+        nothing behind it, silently.
         """
         if self.replay_public_url:
             return self.replay_public_url.rstrip("/")
         if not hostname:
             return ""
-        return f"{scheme}://{hostname}:{self.replay_port}"
+        return f"{scheme}://{hostname}:{self.replay_public_port or self.replay_port}"
+
+    def replay_port_is_assumed(self, app_external_port: int | None) -> bool:
+        """Whether the replay port we hand out is a guess that could be wrong.
+
+        There is no way to learn the published replay port from inside the
+        container — nothing in a request to the *app* mentions it. What a
+        request does reveal is the port the app itself was reached on, and if
+        that differs from the port the app binds, the deployment is remapping
+        ports; the replay mapping is then very likely remapped too and the
+        number we are about to hand out is a guess.
+
+        Not proof — somebody can remap one and not the other — so callers
+        phrase it as something to check rather than an error.
+        """
+        if self.replay_public_url or self.replay_public_port:
+            return False  # Told explicitly; nothing is being assumed.
+        if app_external_port is None:
+            return False
+        return app_external_port != self.port
 
     def replay_shares_host_with_app(self) -> bool:
         """True when replay is not isolated from the app by hostname.

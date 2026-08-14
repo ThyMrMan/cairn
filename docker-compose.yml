@@ -7,7 +7,11 @@ services:
     restart: unless-stopped
     ports:
       - "8080:8080"   # web UI
-      - "8081:8081"   # archive replay (pywb), deliberately a separate origin
+      # Archive replay (pywb), deliberately a separate origin. If you change
+      # the LEFT number, set CAIRN_REPLAY_PUBLIC_PORT to match: nothing inside
+      # the container can see the published port, so the replay tab would keep
+      # sending your browser to 8081 and load nothing.
+      - "8081:8081"
     volumes:
       - ./config:/config          # database + settings. Put this on an SSD.
       - ./data:/data              # WARC storage. Bulk; an array is fine.

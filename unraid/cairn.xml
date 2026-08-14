@@ -31,7 +31,7 @@
           Required="true" Mask="false">8080</Config>
 
   <Config Name="Replay Port" Target="8081" Default="8081" Mode="tcp"
-          Description="Archive replay (pywb). Arrives in M3. Keep it on a separate hostname from the WebUI if you expose this to the internet — ports alone do not isolate cookies."
+          Description="Archive replay (pywb). IF YOU CHANGE THIS, also set 'Replay browser port' below to the same number — this field only moves the host side of the mapping, and nothing inside the container can see what you picked, so the replay tab would keep pointing at 8081 and load nothing. Keep replay on a separate hostname from the WebUI if you expose this to the internet — ports alone do not isolate cookies."
           Type="Port" Display="always" Required="true" Mask="false">8081</Config>
 
   <Config Name="Config" Target="/config" Default="/mnt/user/appdata/cairn"
@@ -49,6 +49,10 @@
   <Config Name="App public URL" Target="CAIRN_APP_PUBLIC_URL" Default=""
           Description="External URL of the web UI, e.g. https://archive.example.com. Only needed if you reverse-proxy this."
           Type="Variable" Display="advanced" Required="false" Mask="false"/>
+
+  <Config Name="Replay browser port" Target="CAIRN_REPLAY_PUBLIC_PORT" Default=""
+          Description="Only if you changed 'Replay Port' above: put the same number here. That field publishes the container's 8081 on a host port of your choosing, and the app has no way to learn which one you used — so without this it tells your browser 8081 and the replay tab loads nothing. Leave empty if you kept the default."
+          Type="Variable" Display="always" Required="false" Mask="false"/>
 
   <Config Name="Replay public URL" Target="CAIRN_REPLAY_PUBLIC_URL" Default=""
           Description="External URL of the replay origin, e.g. https://replay.example.com. Must differ in HOSTNAME from the app URL, not just port — archived pages run JavaScript, and same-host means it can read your session cookie."

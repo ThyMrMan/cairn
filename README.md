@@ -107,7 +107,8 @@ the environment variables, which need a restart.
 | `CAIRN_CONFIG_DIR` | `/config` | Database, settings, engines, backups. Small and hot — put it on an SSD. |
 | `CAIRN_DATA_DIR` | `/data` | The archive tree. Large and cold — an array is fine. |
 | `CAIRN_PORT` | `8080` | The app. |
-| `CAIRN_REPLAY_PORT` | `8081` | pywb, on its own origin. |
+| `CAIRN_REPLAY_PORT` | `8081` | pywb, on its own origin. The port it **binds** to inside the container. |
+| `CAIRN_REPLAY_PUBLIC_PORT` | — | The port your **browser** should use, when it differs. Needed whenever the replay port is published on a different host port (`-p 9081:8081`, or changing "Replay Port" in the Unraid template) — nothing inside the container can discover the published port, so without this the replay tab points at 8081 and loads nothing. |
 | `CAIRN_APP_PUBLIC_URL` | — | Set when behind a reverse proxy. |
 | `CAIRN_REPLAY_PUBLIC_URL` | — | Likewise — and it **must differ from the app in hostname**, not merely in port. Ports do not isolate cookies. |
 | `CAIRN_MAX_CONCURRENT_JOBS` | `2` | Parallel captures. Per-host serialisation applies regardless. |
