@@ -21,7 +21,9 @@ HEAD /sitemap_index.xml
 HEAD /feed  /rss  /atom.xml  /index.xml  /feeds/posts/default
 ```
 
-Platform fingerprinting happens here from the `generator` meta tag, response headers, and URL shape. Detecting Blogger, WordPress, Ghost, Substack, or Squarespace enables a preset that supplies the right sitemap and feed paths, the right junk-parameter rejects, and the right asset hosts — which is most of the value of this phase.
+Platform fingerprinting happens here from the `generator` meta tag, response headers, and URL shape. Detecting Blogger, WordPress, Ghost, Substack, Squarespace, MediaWiki or Discourse enables a preset that supplies the right sitemap and feed paths, the right junk-parameter rejects, and the right asset hosts — which is most of the value of this phase.
+
+Every platform the fingerprinter recognises must have a preset, and a test enforces it. Detection with nothing behind it is worse than no detection: the site reports a platform, offers no button, and shows the bare internal id where a name should be.
 
 ### Phase 2 — Enumerate URLs from authoritative sources
 
@@ -188,6 +190,48 @@ feed_paths: ["/blog?format=rss", "/news?format=rss", "/journal?format=rss"]
 **`allow_extensionless` is off.** Squarespace image URLs keep the source extension ahead of the query (`…/photo.jpg?format=2500w`) and the asset pattern already permits an extension followed by `?`, so they match without it. Turning it on would let a crawl follow HTML on the CDN for no gain.
 
 > **Unlike Blogger's, this preset's reject list has not been measured against a real capture.** The hosts and paths are Squarespace's documented infrastructure and are safe; the single reject is the structural twin of WordPress's `/wp-json/`. A capture's "what it fetched" list is what would turn it into a preset that pulls its weight — that is how Blogger's twelve patterns were arrived at, and five of them were added only after a browser-engine capture showed them to be half of all requests.
+
+### MediaWiki preset
+
+A wiki is the platform where a preset earns the most, because two of its per-article views are unbounded rather than merely repetitive.
+
+| Rejected | Why |
+|---|---|
+| `[?&]diff=` | An article with N revisions offers on the order of **N²** diffs |
+| `[?&]oldid=` | One URL per revision per article |
+| `Special:Random` | A crawl with no end condition at all |
+| `action=edit\|history\|info\|purge\|…` | A fixed set of views on **every** article |
+| `[?&]uselang=` / `[?&]useskin=` | The entire wiki again, per language and per skin |
+| `[?&]printable=yes`, `mobileaction=`, `redirect=no`, `curid=` | Duplicate views of a page reached another way |
+| `/api.php` | The machine-readable twin of everything |
+| `Special:RecentChanges\|Search\|Export\|WhatLinksHere\|…` | Live queries and sign-in forms |
+
+**`action=raw` is deliberately not rejected**, though it is the wikitext twin of every page and looks like the most obvious member of that list. Wikis predating `load.php` — and gadgets on wikis that do not — load site CSS through `MediaWiki:Common.css?action=raw&ctype=text/css`. Rejecting it costs the wiki's entire custom appearance; keeping it costs one extra fetch per article. Same asymmetry the asset extension list is deliberately generous for.
+
+**`Special:AllPages` and the other index pages are left alone** — they are how a wiki is enumerated when it publishes no sitemap.
+
+**Namespaces are left entirely alone.** `Talk:`, `User:`, `File:`, `Template:` and `Category:` are all crawled, because on many wikis the talk pages are the most valuable content and on others they are noise. That is a per-site decision, not a preset's.
+
+**No feed.** MediaWiki's only feed is `Special:RecentChanges` in Atom form, and its entries link to *diffs* rather than articles — so watching it would report new items on every poll and archive none of them, since the `diff=` reject puts every one out of scope. Watch `/sitemap.xml` instead where a wiki publishes one.
+
+### Discourse preset
+
+| Rejected | Why |
+|---|---|
+| `/message-bus/` | The live-update long-poll. Under a browser engine it does not stop — the page keeps re-opening it |
+| `/session/`, `/admin/`, `/logs/` | Auth and moderation, which cannot work offline |
+| `/u/<name>/(activity\|notifications\|preferences\|…)` | One set per member, none of it forum content |
+| `/search?` | Generated on demand, endless |
+| `[?&](order\|ascending)=` | Sort permutations of lists you already have |
+| `[?&]_=<digits>` | Cache-busting timestamps: a new URL for the same asset |
+
+Two much larger savings are **left switched off**, because both cost something:
+
+**Post-number URLs.** Discourse addresses a topic as `/t/slug/123` and any position within it as `/t/slug/123/47` — the same topic page, so a 500-post thread can be crawled as 500 near-identical URLs. Rejecting `/t/[^/]+/[0-9]+/[0-9]+$` collapses that, at the price of deep links into a thread going dead in replay.
+
+**The `.json` twins.** Nearly every Discourse URL answers with JSON at the same path plus `.json`, which doubles the crawl — but **which way to trade depends on the engine**. Fetched with wget you get Discourse's server-rendered crawler HTML and the JSON is redundant; a browser engine captures the JavaScript app, which reads those endpoints to render anything at all. Reject `\.json($|\?)` on a wget capture, leave it alone on a browsertrix one.
+
+> Neither of these two has been measured against a real capture either. The patterns come from MediaWiki's and Discourse's documented URL structures. What is verified is that every pattern in every preset compiles under **both** regex engines — PCRE for wget, JavaScript for browsertrix — and matches the same URLs in each, and that no preset rejects the feed or sitemap path it goes looking for.
 
 ---
 

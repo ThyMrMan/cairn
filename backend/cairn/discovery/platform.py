@@ -22,6 +22,8 @@ WORDPRESS = "wordpress"
 GHOST = "ghost"
 SUBSTACK = "substack"
 SQUARESPACE = "squarespace"
+MEDIAWIKI = "mediawiki"
+DISCOURSE = "discourse"
 UNKNOWN = "unknown"
 
 
@@ -276,6 +278,160 @@ SQUARESPACE_PRESET = Preset(
     ),
 )
 
+MEDIAWIKI_PRESET = Preset(
+    id=MEDIAWIKI,
+    name="MediaWiki",
+    assets_on=[
+        # Wikimedia projects keep every uploaded file here; a self-hosted wiki
+        # serves its own from /images/ on the seed host and needs nothing.
+        "upload.wikimedia.org",
+        "*.wikimedia.org",
+        # Fandom, which is MediaWiki underneath and is most of the wikis
+        # anybody wants a copy of.
+        "static.wikia.nocookie.net",
+        "*.nocookie.net",
+    ],
+    hosts_off=[
+        "*.google-analytics.com",
+        "*.googletagmanager.com",
+        "*.doubleclick.net",
+    ],
+    reject_patterns=[
+        # A wiki is the one platform where the junk outnumbers the content by
+        # an order of magnitude, because every article carries a fixed set of
+        # views and two of them are unbounded.
+        (
+            # Anchored on `&` or end of string so `action=edit` cannot also
+            # match some future `action=editsomething`.
+            #
+            # `action=raw` is deliberately *not* here, though it is the
+            # wikitext twin of every page and looks like the most obvious
+            # member of this list. Wikis that predate `load.php` — and gadgets
+            # on wikis that do not — load their own site CSS through
+            # `MediaWiki:Common.css?action=raw&ctype=text/css`. Rejecting it
+            # costs the wiki's entire custom appearance; keeping it costs one
+            # extra fetch per article. The asymmetry is the same one the scope
+            # module's asset extensions are generous for.
+            r"[?&]action=(edit|history|info|purge|delete|protect|unprotect"
+            r"|watch|unwatch|credits|rollback|revert|markpatrolled|submit)(&|$)",
+            "the per-article action views — an edit form that cannot submit, a "
+            "history that links every revision. Every article has all of them",
+        ),
+        (r"[?&]veaction=", "the VisualEditor entry point, same as action=edit"),
+        (
+            r"[?&]diff=",
+            "revision diffs, and this is the one that does not merely add up: "
+            "an article with N revisions offers on the order of N² of them",
+        ),
+        (
+            r"[?&]oldid=",
+            "one URL per revision per article. Version history is what the "
+            "capture timeline is for — archiving the wiki's own is a much "
+            "larger job than it looks",
+        ),
+        (r"[?&]printable=yes", "the print stylesheet's copy of every page"),
+        (
+            r"[?&]uselang=",
+            "the entire wiki again in each interface language",
+        ),
+        (r"[?&]useskin=", "the entire wiki again in each skin"),
+        (r"[?&]mobileaction=", "the mobile/desktop view toggle on every page"),
+        (r"[?&]redirect=no", "the redirect stub rather than its target"),
+        (r"[?&]curid=", "the by-id spelling of a page reached by title as well"),
+        (r"/api\.php", "the machine-readable twin of everything"),
+        (
+            r"Special(:|%3A)(Random|RecentChanges|RecentChangesLinked|Search"
+            r"|Export|WhatLinksHere|Contributions|MobileDiff|UserLogin"
+            r"|CreateAccount|Watchlist|EmailUser)",
+            "the dynamic and unbounded special pages. Special:Random is a "
+            "crawl that never finishes on its own; the rest are live queries "
+            "or sign-in forms. Special:AllPages and the other index pages are "
+            "deliberately left alone — they are how a wiki is enumerated",
+        ),
+    ],
+    sitemap_paths=("/sitemap.xml",),
+    # Deliberately none. MediaWiki's only feed is Special:RecentChanges in
+    # Atom form, and its entries link to *diffs* rather than articles — so
+    # watching it would report new items on every poll and archive none of
+    # them, because the diff reject below would put every one out of scope.
+    # A sitemap watcher is the right tool for a wiki.
+    feed_paths=(),
+    notes=(
+        "A wiki without these rejects is close to unbounded: every article "
+        "carries edit, history, raw and info views, one URL per revision, and "
+        "roughly one diff per pair of revisions. Special:Random is a crawl "
+        "with no end condition at all.\n\n"
+        "Namespaces are left entirely alone, and that is a decision worth "
+        "knowing about. Talk:, User:, File:, Template: and Category: pages are "
+        "all crawled, because on many wikis the talk pages are the most "
+        "valuable thing in there and on others they are noise. If you want "
+        "articles only, add rejects for the namespaces you do not want — "
+        "'Talk(:|%3A)' and so on — to this site's patterns.\n\n"
+        "MediaWiki has no feed worth watching: its RecentChanges Atom feed "
+        "links to diffs, not articles. Watch /sitemap.xml if the wiki "
+        "publishes one.\n\n"
+        "Not yet measured against a real capture — the patterns come from "
+        "MediaWiki's documented URL structure rather than from a fetch list."
+    ),
+)
+
+DISCOURSE_PRESET = Preset(
+    id=DISCOURSE,
+    name="Discourse",
+    assets_on=[
+        "*.discourse-cdn.com",
+        "avatars.discourse.org",
+        "fonts.gstatic.com",
+        "fonts.googleapis.com",
+    ],
+    hosts_off=[
+        "*.google-analytics.com",
+        "*.googletagmanager.com",
+        "*.doubleclick.net",
+    ],
+    reject_patterns=[
+        (
+            r"/message-bus/",
+            "the live-update long-poll. It never returns anything an archive "
+            "can use, and under a browser engine it does not stop — the page "
+            "keeps re-opening it for as long as the tab is alive",
+        ),
+        (r"/session/", "CSRF tokens and sign-in, which cannot work offline"),
+        (r"/(admin|logs|safe-mode)(/|$)", "the admin and moderation interface"),
+        (
+            r"/u/[^/]+/(activity|notifications|preferences|messages|badges|summary)",
+            "per-user subpages: one set per member, and none of them is forum content",
+        ),
+        (r"/search\?", "search results, which are generated on demand and endless"),
+        (
+            r"[?&](order|ascending)=",
+            "sort permutations of lists you already have in their default order",
+        ),
+        (r"[?&]_=[0-9]", "cache-busting timestamps — a new URL for the same asset"),
+        (r"/email/unsubscribe/", "one per-recipient token, and it acts on a real account"),
+    ],
+    sitemap_paths=("/sitemap.xml",),
+    feed_paths=("/latest.rss", "/posts.rss"),
+    notes=(
+        "Two much larger savings are left switched off, because both cost "
+        "something and which way to trade is yours.\n\n"
+        "**Post-number URLs.** Discourse addresses a topic as /t/slug/123 and "
+        "any position within it as /t/slug/123/47 — the same topic page, so a "
+        "500-post thread can be crawled as 500 near-identical URLs. Rejecting "
+        "'/t/[^/]+/[0-9]+/[0-9]+$' collapses that, at the price of deep links "
+        "into a thread going dead in replay.\n\n"
+        "**The .json twins.** Nearly every Discourse URL answers with JSON at "
+        "the same path plus '.json', which doubles the crawl. Whether you want "
+        "them depends on the engine: fetched with wget you get Discourse's "
+        "server-rendered crawler HTML and the JSON is redundant, but a browser "
+        "engine captures the JavaScript app, which reads those JSON endpoints "
+        "to render anything at all. Reject '\\.json($|\\?)' on a wget capture; "
+        "leave it alone on a browsertrix one.\n\n"
+        "Not yet measured against a real capture — the patterns come from "
+        "Discourse's documented routes rather than from a fetch list."
+    ),
+)
+
 PRESETS: dict[str, Preset] = {
     p.id: p
     for p in (
@@ -284,6 +440,8 @@ PRESETS: dict[str, Preset] = {
         GHOST_PRESET,
         SUBSTACK_PRESET,
         SQUARESPACE_PRESET,
+        MEDIAWIKI_PRESET,
+        DISCOURSE_PRESET,
     )
 }
 
@@ -312,6 +470,10 @@ _GENERATOR_HINTS = (
     (WORDPRESS, re.compile(r"\bwordpress\b", re.IGNORECASE)),
     (GHOST, re.compile(r"\bghost\b", re.IGNORECASE)),
     (SQUARESPACE, re.compile(r"\bsquarespace\b", re.IGNORECASE)),
+    # Both put a version in the generator tag on every page, which makes this
+    # the strongest signal either of them gives.
+    (MEDIAWIKI, re.compile(r"\bmediawiki\b", re.IGNORECASE)),
+    (DISCOURSE, re.compile(r"\bdiscourse\b", re.IGNORECASE)),
 )
 
 _HOST_HINTS = (
@@ -320,6 +482,15 @@ _HOST_HINTS = (
     (WORDPRESS, re.compile(r"\.wordpress\.com$", re.IGNORECASE)),
     (GHOST, re.compile(r"\.ghost\.io$", re.IGNORECASE)),
     (SQUARESPACE, re.compile(r"\.squarespace\.com$", re.IGNORECASE)),
+    (
+        MEDIAWIKI,
+        re.compile(
+            r"\.(wikipedia|wikimedia|wiktionary|wikibooks|wikinews|wikiquote"
+            r"|wikisource|wikiversity|wikivoyage)\.org$"
+            r"|\.fandom\.com$|\.miraheze\.org$|\.wiki\.gg$",
+            re.IGNORECASE,
+        ),
+    ),
 )
 
 _BODY_HINTS = (
@@ -332,6 +503,10 @@ _BODY_HINTS = (
     # the whole point here — a site on its own domain has nothing in the
     # hostname, and those are the ones worth presetting.
     (SQUARESPACE, re.compile(rb"SQUARESPACE_CONTEXT|squarespace-cdn\.com|squarespace\.com/")),
+    # `wgPageName` is in the inline config of every MediaWiki page ever
+    # served, and `mw-content-text` wraps the article body in every skin.
+    (MEDIAWIKI, re.compile(rb"wgPageName|mw-content-text|/load\.php\?")),
+    (DISCOURSE, re.compile(rb"discourse-cdn\.com|/message-bus/|discourse_theme_id")),
 )
 
 

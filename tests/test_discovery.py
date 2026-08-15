@@ -24,10 +24,15 @@ from cairn.discovery.hosts import (
 from cairn.discovery.platform import (
     BLOGGER,
     BLOGGER_PRESET,
+    DISCOURSE,
+    DISCOURSE_PRESET,
+    MEDIAWIKI,
+    MEDIAWIKI_PRESET,
     PRESETS,
     SQUARESPACE,
     SQUARESPACE_PRESET,
     WORDPRESS,
+    Preset,
     fingerprint,
     matches_host_pattern,
 )
@@ -235,6 +240,39 @@ def test_squarespace_is_recognised_three_ways() -> None:
     assert by_body.confidence == "weak"
 
 
+def test_mediawiki_is_recognised_from_the_generator_hostname_and_markup() -> None:
+    by_generator = fingerprint(url="https://wiki.example/", generator="MediaWiki 1.41.0")
+    assert by_generator.platform == MEDIAWIKI
+    assert by_generator.preset is MEDIAWIKI_PRESET
+
+    # Wikimedia projects, Fandom and the wiki farms, which is most of what
+    # anybody wants a copy of.
+    for host in (
+        "https://en.wikipedia.org/wiki/Harris",
+        "https://commons.wikimedia.org/",
+        "https://fallout.fandom.com/",
+        "https://somewiki.miraheze.org/",
+    ):
+        assert fingerprint(url=host).platform == MEDIAWIKI, host
+
+    # A self-hosted wiki on its own domain has nothing in the hostname.
+    body = b'<html><script>RLCONF={"wgPageName":"Harris"};</script></html>'
+    assert fingerprint(url="https://wiki.owndomain.example/", body=body).platform == MEDIAWIKI
+
+
+def test_discourse_is_recognised_from_the_generator_and_markup() -> None:
+    by_generator = fingerprint(url="https://forum.example/", generator="Discourse 3.2.0")
+    assert by_generator.platform == DISCOURSE
+    assert by_generator.preset is DISCOURSE_PRESET
+
+    # Discourse is nearly always on a custom domain, so the markup is the
+    # path that matters — there is no useful hostname pattern to add.
+    body = b'<html><link href="https://sea1.discourse-cdn.com/x/stylesheets/a.css"></html>'
+    result = fingerprint(url="https://forum.owndomain.example/", body=body)
+    assert result.platform == DISCOURSE
+    assert result.confidence == "weak"
+
+
 def test_the_squarespace_preset_rejects_the_json_twin_and_nothing_else() -> None:
     """?format=json is the whole page again; ?offset= is the site's pagination.
 
@@ -258,6 +296,116 @@ def test_the_squarespace_preset_rejects_the_json_twin_and_nothing_else() -> None
     # The RSS feed the preset itself goes looking for must not be rejected by it.
     for path in SQUARESPACE_PRESET.feed_paths:
         assert not rejected(f"https://site.example{path}")
+
+
+def _rejects(preset: Preset, url: str) -> bool:
+    import re
+
+    return any(re.search(pattern, url) for pattern, _note in preset.reject_patterns)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        # The two unbounded ones. A wiki with N revisions of an article offers
+        # on the order of N² diffs, which is the classic way a crawl of a wiki
+        # never finishes.
+        "https://wiki.example/w/index.php?title=Harris&diff=849&oldid=848",
+        "https://wiki.example/w/index.php?title=Harris&oldid=848",
+        "https://wiki.example/wiki/Special:Random",
+        # One per article, every article.
+        "https://wiki.example/w/index.php?title=Harris&action=edit",
+        "https://wiki.example/w/index.php?title=Harris&action=edit&section=3",
+        "https://wiki.example/w/index.php?title=Harris&action=history",
+        "https://wiki.example/wiki/Harris?veaction=edit",
+        "https://wiki.example/wiki/Harris?printable=yes",
+        # The whole wiki again, once per language and once per skin.
+        "https://wiki.example/wiki/Harris?uselang=fr",
+        "https://wiki.example/wiki/Harris?useskin=monobook",
+        "https://wiki.example/w/api.php?action=query&format=json",
+    ],
+)
+def test_the_mediawiki_preset_rejects_the_ways_a_wiki_multiplies(url: str) -> None:
+    assert _rejects(MEDIAWIKI_PRESET, url)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        # Articles, in both URL layouts a wiki can be configured with.
+        "https://wiki.example/wiki/Harris",
+        "https://wiki.example/w/index.php?title=Harris",
+        # The skin's CSS and JS bundle. Rejecting this leaves every archived
+        # page unstyled, which is the expensive mistake in this preset.
+        "https://wiki.example/w/load.php?modules=startup&only=scripts",
+        "https://wiki.example/w/load.php?modules=site.styles&only=styles",
+        # Site CSS on a wiki old enough to serve it this way — the reason
+        # action=raw is not in the reject list.
+        "https://wiki.example/w/index.php?title=MediaWiki:Common.css&action=raw&ctype=text/css",
+        # Index pages are how a wiki is enumerated at all.
+        "https://wiki.example/wiki/Special:AllPages",
+        # Namespaces are a per-site decision, not the preset's.
+        "https://wiki.example/wiki/Talk:Harris",
+        "https://wiki.example/wiki/Category:Islands",
+        "https://wiki.example/wiki/File:Harris.jpg",
+        "https://upload.wikimedia.org/wikipedia/commons/a/ab/Harris.jpg",
+    ],
+)
+def test_the_mediawiki_preset_leaves_content_and_styling_alone(url: str) -> None:
+    assert not _rejects(MEDIAWIKI_PRESET, url)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        # Under a browser engine this one does not stop on its own.
+        "https://forum.example/message-bus/a1b2c3/poll?dlp=t",
+        "https://forum.example/session/csrf",
+        "https://forum.example/admin/dashboard",
+        "https://forum.example/u/hazel/notifications",
+        "https://forum.example/u/hazel/preferences",
+        "https://forum.example/search?q=harris",
+        "https://forum.example/latest?order=activity&ascending=false",
+        "https://forum.example/assets/app.js?_=1755000000",
+        "https://forum.example/email/unsubscribe/9f3a2b",
+    ],
+)
+def test_the_discourse_preset_rejects_what_cannot_be_archived(url: str) -> None:
+    assert _rejects(DISCOURSE_PRESET, url)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://forum.example/t/the-ferry-to-tarbert/123",
+        # Pagination *within* a topic is more posts, not the same page again.
+        "https://forum.example/t/the-ferry-to-tarbert/123?page=2",
+        "https://forum.example/c/general/5",
+        "https://forum.example/latest",
+        # `/uploads/` and `/user_avatar/` both start with `/u`, and the
+        # per-user reject is one careless `[^/]*` away from eating every image
+        # on the forum.
+        "https://forum.example/uploads/default/original/1X/abc123.png",
+        "https://forum.example/user_avatar/forum.example/hazel/45/123_2.png",
+        # A profile page is content; its notification inbox is not.
+        "https://forum.example/u/hazel",
+    ],
+)
+def test_the_discourse_preset_leaves_the_forum_alone(url: str) -> None:
+    assert not _rejects(DISCOURSE_PRESET, url)
+
+
+def test_no_preset_rejects_the_feed_or_sitemap_it_goes_looking_for() -> None:
+    """A preset that blocks its own discovery paths is silently self-defeating.
+
+    Cheap to get wrong — Discourse's `/latest.rss` sits one careless pattern
+    away from the `?order=` reject, and it would fail by finding nothing
+    rather than by erroring.
+    """
+    for preset in PRESETS.values():
+        for path in (*preset.feed_paths, *preset.sitemap_paths):
+            url = f"https://site.example{path}"
+            assert not _rejects(preset, url), f"{preset.id} rejects its own {path}"
 
 
 # ── host patterns ────────────────────────────────────────────────────────
