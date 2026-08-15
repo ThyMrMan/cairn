@@ -33,7 +33,9 @@ capabilities:
   # through sign-ins the in-app browser cannot.
   auth: [user_agent, browser_profile]
   # It has its own dedup, driven by Redis across a crawl cluster, which does
-  # not read wget's CDX. `incremental.dedup_cdx` is ignored.
+  # not read wget's CDX. Declaring false is what stops core building the
+  # merged CDX at all, so `incremental.dedup_cdx` arrives null rather than
+  # pointing at a file this engine would ignore.
   incremental: false
   resumable: false
   max_concurrency: 4

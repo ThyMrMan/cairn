@@ -116,6 +116,8 @@ Three properties that make this work well:
 >
 > The same finding has a second consequence, in the opposite direction: an incremental capture's `url_count` and URL list are built from that CDX, so a capture that deduplicated perfectly reported **zero URLs** while its WARC was full — which reads as "the capture did nothing" precisely when it did the best possible thing. The engine now reconciles the CDX against wget's own crawl log at the end of the run and emits the difference as `revisit` URL events.
 
+> **This clause is wget's, not every engine's.** browsertrix declares `incremental: false` — its own dedup is Redis-backed within a crawl and does not read a CDX — so on that engine a feed capture re-stores the theme every time and costs roughly a full page render rather than 100–500 KB. `dedup_cdx` is now omitted from the job spec for any engine that declares it cannot use one ([05](05-capture-engines.md#in--the-job-spec)), which saves merging a CDX nothing will read. The saving is invisible on a browsertrix-only site — it writes no `part.cdx`, so there is nothing to merge — and real on one that switched engines with a wget history on disk. The engine picker states the cost before the choice is made.
+
 **Depth 1, page requisites on.** Capture the post and everything it needs to render, but don't re-crawl the whole site because the new post links to the archive index.
 
 > `--level=1` reads ambiguously, so it was measured: given a seed linking to an index which links to an old post, wget 1.25.0 fetches the seed, its requisites, and the index — and stops. Not the seed alone, and not the archive behind the index. The number matches the intent.

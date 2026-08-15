@@ -52,7 +52,7 @@ from cairn.engines.protocol import (
     WarningEvent,
     parse_event,
 )
-from cairn.engines.registry import EngineRegistry
+from cairn.engines.registry import Engine, EngineRegistry
 from cairn.logging import get_logger
 from cairn.services import postprocess, profiles, settings_store, sites, storage
 from cairn.services.events import (
@@ -1196,7 +1196,7 @@ class JobSupervisor:
                 "scope": scope.to_dict(),
                 "auth": auth,
                 "incremental": {
-                    "dedup_cdx": _dedup_cdx(self._settings, session, site, kind, temp_dir)
+                    "dedup_cdx": _dedup_cdx(self._settings, session, site, kind, temp_dir, engine)
                 },
                 "config": config,
                 "limits": {
@@ -1922,7 +1922,7 @@ CDX_HEADER = " CDX a b a m s k r M V g u"
 
 
 def _dedup_cdx(
-    settings: Settings, session: Session, site: Site, kind: str, temp_dir: Path
+    settings: Settings, session: Session, site: Site, kind: str, temp_dir: Path, engine: Engine
 ) -> str | None:
     """Everything this site has already archived, for `--warc-dedup`.
 
@@ -1938,8 +1938,27 @@ def _dedup_cdx(
     one capture and then silently stop, alternating full-size runs forever.
     The union of every capture's CDX is the complete set of payloads this site
     already has, which is what the flag actually wants.
+
+    **And only for an engine that can read it.** browsertrix declares
+    `incremental: false` and never looks at the field; building the file for
+    it means reading up to 400,000 CDX lines off every prior capture and
+    writing an 80 MB file that nothing opens, on every feed capture. That is
+    invisible on a site captured only by browsertrix — it writes no
+    `part.cdx`, so the walk finds nothing to merge — and shows up on the one
+    that switched engines, which is exactly where a site has a large wget
+    history sitting on disk.
+
+    Absent means capable, matching the engine picker's `incremental === false`:
+    only an engine that has actively said it cannot use the file is skipped, so
+    a drop-in that never declared the capability keeps the behaviour it has.
     """
     if kind == "full":
+        return None
+    if engine.capabilities.get("incremental") is False:
+        log.debug(
+            "engine cannot deduplicate against a prior capture; skipping the CDX merge",
+            extra={"engine": engine.id, "site": site.id},
+        )
         return None
 
     captures = session.scalars(

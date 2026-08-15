@@ -36,7 +36,8 @@ capabilities:
   javascript: false                 # can it execute page JS?
   scope: [host, path, regex]        # scope dimensions it enforces
   auth: [cookies, headers, user_agent]
-  incremental: true                 # supports dedup against a prior capture
+  incremental: true                 # supports dedup against a prior capture;
+                                    # `false` means core omits incremental.dedup_cdx
   resumable: false
   max_concurrency: 1
   requires_browser: false
@@ -169,6 +170,8 @@ Core writes `job.json` into a fresh job directory and passes its path as `argv[1
 ```
 
 `seed_file` is a newline-delimited list written next to `job.json` containing **every** URL from sitemaps and feeds. This is the mechanism that sidesteps ArchiveBox's depth ceiling entirely (its issues 1 and 4): the crawler is handed the complete URL set up front and link-following becomes a supplement, not the primary discovery mechanism.
+
+`incremental.dedup_cdx` is `null` on a full capture — one is meant to stand alone — and also for any engine whose manifest says `incremental: false`, because building it means walking every prior capture and merging up to 400,000 CDX lines into a file that engine will never open. Declaring the capability honestly is therefore worth doing: an engine that says `false` gets the field skipped rather than ignored. **Absent counts as capable**, matching what the engine picker warns on, so an addon that never declared it keeps whatever behaviour it has today.
 
 ### Out — NDJSON on stdout
 

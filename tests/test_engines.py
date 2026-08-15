@@ -7,8 +7,11 @@ from pathlib import Path
 
 import pytest
 import yaml
+from sqlalchemy.orm import Session
 
 from cairn.config import Settings
+from cairn.db.models import Capture, Site
+from cairn.db.types import utcnow
 from cairn.engines import registry
 from cairn.engines.protocol import (
     EventWriter,
@@ -18,6 +21,7 @@ from cairn.engines.protocol import (
     parse_event,
 )
 from cairn.engines.wget import build_argv, parse_cdx_line, parse_log_error
+from cairn.services import storage
 
 GOOD_MANIFEST = {
     "apiVersion": "cairn.engine/v1",
@@ -629,3 +633,121 @@ def test_wget_is_quiet_when_it_has_the_jar_it_needs(tmp_path: Path) -> None:
     runner.events.warning = lambda code, msg: seen.append((code, msg))  # type: ignore[method-assign]
     runner._warn_about_auth()
     assert seen == []
+
+
+# ── the dedup CDX, and who gets one ──────────────────────────────────────
+
+CDX_LINE = (
+    "http://blog.test/harris.html 20260801090000 http://blog.test/harris.html "
+    "text/html 200 QW3RTY - - 1834 0 part-00000.warc.gz"
+)
+
+
+def _site_with_a_captured_cdx(db: Session, settings: Settings) -> Site:
+    """A site carrying one prior capture with a real `part.cdx` on disk.
+
+    Enough for `_dedup_cdx` to have something to merge — without which every
+    test below passes for the wrong reason.
+    """
+    site = Site(
+        folder_id=1,
+        slug="coast",
+        title="Coast & Light",
+        seed_url="http://blog.test/",
+        primary_host="blog.test",
+        archive_path="Unfiled/coast",
+    )
+    db.add(site)
+    db.flush()
+    storage.ensure_site_dirs(settings, site.archive_path)
+
+    dir_name = "20260801T090000Z-full-wget"
+    db.add(
+        Capture(
+            site_id=site.id,
+            kind="full",
+            engine_id="wget-warc",
+            dir_name=dir_name,
+            status="ok",
+            started_at=utcnow(),
+        )
+    )
+    db.flush()
+    capture_dir = storage.ensure_capture_dirs(settings, site.archive_path, dir_name)
+    (capture_dir / storage.WARC_DIR / "part.cdx").write_text(
+        f" CDX a b a m s k r M V g u\n{CDX_LINE}\n", encoding="utf-8"
+    )
+    return site
+
+
+def _fake_engine(**capabilities: object) -> registry.Engine:
+    return registry.Engine(
+        id="demo",
+        name="Demo",
+        version="1.0.0",
+        source="dropin",
+        path=Path("."),
+        manifest={"capabilities": capabilities},
+    )
+
+
+def test_an_engine_that_can_deduplicate_gets_the_merged_cdx(
+    db: Session, settings: Settings, tmp_path: Path
+) -> None:
+    from cairn.services.jobs import _dedup_cdx
+
+    site = _site_with_a_captured_cdx(db, settings)
+    engine = registry.discover(settings)[0]["wget-warc"]
+    assert engine.capabilities["incremental"] is True
+
+    merged = _dedup_cdx(settings, db, site, "feed", tmp_path, engine)
+    assert merged is not None
+    assert CDX_LINE in Path(merged).read_text(encoding="utf-8")
+
+
+def test_an_engine_that_declares_it_cannot_is_not_handed_one(
+    db: Session, settings: Settings, tmp_path: Path
+) -> None:
+    """browsertrix ignores the field, so building the file is pure waste.
+
+    Not merely "the path is None": the assertion that matters is that no file
+    was written, because the cost being removed is walking every prior capture
+    and merging up to 400,000 CDX lines on every feed capture. A site captured
+    only by browsertrix hides this — it writes no `part.cdx`, so the walk finds
+    nothing either way. This one has a wget history, which is what a site that
+    switched engines looks like.
+    """
+    from cairn.services.jobs import _dedup_cdx
+
+    site = _site_with_a_captured_cdx(db, settings)
+    engine = registry.discover(settings)[0]["browsertrix"]
+    assert engine.capabilities["incremental"] is False
+
+    assert _dedup_cdx(settings, db, site, "feed", tmp_path, engine) is None
+    assert not (tmp_path / "dedup.cdx").exists()
+
+
+def test_an_engine_that_never_declared_the_capability_still_gets_one(
+    db: Session, settings: Settings, tmp_path: Path
+) -> None:
+    """Absent is not the same as false, matching the engine picker.
+
+    Only an engine that has actively said it cannot use the file is skipped.
+    A drop-in that supports dedup but forgot to declare it would otherwise
+    lose the saving silently, which is the failure that costs storage with no
+    way to notice.
+    """
+    from cairn.services.jobs import _dedup_cdx
+
+    site = _site_with_a_captured_cdx(db, settings)
+    assert _dedup_cdx(settings, db, site, "feed", tmp_path, _fake_engine()) is not None
+
+
+def test_a_full_capture_is_never_deduplicated_whatever_the_engine_says(
+    db: Session, settings: Settings, tmp_path: Path
+) -> None:
+    from cairn.services.jobs import _dedup_cdx
+
+    site = _site_with_a_captured_cdx(db, settings)
+    engine = _fake_engine(incremental=True)
+    assert _dedup_cdx(settings, db, site, "full", tmp_path, engine) is None
