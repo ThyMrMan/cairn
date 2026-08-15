@@ -162,6 +162,33 @@ notes: |
 
 The `?m=1` reject is worth calling out during development: without it, a Blogger crawl is roughly double the size and every page is stored twice with different URLs.
 
+### Squarespace preset
+
+```yaml
+preset: squarespace
+hosts_assets_on:
+  - images.squarespace-cdn.com        # every uploaded image, every template
+  - "*.squarespace-cdn.com"
+  - static1.squarespace.com           # template CSS/JS and non-image uploads
+  - assets.squarespace.com
+  - fonts.googleapis.com              # the @font-face CSS …
+  - fonts.gstatic.com                 # … and the font files: both halves needed
+  - use.typekit.net
+  - p.typekit.net
+reject_patterns:
+  - '[?&]format=json(-pretty)?(&|$)'  # the whole page again as JSON
+sitemap_paths: ["/sitemap.xml"]
+feed_paths: ["/blog?format=rss", "/news?format=rss", "/journal?format=rss"]
+```
+
+**No site-wide feed exists.** Each blog collection publishes its own at `<collection>?format=rss`, so there is no path that is right for every site — the three above are the usual collection names, tried after the page's own `<link rel="alternate">`, which is where a correct answer normally comes from.
+
+**`?offset=` and `?tag=` are deliberately not rejected.** `?offset=<timestamp>` is the blog's own pagination and `?tag=` / `?category=` / `?author=` / `?month=` are real navigation. This is the Blogger lesson applied ahead of time: rejecting that platform's Older-posts trail saved nothing worth having and left a dead link at the bottom of every archived page. If a capture shows tag pages dominating, add the reject to that site rather than to the preset.
+
+**`allow_extensionless` is off.** Squarespace image URLs keep the source extension ahead of the query (`…/photo.jpg?format=2500w`) and the asset pattern already permits an extension followed by `?`, so they match without it. Turning it on would let a crawl follow HTML on the CDN for no gain.
+
+> **Unlike Blogger's, this preset's reject list has not been measured against a real capture.** The hosts and paths are Squarespace's documented infrastructure and are safe; the single reject is the structural twin of WordPress's `/wp-json/`. A capture's "what it fetched" list is what would turn it into a preset that pulls its weight — that is how Blogger's twelve patterns were arrived at, and five of them were added only after a browser-engine capture showed them to be half of all requests.
+
 ---
 
 ## From selection to scope

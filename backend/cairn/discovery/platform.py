@@ -213,8 +213,78 @@ SUBSTACK_PRESET = Preset(
     feed_paths=("/feed",),
 )
 
+SQUARESPACE_PRESET = Preset(
+    id=SQUARESPACE,
+    name="Squarespace",
+    assets_on=[
+        # Every uploaded image goes through this, on every template.
+        "images.squarespace-cdn.com",
+        "*.squarespace-cdn.com",
+        # Template CSS/JS and uploaded files that are not images.
+        "static1.squarespace.com",
+        "assets.squarespace.com",
+        # Templates pull webfonts from both, and both halves are needed: one
+        # serves the @font-face CSS, the other the font files. A page missing
+        # either falls back to a system font in replay.
+        "fonts.googleapis.com",
+        "fonts.gstatic.com",
+        "use.typekit.net",
+        "p.typekit.net",
+    ],
+    hosts_off=[
+        "*.google-analytics.com",
+        "*.googletagmanager.com",
+        "*.doubleclick.net",
+    ],
+    # Deliberately empty. Squarespace image URLs keep the source file's
+    # extension ahead of the query string — `…/photo.jpg?format=2500w` — and
+    # the asset pattern already allows an extension followed by `?`, so they
+    # are matched without it. Turning it on would let a crawl follow HTML on
+    # the CDN for no gain; anything that does slip through shows up in
+    # `missing_assets` after a capture.
+    extensionless_ok=[],
+    reject_patterns=[
+        (
+            r"[?&]format=json(-pretty)?(&|$)",
+            "the whole page again as JSON — Squarespace's equivalent of "
+            "WordPress's /wp-json/, and every page has one",
+        ),
+    ],
+    sitemap_paths=("/sitemap.xml",),
+    # Squarespace has no site-wide feed: each blog collection publishes its own
+    # at `<collection>?format=rss`, so there is no path to guess that is right
+    # for every site. These are the three usual collection names, tried after
+    # the page's own <link rel="alternate">, which is where a correct answer
+    # normally comes from.
+    feed_paths=("/blog?format=rss", "/news?format=rss", "/journal?format=rss"),
+    notes=(
+        "Every page also answers on ?format=json, which is the same content "
+        "again in a form nothing replays. That is rejected.\n\n"
+        "Blog collections paginate with ?offset=<timestamp> and filter with "
+        "?tag=, ?category=, ?author= and ?month=. None of those are rejected "
+        "here, for the reason the Blogger preset leaves the Older-posts trail "
+        "alone: ?offset= is the blog's own pagination and rejecting it makes "
+        "that link dead in the archive, and the filter pages are real "
+        "navigation. If a capture shows tag and category pages dominating the "
+        "fetch list, add a reject for [?&]tag= to this site's patterns — the "
+        "same trade as Blogger's label pages.\n\n"
+        "The hosts and paths above are Squarespace's documented infrastructure. "
+        "Unlike the Blogger preset, the reject list has not been measured "
+        "against a real capture — if you archive a Squarespace site, the "
+        "'what it fetched' list is what would turn this into a preset that "
+        "pulls its weight."
+    ),
+)
+
 PRESETS: dict[str, Preset] = {
-    p.id: p for p in (BLOGGER_PRESET, WORDPRESS_PRESET, GHOST_PRESET, SUBSTACK_PRESET)
+    p.id: p
+    for p in (
+        BLOGGER_PRESET,
+        WORDPRESS_PRESET,
+        GHOST_PRESET,
+        SUBSTACK_PRESET,
+        SQUARESPACE_PRESET,
+    )
 }
 
 
@@ -249,6 +319,7 @@ _HOST_HINTS = (
     (SUBSTACK, re.compile(r"\.substack\.com$", re.IGNORECASE)),
     (WORDPRESS, re.compile(r"\.wordpress\.com$", re.IGNORECASE)),
     (GHOST, re.compile(r"\.ghost\.io$", re.IGNORECASE)),
+    (SQUARESPACE, re.compile(r"\.squarespace\.com$", re.IGNORECASE)),
 )
 
 _BODY_HINTS = (
@@ -256,6 +327,11 @@ _BODY_HINTS = (
     (WORDPRESS, re.compile(rb"/wp-content/|/wp-includes/")),
     (GHOST, re.compile(rb"ghost-sdk|/ghost/api/")),
     (SUBSTACK, re.compile(rb"substackcdn\.com|substack\.com/api")),
+    # `SQUARESPACE_CONTEXT` is the config blob injected into every page; the
+    # CDN hosts catch templates that render it differently. Custom domains are
+    # the whole point here — a site on its own domain has nothing in the
+    # hostname, and those are the ones worth presetting.
+    (SQUARESPACE, re.compile(rb"SQUARESPACE_CONTEXT|squarespace-cdn\.com|squarespace\.com/")),
 )
 
 

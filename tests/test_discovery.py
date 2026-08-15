@@ -24,6 +24,9 @@ from cairn.discovery.hosts import (
 from cairn.discovery.platform import (
     BLOGGER,
     BLOGGER_PRESET,
+    PRESETS,
+    SQUARESPACE,
+    SQUARESPACE_PRESET,
     WORDPRESS,
     fingerprint,
     matches_host_pattern,
@@ -193,6 +196,68 @@ def test_unknown_stays_unknown() -> None:
     result = fingerprint(url="https://example.com/", body=b"<html>hello</html>")
     assert result.platform == "unknown"
     assert result.preset is None
+
+
+def test_every_platform_we_can_detect_has_a_preset() -> None:
+    """Detection without a preset is worse than no detection.
+
+    Squarespace shipped in the generator hints with no entry in PRESETS, so a
+    Squarespace site fingerprinted with *strong* confidence and then offered
+    nothing: `Fingerprint.preset` was None, the "apply the … preset" button
+    never rendered, and the platform showed as the bare id because the display
+    name comes from the preset. docs/04 said it enabled one.
+
+    Recognising a platform is a promise that something follows from it.
+    """
+    from cairn.discovery.platform import _BODY_HINTS, _GENERATOR_HINTS, _HOST_HINTS
+
+    detectable = {
+        platform for table in (_GENERATOR_HINTS, _HOST_HINTS, _BODY_HINTS) for platform, _ in table
+    }
+    assert detectable <= set(PRESETS), (
+        f"detected but no preset: {sorted(detectable - set(PRESETS))}"
+    )
+
+
+def test_squarespace_is_recognised_three_ways() -> None:
+    """Generator, hostname and markup, because the custom-domain case has
+    nothing in the hostname and is the one worth presetting."""
+    by_generator = fingerprint(url="https://example.com/", generator="Squarespace 7.1")
+    assert by_generator.platform == SQUARESPACE
+    assert by_generator.confidence == "strong"
+    assert by_generator.preset is SQUARESPACE_PRESET
+
+    assert fingerprint(url="https://studio.squarespace.com/").platform == SQUARESPACE
+
+    body = b'<html><script>Static.SQUARESPACE_CONTEXT = {"website":{}}</script></html>'
+    by_body = fingerprint(url="https://owndomain.example/", body=body)
+    assert by_body.platform == SQUARESPACE
+    assert by_body.confidence == "weak"
+
+
+def test_the_squarespace_preset_rejects_the_json_twin_and_nothing_else() -> None:
+    """?format=json is the whole page again; ?offset= is the site's pagination.
+
+    The second half is the Blogger lesson: rejecting a blog's own Older-posts
+    trail saved nothing worth having and left a dead link in the archive. The
+    equivalent here must survive the preset.
+    """
+    import re
+
+    patterns = [re.compile(p) for p, _note in SQUARESPACE_PRESET.reject_patterns]
+
+    def rejected(url: str) -> bool:
+        return any(p.search(url) for p in patterns)
+
+    assert rejected("https://site.example/about?format=json")
+    assert rejected("https://site.example/about?format=json-pretty")
+    # Pagination, filtering, and the image CDN's width variants all survive.
+    assert not rejected("https://site.example/blog?offset=1700000000000")
+    assert not rejected("https://site.example/blog?tag=travel")
+    assert not rejected("https://images.squarespace-cdn.com/content/v1/a/b/x.jpg?format=2500w")
+    # The RSS feed the preset itself goes looking for must not be rejected by it.
+    for path in SQUARESPACE_PRESET.feed_paths:
+        assert not rejected(f"https://site.example{path}")
 
 
 # ── host patterns ────────────────────────────────────────────────────────
