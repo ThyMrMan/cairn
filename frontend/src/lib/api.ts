@@ -328,6 +328,7 @@ export type SiteDetail = Site & {
   running_job_id: number | null;
   /** Detail only — the summary would need a profile lookup per row. */
   profile_has_browser_profile: boolean;
+  profile_has_cookies: boolean;
 };
 
 export type Capture = {

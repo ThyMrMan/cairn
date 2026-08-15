@@ -317,12 +317,35 @@ class Runner:
             with contextlib.suppress(OSError):
                 self.proc.terminate()
 
+    def _warn_about_auth(self) -> None:
+        """Say when a profile is attached that this engine cannot use.
+
+        The mirror of the browsertrix warning, and it was missing. A profile
+        holding only a browsertrix browser profile hands wget nothing at all:
+        `--load-cookies` is simply not passed, the crawl runs signed out, and
+        the archive fills with the gate. Reported exactly that way — a second
+        blog set up with a browser profile, captured with this engine by
+        mistake, and stuck at the interstitial with no explanation anywhere.
+        """
+        if self.spec.auth.cookies_file:
+            return
+        if self.spec.auth.profile_file:
+            self.events.warning(
+                "auth_unsupported",
+                "This site's access profile holds a browsertrix browser profile and no "
+                "cookie jar, and wget cannot use one — it takes `--load-cookies` and "
+                "nothing else. This crawl is running signed out, so anything behind the "
+                "gate will be archived as the gate. Switch this site to the browsertrix "
+                "engine, or add a cookies.txt to the profile.",
+            )
+
     def run(self) -> int:
         (self.out / "warc").mkdir(parents=True, exist_ok=True)
         self.tmp.mkdir(parents=True, exist_ok=True)
 
         argv = build_argv(self.spec, self.out, self.tmp, self.job_dir)
         self.events.started(tool_version=wget_version())
+        self._warn_about_auth()
         self.events.log(f"wget {' '.join(shlex.quote(a) for a in argv[1:])}", level="debug")
 
         cdx = Tailer(self.out / "warc" / "part.cdx")

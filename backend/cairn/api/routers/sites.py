@@ -221,6 +221,7 @@ def _detail(db: DbSession, settings: Settings, site: Site) -> SiteDetail:
         profile_has_browser_profile=(
             site.profile is not None and profile_service.has_browser_profile(site.profile)
         ),
+        profile_has_cookies=(site.profile is not None and site.profile.cookies_enc is not None),
     )
 
 

@@ -176,20 +176,35 @@ function CapabilityNotes({ engine, site }: { engine: Engine; site: SiteDetail })
   // A browser profile is the other way past a gate, and the only one this
   // engine has. Warning about the cookie jar while one is attached would be
   // telling somebody a solved problem is unsolved.
+  // Both halves have to line up: the engine must accept a kind of credential
+  // *and* the profile must actually hold that kind. Checking only the engine
+  // meant a profile carrying a browsertrix tarball and no jar looked fine to
+  // wget, which reads neither — reported as a second blog captured signed out
+  // and stuck at the interstitial, with nothing anywhere saying why.
   const passesTheGate =
-    auth.includes("cookies") ||
+    (auth.includes("cookies") && site.profile_has_cookies) ||
     (auth.includes("browser_profile") && site.profile_has_browser_profile);
 
   if (site.profile_id && !passesTheGate) {
-    notes.push(
-      auth.includes("browser_profile")
-        ? `This site has an access profile, and ${engine.name} cannot use a cookie jar — ` +
-            "it has no cookie option at all. Attach a browsertrix browser profile to that " +
-            "access profile, or anything behind the gate will be archived as the gate."
-        : `This site has an access profile, and ${engine.name} cannot use a cookie jar. ` +
-            "Anything behind the gate will be archived as the gate — use an engine that " +
-            "declares cookie support, or check the capture afterwards.",
-    );
+    const gap =
+      auth.includes("cookies") && site.profile_has_browser_profile
+        ? // The engine reads jars, the profile holds a tarball. Both are
+          // fine on their own and together they are nothing.
+          `${engine.name} reads a cookie jar, and this site's access profile holds a ` +
+          "browsertrix browser profile and no jar. This capture will run signed out. " +
+          "Switch this site to the browsertrix engine, or upload a cookies.txt to that " +
+          "profile."
+        : auth.includes("cookies")
+          ? `${engine.name} reads a cookie jar, and this site's access profile has no ` +
+            "cookies stored. This capture will run signed out."
+          : auth.includes("browser_profile")
+            ? `This site has an access profile, and ${engine.name} cannot use a cookie jar — ` +
+              "it has no cookie option at all. Attach a browsertrix browser profile to that " +
+              "access profile, or anything behind the gate will be archived as the gate."
+            : `This site has an access profile, and ${engine.name} cannot use a cookie jar. ` +
+              "Anything behind the gate will be archived as the gate — use an engine that " +
+              "declares cookie support, or check the capture afterwards.";
+    notes.push(gap);
   }
   if (!caps.javascript) {
     notes.push(

@@ -593,3 +593,39 @@ def test_browsertrix_progress_says_it_is_counting_pages(tmp_path: Path) -> None:
     progress = next(e for e in events if e["type"] == "progress")
     assert progress["done"] == 51
     assert progress["unit"] == "pages"
+
+
+def test_wget_warns_when_the_profile_is_a_browser_profile_it_cannot_read(
+    tmp_path: Path,
+) -> None:
+    """The mirror of the browsertrix warning, and it was missing.
+
+    A profile holding only a browsertrix tarball hands wget nothing:
+    `--load-cookies` is not passed, the crawl runs signed out, and the archive
+    fills with the gate. Reported that way — a second blog set up with a
+    browser profile, captured with this engine by mistake, stuck at the
+    interstitial with no explanation anywhere.
+    """
+    from cairn.engines.protocol import EventWriter
+    from cairn.engines.wget import Runner
+
+    spec = wget_spec(tmp_path, auth={"profile_file": str(tmp_path / "profile.tar.gz")})
+    runner = Runner(spec, EventWriter())
+    seen: list[tuple[str, str]] = []
+    runner.events.warning = lambda code, msg: seen.append((code, msg))  # type: ignore[method-assign]
+    runner._warn_about_auth()
+
+    assert seen and seen[0][0] == "auth_unsupported"
+    assert "signed out" in seen[0][1]
+
+
+def test_wget_is_quiet_when_it_has_the_jar_it_needs(tmp_path: Path) -> None:
+    from cairn.engines.protocol import EventWriter
+    from cairn.engines.wget import Runner
+
+    spec = wget_spec(tmp_path, auth={"cookies_file": str(tmp_path / "cookies.txt")})
+    runner = Runner(spec, EventWriter())
+    seen: list[tuple[str, str]] = []
+    runner.events.warning = lambda code, msg: seen.append((code, msg))  # type: ignore[method-assign]
+    runner._warn_about_auth()
+    assert seen == []

@@ -382,6 +382,10 @@ class SiteDetail(SiteSummary):
     # profile. The engine picker warns about a gate the chosen engine cannot
     # pass, and a tarball is the one thing that gets browsertrix through one.
     profile_has_browser_profile: bool = False
+    # And whether it holds a cookie jar. A profile with a browser profile
+    # and no jar is useless to wget, which is the mirror of the case above
+    # and just as silent.
+    profile_has_cookies: bool = False
 
 
 # ── captures ─────────────────────────────────────────────────────────────
