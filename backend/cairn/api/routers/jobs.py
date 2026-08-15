@@ -129,6 +129,20 @@ def job_projection(job_id: int, db: DbSession, _user: CurrentUser) -> dict[str, 
     return {
         "running": job.status == "running",
         "urls": urls,
+        # What the live number counts, and what the index number counts. They
+        # are only comparable when they agree, and for a long time they did
+        # not: the index counts pages a site publishes, while wget's counter is
+        # URLs and browsertrix's is pages. Comparing across that gap is what
+        # made "the index found 38,000 and the crawl is past 140,000" read as a
+        # runaway when it was two different quantities.
+        "counts": str(progress.get("unit") or "urls"),
+        "index_counts": "pages",
+        # Pages the sitemap and feeds structurally cannot list, in scope only
+        # because robots.txt is being ignored. On Blogger this is the whole of
+        # /search — label pages and the archive pager — and it is the honest
+        # answer to "why is the crawl bigger than the index said": not a
+        # multiplier anybody can predict, but a named category.
+        "unlisted_paths": _unlisted_paths(db, job.site_id),
         "bytes": int(progress.get("bytes") or 0),
         "elapsed_s": round(elapsed, 1),
         "per_minute": round(per_minute, 1),
@@ -139,6 +153,34 @@ def job_projection(job_id: int, db: DbSession, _user: CurrentUser) -> dict[str, 
         "eta_to_cap_s": round(remaining / per_minute * 60) if remaining and per_minute else None,
         "index_estimate": estimate,
     }
+
+
+def _unlisted_paths(db: DbSession, site_id: int | None) -> list[str]:
+    """Robots-disallowed paths this crawl is walking anyway.
+
+    Empty when robots.txt is being obeyed, because then they are not in scope
+    and cannot account for anything. Empty too when the site never fetched a
+    robots.txt, rather than implying it had none.
+    """
+    if site_id is None:
+        return []
+    from cairn.services import discovery_service
+    from cairn.services import sites as site_service
+
+    site = db.get(Site, site_id)
+    if site is None:  # pragma: no cover — the job outlived its site
+        return []
+    try:
+        if site_service.resolved_scope(db, site).obey_robots:
+            return []
+    except Exception:  # pragma: no cover — a broken scope must not break this
+        return []
+
+    discovery = discovery_service.latest_discovery(db, site_id)
+    summary = getattr(discovery, "summary", None) if discovery is not None else None
+    robots = (summary or {}).get("robots") if isinstance(summary, dict) else None
+    disallowed = (robots or {}).get("disallowed") if isinstance(robots, dict) else None
+    return [str(p) for p in disallowed][:10] if isinstance(disallowed, list) else []
 
 
 def _scope_cap(db: DbSession, site: Site) -> int | None:

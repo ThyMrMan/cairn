@@ -176,3 +176,48 @@ def test_clearing_is_audited(authed: TestClient, db: Session) -> None:
     entries = authed.get("/api/audit", headers=XHR).json()
     actions = [e["action"] for e in entries.get("items", entries)]
     assert "job.clear" in actions
+
+
+# ── the projection's units ───────────────────────────────────────────────
+
+
+def test_the_projection_says_what_each_number_counts(authed: TestClient, db: Session) -> None:
+    """The index counts pages a site publishes. wget's live counter is URLs and
+    browsertrix's is pages, so a bare ratio compares two different quantities —
+    which is how "the index found 38,000 and the crawl is past 140,000" read as
+    a runaway rather than as a unit mismatch.
+    """
+    job_id = make_job(db, "running")
+    job = db.get(Job, job_id)
+    assert job is not None
+    job.progress = {"done": 51, "unit": "pages"}
+    db.commit()
+
+    data = authed.get(f"/api/jobs/{job_id}/projection", headers=XHR).json()
+    assert data["counts"] == "pages"
+    assert data["index_counts"] == "pages"
+
+
+def test_a_job_with_no_unit_is_reported_as_urls(authed: TestClient, db: Session) -> None:
+    """wget predates the field and counts URLs, so absence is not unknown."""
+    job_id = make_job(db, "running")
+    job = db.get(Job, job_id)
+    assert job is not None
+    job.progress = {"done": 900}
+    db.commit()
+    assert authed.get(f"/api/jobs/{job_id}/projection", headers=XHR).json()["counts"] == "urls"
+
+
+def test_unlisted_paths_are_empty_while_robots_is_obeyed(authed: TestClient, db: Session) -> None:
+    """They are only an explanation when they are actually in scope. Listing
+    them regardless would blame robots.txt for a crawl it is constraining."""
+    site = Site(
+        slug="polite", title="Polite", seed_url="https://polite.test/",
+        primary_host="polite.test", folder_id=1, archive_path="Unfiled/polite",
+    )  # fmt: skip
+    db.add(site)
+    db.commit()
+    job_id = make_job(db, "running", site_id=site.id)
+
+    data = authed.get(f"/api/jobs/{job_id}/projection", headers=XHR).json()
+    assert data["unlisted_paths"] == []

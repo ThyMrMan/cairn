@@ -1038,6 +1038,11 @@ export type MediaItem = {
 };
 
 export type CrawlProjection = {
+  /** What the live counter counts; the index always counts pages. */
+  counts?: string;
+  index_counts?: string;
+  /** Robots-disallowed paths in scope because robots.txt is off. */
+  unlisted_paths?: string[];
   running: boolean;
   urls: number;
   bytes: number;

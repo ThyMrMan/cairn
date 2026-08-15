@@ -692,6 +692,13 @@ function CrawlProjection({ jobId }: { jobId: number }) {
   const data = projection.data;
   if (!data) return null;
 
+  // Only a like-for-like comparison is worth making. The index counts pages a
+  // site publishes; wget's live counter is URLs and browsertrix's is pages, so
+  // for wget the ratio is inflated by every image and stylesheet and means
+  // little. Comparing across that gap is what made one crawl look like a
+  // runaway when it was two different quantities.
+  const comparable = (data.counts ?? "urls") === (data.index_counts ?? "pages");
+  const unlisted = data.unlisted_paths ?? [];
   const overIndex =
     data.index_estimate && data.urls > data.index_estimate * 2
       ? Math.round((data.urls / data.index_estimate) * 10) / 10
@@ -714,10 +721,14 @@ function CrawlProjection({ jobId }: { jobId: number }) {
 
       {overIndex && (
         <Alert kind="warn" title={`${overIndex}x what the index expected`}>
-          The index found {data.index_estimate?.toLocaleString()} pages and this crawl has
-          fetched {data.urls.toLocaleString()} URLs. Some of that is normal — the index counts
-          pages and this counts every image and stylesheet too — but a multiple this large
-          usually means the crawl has found a corner of the site it can generate forever.
+          The index found {data.index_estimate?.toLocaleString()} pages the site publishes,
+          and this crawl is at {data.urls.toLocaleString()} {data.counts ?? "URLs"}.{" "}
+          {comparable
+            ? "Those count the same thing, so the difference is real pages the sitemap does not list."
+            : "They do not count the same thing — the index counts pages and this counts every image and stylesheet too — so expect a multiple even on a healthy crawl."}{" "}
+          {unlisted.length > 0
+            ? `Most of it is probably ${unlisted.join(" and ")}: robots.txt asks crawlers to skip those, this site is set to ignore it, and a sitemap never lists them.`
+            : "A multiple this large usually means the crawl has found a corner of the site it can generate forever."}{" "}
           Open a capture below and use <strong>What it fetched</strong> to see what it is
           spending itself on.
         </Alert>
