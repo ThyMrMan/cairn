@@ -166,8 +166,12 @@ function FeedRow({ feed, siteId }: { feed: Feed; siteId: number }) {
               Capture pending
             </button>
           )}
+          {/* Named for the settings, not just the history. Every per-feed
+              control lives behind this button — including whether the feed is
+              polled at all — and labelling it "History" hid the whole lot
+              behind the smaller half of what it opens. */}
           <button className="btn-ghost px-2 text-xs" onClick={() => setOpen((v) => !v)}>
-            {open ? "Hide" : "History"}
+            {open ? "Hide" : "Settings & history"}
           </button>
         </div>
       </div>
@@ -198,7 +202,10 @@ function FeedRow({ feed, siteId }: { feed: Feed; siteId: number }) {
 
       {open && (
         <div className="space-y-4 border-t border-border p-3">
-          <PollHistory feedId={feed.id} />
+          {/* Settings first, history second. The history table loads 25 rows,
+              so under it the controls sat off-screen on any feed that had been
+              running a while — the panel got less usable the longer the feed
+              had been polling, which is backwards. */}
           <div className="flex flex-wrap items-center gap-4 text-xs">
             <label className="flex items-center gap-1.5">
               <input
@@ -249,6 +256,10 @@ function FeedRow({ feed, siteId }: { feed: Feed; siteId: number }) {
             >
               Remove
             </button>
+          </div>
+          <div className="border-t border-border pt-3">
+            <h4 className="mb-1.5 text-xs font-medium text-muted">Recent polls</h4>
+            <PollHistory feedId={feed.id} />
           </div>
         </div>
       )}
