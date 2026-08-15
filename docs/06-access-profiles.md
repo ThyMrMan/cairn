@@ -354,6 +354,31 @@ through, use the VNC window (or `POST /navigate`) to visit each other blog and
 clear its gate too, check `/ping` lists them all, then `POST /createProfile`
 once. Upload that single tarball and point every one of those sites at it.
 
+### Adding a site to a profile that already exists
+
+Nothing accumulates by itself. `create-login-profile` starts from a clean
+browser every run — its `--profile` defaults to `""` — so a second run
+*replaces* rather than extends, and the first blog's session is simply gone.
+
+Feed the old tarball back in to extend it, and write the result somewhere new
+so a failed run cannot destroy a working profile:
+
+```bash
+docker run --rm -p 9223:9223 -p 6080:6080 --shm-size=2g -e VNC_PASS=changeme   -v /mnt/user/appdata/cairn/btrix:/crawls   webrecorder/browsertrix-crawler:1.14.1   create-login-profile --url "https://blogB.blogspot.com/" --cookieDays 30   --profile /crawls/profiles/profile.tar.gz   --filename /crawls/profiles/profile-ab.tar.gz
+```
+
+Clear blog B's gate, `POST /createProfile`, upload the new tarball over the
+old one. Measured against two hosts, reading the tarballs rather than trusting
+the flow:
+
+    run 1, fresh                     hosts=['blog-a.test']                cookies=2
+    run 2, --profile from run 1      hosts=['blog-b.test', 'blog-a.test']  cookies=3
+
+Both approaches are equally good and the choice is about when you knew: visit
+every blog in one session if you have the list up front, chain with `--profile`
+when a blog turns up later. The profile card's host list is how you check
+either worked.
+
 **`--url` is only the page it opens first.** It is required, and it is used in
 exactly two places in that tool, both `page.goto()` — it is never consulted
 when the profile is saved, so it neither scopes nor constrains what the
