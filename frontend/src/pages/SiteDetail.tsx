@@ -11,7 +11,7 @@ import { Media } from "../components/Media";
 import { Replay } from "../components/Replay";
 import { Alert, EmptyState, Spinner } from "../components/ui";
 import { ApiError, endpoints, type Capture } from "../lib/api";
-import { bytes, dateTime, relative } from "../lib/format";
+import { bytes, dateTime, ranFromTo, relative } from "../lib/format";
 import { StatusPill } from "./Sites";
 
 export default function SiteDetail() {
@@ -613,7 +613,7 @@ function CaptureRow({ summary }: { summary: Capture }) {
             <StatusPill status={summary.status} />
           </div>
           <p className="mt-0.5 text-xs text-muted">
-            {dateTime(summary.started_at)} · {summary.kind}
+            {ranFromTo(summary.started_at, summary.finished_at)} · {summary.kind}
           </p>
         </div>
         <dl className="flex shrink-0 gap-6 text-right text-xs">

@@ -52,3 +52,56 @@ export function readableTimestamp(ts: string): string {
   ];
   return `${y}-${mo}-${d} ${h}:${mi}`;
 }
+
+/** Just the clock part: `10:50 PM`, or `22:50` where that is the convention. */
+export function clock(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  return new Date(iso).toLocaleTimeString(undefined, { timeStyle: "short" });
+}
+
+/** Just the day: `Aug 14, 2026`. */
+export function day(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  return new Date(iso).toLocaleDateString(undefined, { dateStyle: "medium" });
+}
+
+/**
+ * How long something took, from two timestamps.
+ *
+ * Coarser as it gets longer, because "1h 4m" is the useful shape of a long
+ * capture and "1h 4m 12s" is the same fact with noise on the end. Seconds
+ * survive only under a minute, where they are the whole answer.
+ */
+export function duration(from: string | null | undefined, to: string | null | undefined): string {
+  if (!from || !to) return "";
+  const ms = new Date(to).getTime() - new Date(from).getTime();
+  // A clock that went backwards, or a finish recorded before its start. Saying
+  // nothing beats "-3m", which reads as a bug in the capture rather than in
+  // the two timestamps.
+  if (!Number.isFinite(ms) || ms < 0) return "";
+  const secs = Math.round(ms / 1000);
+  if (secs < 60) return `${secs}s`;
+  const mins = Math.round(secs / 60);
+  if (mins < 60) return `${mins}m`;
+  return `${Math.floor(mins / 60)}h ${mins % 60}m`;
+}
+
+/**
+ * A run as one line: the day, when it started, when it stopped, how long.
+ *
+ * Relative times answer "is this recent?" and nothing else — "finished 3h ago"
+ * cannot tell you a capture took forty minutes, and that is usually the
+ * question. A run spanning midnight carries both dates rather than implying
+ * the finish belongs to the start's day.
+ */
+export function ranFromTo(
+  started: string | null | undefined,
+  finished: string | null | undefined,
+): string {
+  if (!started) return "";
+  if (!finished) return `${day(started)} · started ${clock(started)}`;
+  const sameDay = day(started) === day(finished);
+  const took = duration(started, finished);
+  const end = sameDay ? clock(finished) : `${day(finished)} ${clock(finished)}`;
+  return `${day(started)} · ${clock(started)} → ${end}${took ? ` (${took})` : ""}`;
+}

@@ -4,7 +4,7 @@ import { Link } from "react-router-dom";
 
 import { Alert, EmptyState, Spinner } from "../components/ui";
 import { type Job, endpoints } from "../lib/api";
-import { bytes, dateTime, relative } from "../lib/format";
+import { bytes, dateTime, ranFromTo, relative } from "../lib/format";
 import { StatusPill } from "./Sites";
 
 const ACTIVE = new Set(["queued", "running"]);
@@ -133,11 +133,14 @@ function JobRow({
             <span className="text-xs text-muted">#{job.id}</span>
           </div>
           <p className="mt-0.5 text-xs text-muted">
-            {job.finished_at
-              ? `finished ${relative(job.finished_at)}`
-              : job.started_at
-                ? `started ${relative(job.started_at)}`
-                : `queued ${dateTime(job.queued_at)}`}
+            {/*
+              Wall-clock rather than only "3h ago". Relative time answers "is
+              this recent?" and nothing else, and the question about a finished
+              capture is usually how long it took and when it ran.
+            */}
+            {job.started_at ? ranFromTo(job.started_at, job.finished_at) : null}
+            {!job.started_at && `queued ${dateTime(job.queued_at)}`}
+            {job.finished_at && ` · ${relative(job.finished_at)}`}
             {job.progress?.done != null &&
               ` · ${job.progress.done.toLocaleString()} ${job.progress.unit ?? "URLs"}`}
             {job.progress?.bytes != null && ` · ${bytes(job.progress.bytes)}`}
