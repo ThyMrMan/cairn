@@ -354,6 +354,14 @@ through, use the VNC window (or `POST /navigate`) to visit each other blog and
 clear its gate too, check `/ping` lists them all, then `POST /createProfile`
 once. Upload that single tarball and point every one of those sites at it.
 
+**`--url` is only the page it opens first.** It is required, and it is used in
+exactly two places in that tool, both `page.goto()` — it is never consulted
+when the profile is saved, so it neither scopes nor constrains what the
+tarball ends up holding. Point it wherever it is convenient to start: the blog
+you most need to sign into, or Google's own sign-in page if the account
+session is the thing you are after. What ends up in the profile is what you
+visited, not what you named on the command line.
+
 `--cookieDays` still governs how long it lasts, so a shared profile expires as
 a unit and is re-made the same way.
 
