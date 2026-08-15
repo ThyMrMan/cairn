@@ -447,3 +447,75 @@ def test_the_upload_route_rejects_a_non_tarball(authed: TestClient) -> None:
     )
     assert refused.status_code == 422
     assert refused.json()["error"]["code"] == "invalid_browser_profile"
+
+
+def test_a_real_browsertrix_tarball_reports_the_hosts_it_covers() -> None:
+    """Built by create-login-profile against a fixture that sets two cookies.
+
+    Size and a digest cannot answer "does this reach my blog?", and a tarball
+    whose session never cleared the gate looks identical to one that did until
+    a capture proves otherwise. Host and cookie name are plaintext in
+    Chromium's store; only the values are encrypted, which is the half worth
+    reading and the half that must never be stored.
+    """
+    import io as _io
+    import sqlite3
+    import tarfile
+
+    db = tmp_sqlite_cookies(
+        [("blog.example", "GATE_OK", 13390000000000000), (".google.com", "SID", 0)]
+    )
+    buffer = _io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+        info = tarfile.TarInfo("./Default/Cookies")
+        info.size = len(db)
+        archive.addfile(info, _io.BytesIO(db))
+
+    report = profiles.describe_browser_profile(buffer.getvalue())
+    assert report["readable"] is True
+    assert report["cookies"] == 2
+    assert report["session_cookies"] == 1
+    assert set(report["hosts"]) == {"blog.example", ".google.com"}
+    assert "GATE_OK" not in repr(report), "names and values are not ours to publish"
+    del sqlite3
+
+
+def tmp_sqlite_cookies(rows: list[tuple[str, str, int]]) -> bytes:
+    import sqlite3
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "Cookies"
+        conn = sqlite3.connect(path)
+        conn.execute("CREATE TABLE cookies (host_key TEXT, name TEXT, expires_utc INTEGER)")
+        conn.executemany("INSERT INTO cookies VALUES (?,?,?)", rows)
+        conn.commit()
+        conn.close()
+        return path.read_bytes()
+
+
+def test_a_tarball_with_no_cookie_store_is_reported_as_empty_not_broken() -> None:
+    """The signal that the profile browser never got past the gate.
+
+    Measured against a real profile made by visiting a site that sets no
+    cookies: browsertrix writes no Default/Cookies member at all.
+    """
+    import io as _io
+    import tarfile
+
+    buffer = _io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+        info = tarfile.TarInfo("./Default/Preferences")
+        info.size = 2
+        archive.addfile(info, _io.BytesIO(b"{}"))
+
+    report = profiles.describe_browser_profile(buffer.getvalue())
+    assert report["readable"] is True
+    assert report["cookies"] == 0
+    assert report["hosts"] == []
+
+
+def test_something_that_is_not_a_tarball_says_so_rather_than_raising() -> None:
+    report = profiles.describe_browser_profile(b"\x1f\x8b not really a tarball")
+    assert report["readable"] is False
+    assert report["cookies"] == 0

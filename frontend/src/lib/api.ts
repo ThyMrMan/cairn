@@ -393,6 +393,12 @@ export type BrowserProfileMeta = {
   size: number;
   sha256: string;
   stored_at: string;
+  /** Hosts the tarball holds cookies for. Names only, never values. */
+  hosts?: string[];
+  cookies?: number;
+  session_cookies?: number;
+  /** False when the file could not be opened as a tarball at all. */
+  readable?: boolean;
 };
 
 export type Profile = {

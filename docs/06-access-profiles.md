@@ -365,10 +365,28 @@ than any other material here, and `GET /api/profiles` would otherwise read
 every byte of it to render a list. Unsealed only into the job's temp directory
 at 600, deleted with the job, swept at boot like the jar.
 
-`GET /api/profiles/{id}` reports `size`, a truncated `sha256` and `stored_at`
-— enough to answer "is one attached, and did it change?" and nothing more. A
-browser profile is a live session, so the rule that a profile never serializes
-its material applies with more force here, not less.
+`GET /api/profiles/{id}` reports `size`, a truncated `sha256`, `stored_at`,
+and — read once at upload — the **hosts it holds cookies for**, with counts.
+Names of hosts only: never a cookie name, never a value. A browser profile is
+a live session, so the rule that a profile never serializes its material
+applies with more force here, not less.
+
+That readout exists because size and a digest cannot answer the question
+anybody actually has after uploading one — *did that work, and does it reach
+this blog?* — and a tarball whose session never cleared the gate is
+byte-for-byte plausible until a capture proves otherwise. Three states, and
+the card says which:
+
+| What is reported | What it means |
+|---|---|
+| hosts listed | it covers those; check yours is among them |
+| readable, no cookies | the session was committed before clearing any gate — redo it |
+| not readable | the upload was not a tarball |
+
+It is read from `Default/Cookies`, the Brave profile's SQLite store, where
+`host_key` is plaintext and only values are encrypted. The member is streamed
+out of the archive rather than extracted, so a member name cannot choose where
+anything lands.
 
 ### What still does not work
 

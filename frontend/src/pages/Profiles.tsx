@@ -525,6 +525,53 @@ function BrowserProfile({ profile }: { profile: Profile }) {
         </div>
       )}
 
+      {/*
+        What it actually covers. Size and a digest cannot answer the question
+        somebody has after uploading one — "did that work, and does it reach
+        this blog?" — and a tarball whose session never cleared the gate looks
+        identical to one that did until a capture proves otherwise.
+      */}
+      {profile.browser_profile?.cookies ? (
+        <div className="mt-3 border-t border-border pt-3">
+          <p className="text-muted">
+            {profile.browser_profile.cookies} cookie(s) across{" "}
+            {profile.browser_profile.hosts?.length ?? 0} host(s)
+            {profile.browser_profile.session_cookies
+              ? ` · ${profile.browser_profile.session_cookies} would expire when a browser closes`
+              : ""}
+          </p>
+          <div className="mt-1.5 flex flex-wrap gap-1.5">
+            {(profile.browser_profile.hosts ?? []).map((host) => (
+              <span key={host} className="rounded bg-raised px-2 py-0.5 font-mono text-[11px]">
+                {host}
+              </span>
+            ))}
+          </div>
+        </div>
+      ) : profile.has_browser_profile && profile.browser_profile?.readable === false ? (
+        <div className="mt-3">
+          <Alert kind="warn">
+            This file could not be opened as a tarball, so nothing can be said about what it
+            holds. It is stored, but a capture is the first thing that will find out.
+          </Alert>
+        </div>
+      ) : profile.has_browser_profile && profile.browser_profile?.readable ? (
+        <div className="mt-3">
+          <Alert kind="warn" title="This profile holds no cookies">
+            The session was committed before it got past anything — no sign-in, no click
+            through a warning. Run <code className="font-mono">create-login-profile</code> again,
+            clear the gate in the VNC window, check{" "}
+            <code className="font-mono">/ping</code> lists the site, and only then POST to{" "}
+            <code className="font-mono">/createProfile</code>.
+          </Alert>
+        </div>
+      ) : profile.has_browser_profile ? (
+        <p className="mt-3 text-muted">
+          Uploaded before this version, so its contents were never read. Upload it again to see
+          which hosts it covers.
+        </p>
+      ) : null}
+
       {showHow && (
         <div className="mt-3 space-y-2 border-t border-border pt-3">
           <p>

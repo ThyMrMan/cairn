@@ -15,6 +15,7 @@ session cookies, and flags a jar carrying a full Google account session.
 from __future__ import annotations
 
 import hashlib
+import io
 import os
 import re
 from dataclasses import dataclass, field
@@ -450,6 +451,78 @@ def storage_note(meta: dict[str, Any] | None) -> str | None:
 # browser session, which is a stronger credential than the cookie jar.
 
 
+def describe_browser_profile(raw: bytes) -> dict[str, Any]:
+    """Which hosts a browsertrix profile tarball actually carries cookies for.
+
+    The question somebody has after uploading one is "did that work, and does
+    it cover this blog?", and size and a digest cannot answer either. A tarball
+    is a Brave user-data-dir, so the answer is in `Default/Cookies` — a SQLite
+    database whose `host_key` and `name` are plaintext while only the values
+    are encrypted, which is exactly the half worth reading.
+
+    **No `Default/Cookies` member at all means the session stored no cookies**,
+    which is the signal that the profile browser never got past the gate or was
+    committed before clicking through. That is worth reporting as a finding
+    rather than as an empty list.
+
+    Values are never read, never stored and never returned, the same rule the
+    cookie jar and the storage state follow — and with more force here, because
+    a browser profile is a live session.
+    """
+    import sqlite3
+    import tarfile
+    import tempfile
+
+    report: dict[str, Any] = {"hosts": [], "cookies": 0, "session_cookies": 0, "readable": False}
+    wanted = ("Default/Cookies", "./Default/Cookies")
+    try:
+        with tarfile.open(fileobj=io.BytesIO(raw), mode="r:gz") as archive:
+            # `readable` means the tarball opened, not that a cookie store was
+            # found in it — the two answer different questions and the UI needs
+            # both: "this is not a tarball" and "this is a tarball holding no
+            # cookies" have completely different fixes.
+            report["readable"] = True
+            member = next((m for m in archive.getmembers() if m.name in wanted), None)
+            if member is None:
+                return report
+            handle = archive.extractfile(member)
+            if handle is None:  # pragma: no cover — a directory named Cookies
+                return report
+            blob = handle.read()
+    except (tarfile.TarError, OSError, EOFError):
+        return report
+
+    # sqlite3 needs a path, so the database is copied out — never
+    # `archive.extract()`, which would let a member name choose where it lands.
+    with tempfile.TemporaryDirectory() as tmp:
+        copy = Path(tmp) / "Cookies"
+        copy.write_bytes(blob)
+        try:
+            connection = sqlite3.connect(f"file:{copy}?mode=ro", uri=True)
+            try:
+                rows = connection.execute("SELECT host_key, expires_utc FROM cookies").fetchall()
+            finally:
+                connection.close()
+        except sqlite3.Error:
+            return report
+
+    hosts: dict[str, int] = {}
+    session = 0
+    for host_key, expires in rows:
+        host = str(host_key or "")
+        if host:
+            hosts[host] = hosts.get(host, 0) + 1
+        if not expires:
+            session += 1
+
+    report["cookies"] = len(rows)
+    report["session_cookies"] = session
+    # Busiest first: the host with the most cookies is the login, and the
+    # list is capped because a profile that browsed for a while has plenty.
+    report["hosts"] = [h for h, _ in sorted(hosts.items(), key=lambda kv: (-kv[1], kv[0]))][:30]
+    return report
+
+
 def browser_profile_path(settings: Any, profile_id: int) -> Path:
     """Where a sealed tarball lives. `personas_dir` was created at boot and
     never used — the personas work ended up in `storage_enc` instead."""
@@ -492,6 +565,9 @@ def store_browser_profile(
         "size": len(raw),
         "sha256": hashlib.sha256(raw).hexdigest()[:16],
         "stored_at": to_iso(utcnow()),
+        # Read here rather than on every list: the tarball is tens of
+        # megabytes and `GET /api/profiles` would have to unseal all of it.
+        **describe_browser_profile(raw),
     }
     profile.cookie_meta = {**(profile.cookie_meta or {}), "browser_profile": meta}
     profile.updated_at = utcnow()
