@@ -535,18 +535,39 @@ function BrowserProfile({ profile }: { profile: Profile }) {
         <div className="mt-3 border-t border-border pt-3">
           <p className="text-muted">
             {profile.browser_profile.cookies} cookie(s) across{" "}
-            {profile.browser_profile.hosts?.length ?? 0} host(s)
+            {/*
+              The stored total, not the length of the list. The list is capped,
+              so counting it made the cap the answer — a profile covering 47
+              hosts reported 30, and would have reported 30 for any larger
+              number too. Older uploads have no count and fall back.
+            */}
+            {profile.browser_profile.host_count ?? profile.browser_profile.hosts?.length ?? 0}{" "}
+            host(s)
             {profile.browser_profile.session_cookies
               ? ` · ${profile.browser_profile.session_cookies} would expire when a browser closes`
               : ""}
           </p>
-          <div className="mt-1.5 flex flex-wrap gap-1.5">
-            {(profile.browser_profile.hosts ?? []).map((host) => (
-              <span key={host} className="rounded bg-raised px-2 py-0.5 font-mono text-[11px]">
-                {host}
-              </span>
-            ))}
+          {/*
+            Scrolls rather than running to whatever length a well-browsed
+            profile happens to be. A Google login brings a hundred and fifty
+            cookies with it, and that list should not be the tallest thing on
+            the page.
+          */}
+          <div className="mt-1.5 max-h-40 overflow-y-auto rounded border border-border p-1.5">
+            <div className="flex flex-wrap gap-1.5">
+              {(profile.browser_profile.hosts ?? []).map((host) => (
+                <span key={host} className="rounded bg-raised px-2 py-0.5 font-mono text-[11px]">
+                  {host}
+                </span>
+              ))}
+            </div>
           </div>
+          {(profile.browser_profile.host_count ?? 0) >
+            (profile.browser_profile.hosts?.length ?? 0) && (
+            <p className="hint mt-1.5">
+              Showing the {profile.browser_profile.hosts?.length} with the most cookies.
+            </p>
+          )}
         </div>
       ) : profile.has_browser_profile && profile.browser_profile?.readable === false ? (
         <div className="mt-3">

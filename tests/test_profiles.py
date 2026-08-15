@@ -476,6 +476,7 @@ def test_a_real_browsertrix_tarball_reports_the_hosts_it_covers() -> None:
     assert report["cookies"] == 2
     assert report["session_cookies"] == 1
     assert set(report["hosts"]) == {"blog.example", ".google.com"}
+    assert report["host_count"] == 2
     assert "GATE_OK" not in repr(report), "names and values are not ours to publish"
     del sqlite3
 
@@ -519,3 +520,30 @@ def test_something_that_is_not_a_tarball_says_so_rather_than_raising() -> None:
     report = profiles.describe_browser_profile(b"\x1f\x8b not really a tarball")
     assert report["readable"] is False
     assert report["cookies"] == 0
+
+
+def test_the_host_count_is_the_total_not_the_length_of_the_capped_list() -> None:
+    """Reported as "151 cookies across 30 hosts" on a profile with more.
+
+    30 was the cap on the list, and the card counted the list — so the cap was
+    the answer, and would have been the answer for any larger number too. A
+    truncated list is fine; a count derived from one is a wrong number wearing
+    a right one's clothes.
+    """
+    import io as _io
+    import tarfile
+
+    rows = [
+        (f"host{n}.example", "C", 13390000000000000) for n in range(profiles.HOST_LIST_LIMIT + 25)
+    ]
+    db = tmp_sqlite_cookies(rows)
+    buffer = _io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+        info = tarfile.TarInfo("./Default/Cookies")
+        info.size = len(db)
+        archive.addfile(info, _io.BytesIO(db))
+
+    report = profiles.describe_browser_profile(buffer.getvalue())
+    assert report["cookies"] == len(rows)
+    assert report["host_count"] == len(rows), "the total must not be capped"
+    assert len(report["hosts"]) == profiles.HOST_LIST_LIMIT, "the list still is"

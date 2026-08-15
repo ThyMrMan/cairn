@@ -45,6 +45,9 @@ MAX_COOKIE_BYTES = 1024 * 1024
 # live in a database column like the others: `list_profiles` would drag every
 # byte of it into memory on each page load.
 MAX_BROWSER_PROFILE_BYTES = 512 * 1024 * 1024
+# How many host names a profile readout lists. The count beside it is the
+# real total, so this only bounds the chips, not the truth.
+HOST_LIST_LIMIT = 200
 NETSCAPE_FIELDS = 7
 HTTPONLY_PREFIX = "#HttpOnly_"
 
@@ -473,7 +476,13 @@ def describe_browser_profile(raw: bytes) -> dict[str, Any]:
     import tarfile
     import tempfile
 
-    report: dict[str, Any] = {"hosts": [], "cookies": 0, "session_cookies": 0, "readable": False}
+    report: dict[str, Any] = {
+        "hosts": [],
+        "host_count": 0,
+        "cookies": 0,
+        "session_cookies": 0,
+        "readable": False,
+    }
     wanted = ("Default/Cookies", "./Default/Cookies")
     try:
         with tarfile.open(fileobj=io.BytesIO(raw), mode="r:gz") as archive:
@@ -517,9 +526,17 @@ def describe_browser_profile(raw: bytes) -> dict[str, Any]:
 
     report["cookies"] = len(rows)
     report["session_cookies"] = session
-    # Busiest first: the host with the most cookies is the login, and the
-    # list is capped because a profile that browsed for a while has plenty.
-    report["hosts"] = [h for h, _ in sorted(hosts.items(), key=lambda kv: (-kv[1], kv[0]))][:30]
+    # The true count, separate from the list. Deriving "how many hosts?" from
+    # a truncated list makes the cap the answer: a profile covering 47 hosts
+    # reported 30, and would have reported 30 for any larger number too.
+    report["host_count"] = len(hosts)
+    # Busiest first: the host with the most cookies is the login, and a
+    # profile that browsed for a while has plenty. Still capped, because this
+    # is stored as JSON on the profile row rather than in a table, but high
+    # enough that the cap is now an edge rather than the common case.
+    report["hosts"] = [h for h, _ in sorted(hosts.items(), key=lambda kv: (-kv[1], kv[0]))][
+        :HOST_LIST_LIMIT
+    ]
     return report
 
 

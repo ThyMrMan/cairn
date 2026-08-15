@@ -395,6 +395,8 @@ export type BrowserProfileMeta = {
   stored_at: string;
   /** Hosts the tarball holds cookies for. Names only, never values. */
   hosts?: string[];
+  /** The real total. `hosts` is capped, so its length is not the answer. */
+  host_count?: number;
   cookies?: number;
   session_cookies?: number;
   /** False when the file could not be opened as a tarball at all. */
