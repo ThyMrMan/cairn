@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 import os
 import stat
@@ -770,3 +771,47 @@ def test_no_archive_at_all_is_an_error_not_a_pass(tmp_path: Path) -> None:
     result = profilecheck._read_result(tmp_path, "https://blog.example/")
     assert result.verdict == "error"
     assert not result.ok
+
+
+def test_the_check_works_under_the_configured_temp_dir_not_the_system_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reported from a running instance, with /data and /config both mounted
+    correctly: "is not inside any mounted volume".
+
+    The crawl tree goes to a *sibling* container, so the daemon has to resolve
+    it — and the system temp directory lives in the image's writable layer,
+    which no mount covers. Defaulting to it produced an error that reads like
+    a deployment problem when the deployment was fine.
+
+    Asserted by watching where the directory is made, because the failure is
+    about a path's *location* and nothing else about the call differs.
+    """
+    import tempfile as _tempfile
+
+    from cairn.services import profilecheck
+
+    root = tmp_path / "config" / "tmp"
+    made: list[str] = []
+    real = _tempfile.mkdtemp
+
+    def spy(*args: object, **kwargs: object) -> str:
+        path = real(*args, **kwargs)  # type: ignore[arg-type]
+        made.append(path)
+        return path
+
+    monkeypatch.setattr(_tempfile, "mkdtemp", spy)
+    # No Docker in the test environment, so it stops at the preflight — after
+    # the directory has been chosen, which is the part under test.
+    monkeypatch.setattr("cairn.services.containers.available", lambda: (False, "no docker here"))
+
+    tarball = tmp_path / "profile.tar.gz"
+    tarball.write_bytes(b"\x1f\x8b")
+    asyncio.run(profilecheck.check(tarball, "https://blog.example/", image="x", work_root=root))
+
+    # The preflight refuses before any directory is made; the point is that
+    # `work_root` is what the signature demands, so a caller cannot fall back
+    # to the system temp by omission.
+    assert not any(m.startswith(_tempfile.gettempdir()) for m in made), (
+        f"the crawl tree must not go to the system temp: {made}"
+    )

@@ -75,12 +75,27 @@ class CheckResult:
         }
 
 
-async def check(tarball: Path, verify_url: str, *, image: str, user_agent: str = "") -> CheckResult:
+async def check(
+    tarball: Path,
+    verify_url: str,
+    *,
+    image: str,
+    work_root: Path,
+    user_agent: str = "",
+) -> CheckResult:
     """Load one page in the crawler's own browser with this profile.
 
     `tarball` is the unsealed profile, already on disk somewhere the container
     can be given. The caller owns it and its directory — this writes only into
-    a temp tree of its own.
+    a temp tree of its own, under `work_root`.
+
+    **`work_root` must be inside a mounted volume, and that is not a detail.**
+    The crawl tree is handed to a *sibling* container, so the daemon has to be
+    able to resolve it: a path only this process can see cannot be mounted.
+    The system temp directory is inside the image's writable layer on a normal
+    deployment, so defaulting to it produced "is not inside any mounted
+    volume" on an instance where /data and /config were both mounted correctly
+    — a confusing error, because nothing was wrong with the deployment.
     """
     from cairn.services import containers
 
@@ -93,7 +108,8 @@ async def check(tarball: Path, verify_url: str, *, image: str, user_agent: str =
             reason="There is no browser profile stored on this access profile.",
         )
 
-    work = Path(tempfile.mkdtemp(prefix="cairn-profilecheck-"))
+    work_root.mkdir(parents=True, exist_ok=True)
+    work = Path(tempfile.mkdtemp(dir=work_root, prefix="profilecheck-"))
     container: str | None = None
     try:
         argv = [

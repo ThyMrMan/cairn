@@ -424,6 +424,10 @@ async def verify_browser_profile(
             target,
             str(profile.verify_url),
             image=image,
+            # Under the configured temp directory, which is inside a mounted
+            # volume. The system temp is not, and the sibling container cannot
+            # be given a path only this process can see.
+            work_root=Path(settings.tmp_dir),
             user_agent=profile.user_agent or "",
         )
 
