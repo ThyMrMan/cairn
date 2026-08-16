@@ -483,24 +483,41 @@ def step_asset_audit(ctx: Context) -> None:
             ctx.capture.status = "partial"
 
     if overlaid:
-        ctx.warnings.append(
+        common = (
             f"{overlaid} of {scanned} archived page(s) have a content warning drawn over "
             "them. The page underneath is archived in full — this is not missing content, "
             "and the access profile is not the problem, because the content came back. "
             "The site injects an iframe over the page and a stylesheet rule hiding "
-            "everything else, so replay shows the warning instead of the post. Accepting "
-            "the warning again inside the browser profile may clear it, but do not count "
-            "on it: measured on Blogger, the same acceptance cookie and user agent were "
-            "honoured on a run and refused on the next one hours later, with nothing "
-            "changed either end. The reader view renders these pages today, and search "
-            "already indexes them, because neither one applies the site's CSS."
+            "everything else. "
         )
-        if capture_is_ok(ctx):
-            # Partial, not ok — a capture nobody can read is not a success,
-            # and a warning beside a green "ready" is exactly what got missed
-            # the first four times this happened. Not "failed" either: every
-            # byte is here, and re-capturing with the flag set is all it needs.
-            ctx.capture.status = "partial"
+        if ctx.settings.replay_uncover_overlays:
+            # Nothing is wrong with this capture: every page is here and every
+            # page displays. Saying "partial" anyway would fire the
+            # capture-incomplete notification on a blog that is captured on a
+            # schedule, once per run, forever — and a warning that cries wolf
+            # every time is how the next real one gets ignored.
+            ctx.warnings.append(
+                common + "Replay is showing the pages rather than the warning, and marks "
+                "each one with a small note saying so. No action is needed; this is here "
+                "because a rendering that differs from the archived bytes should be "
+                "declared. Set CAIRN_REPLAY_UNCOVER_OVERLAYS=false to replay them exactly "
+                "as stored, warning and all."
+            )
+        else:
+            ctx.warnings.append(
+                common + "Replay will show the warning instead of the post, because "
+                "uncovering is turned off. Accepting the warning again inside the browser "
+                "profile may clear it, but do not count on it: measured on Blogger, the "
+                "same acceptance cookie and user agent were honoured on a run and refused "
+                "on the next one hours later, with nothing changed either end. Set "
+                "CAIRN_REPLAY_UNCOVER_OVERLAYS=true, or read these pages through the "
+                "reader view, which never applies the site's CSS."
+            )
+            if capture_is_ok(ctx):
+                # Only now is it partial: the pages are all here and the
+                # archive will not show them. Not "failed" either — every byte
+                # is present and one setting makes them readable.
+                ctx.capture.status = "partial"
 
     ctx.stats["interstitial_pages"] = blocked
     ctx.stats["overlay_pages"] = overlaid

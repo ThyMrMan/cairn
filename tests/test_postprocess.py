@@ -614,6 +614,7 @@ def test_pages_hidden_under_an_overlay_are_reported_without_blaming_the_profile(
         artifacts=[],
         warnings=[],
     )
+    settings.replay_uncover_overlays = False
     step_asset_audit(ctx)
 
     assert ctx.stats["overlay_pages"] == 1
@@ -631,6 +632,51 @@ def test_pages_hidden_under_an_overlay_are_reported_without_blaming_the_profile(
     assert "do not count on it" in message
     # It names something that works today instead of only something that might.
     assert "reader view" in message
+
+
+def test_an_overlay_replay_will_uncover_is_not_a_partial_capture(
+    db: Session, settings: Settings, tmp_path: Path
+) -> None:
+    """Reported: every page rendered and the capture still said Partial.
+
+    The two changes landed in sequence and the second invalidated the first's
+    premise. `partial` is not cosmetic — it fires the capture-incomplete
+    notification and counts in the digest, so on a blog captured to a schedule
+    this would have cried wolf once per run, forever. A warning that is always
+    wrong is how the next real one gets ignored.
+    """
+    warc_dir = tmp_path / storage.WARC_DIR
+    warc_dir.mkdir(parents=True, exist_ok=True)
+    _write_warc(
+        warc_dir / "part-00000.warc.gz",
+        [("https://example.blogspot.com/p.html", 200, OVERLAY_PAGE)],
+    )
+    ctx = Context(
+        session=db,
+        settings=settings,
+        capture=Capture(status="ok", warc_files=[], started_at=utcnow()),
+        site=Site(seed_url="https://example.blogspot.com/", archive_path="Unfiled/blog"),
+        output_dir=tmp_path,
+        tool_version=None,
+        stats={},
+        scope={},
+        seeds=["https://example.blogspot.com/"],
+        seed_source={"manual": 1},
+        artifacts=[],
+        warnings=[],
+    )
+    assert settings.replay_uncover_overlays, "the default this test is about"
+    step_asset_audit(ctx)
+
+    assert ctx.capture.status == "ok"
+    # Still counted and still declared. Silence would be the other error: the
+    # rendering differs from the archived bytes, and that has to be sayable.
+    assert ctx.stats["overlay_pages"] == 1
+    message = " ".join(ctx.warnings)
+    assert "Replay is showing the pages" in message
+    assert "No action is needed" in message
+    # Nothing that reads as a defect to fix.
+    assert "do not count on it" not in message
 
 
 def redirect_warc(path: Path, source: str, target: str) -> None:
