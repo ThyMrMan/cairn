@@ -533,6 +533,100 @@ def test_an_ordinary_url_is_not_an_interstitial() -> None:
     assert not interstitial.url_looks_blocked("").blocked
 
 
+# ── let in, then curtained off ───────────────────────────────────────────
+#
+# The other half of the same story, and the expensive half. Blogger answered
+# 200 with the whole post — text, images, every asset — and injected an iframe
+# over it plus `body * { visibility: hidden }`. Measured on a real capture:
+# every one of 442 archived posts carried it, the capture was reported ready,
+# and four rounds of reading finished captures went by before anyone read the
+# archived bytes. Both existing checks are blind to it by construction: the
+# URL is the blog's own, and at 70-100 KB the body is far past the length
+# guard that makes the phrase list safe.
+
+OVERLAY_PAGE = (
+    b"<html><head><title>Kind of a Stretch</title></head>"
+    b"<body class='loading'><iframe id=\"injected-iframe\" "
+    b'src="https://www.blogger.com/interstitial/blog?u=https://example.blogspot.com/p.html" '
+    b'style="position:absolute; z-index:999; visibility:visible"></iframe>'
+    b"<style>body { _height: 100%; } body * { visibility: hidden; }</style>"
+    b"<div class='post-body'>" + b"the real post, archived in full. " * 3000 + b"</div>"
+    b"</body></html>"
+)
+
+
+def test_a_content_warning_drawn_over_a_whole_page_is_caught() -> None:
+    """The shape both other checks are built to miss."""
+    assert len(OVERLAY_PAGE) > interstitial.MAX_INTERSTITIAL_BYTES
+    assert interstitial.overlay_blocked(OVERLAY_PAGE).blocked
+    # And it reaches the shared entry point, which is what the profile test,
+    # the mint and the jar check all call. Each of those reported "real
+    # content" on exactly this page.
+    assert interstitial.looks_blocked(OVERLAY_PAGE, "https://example.blogspot.com/p.html").blocked
+
+
+def test_an_article_about_content_warnings_is_not_an_overlay() -> None:
+    """The false positive the pair of conditions exists to prevent.
+
+    A post that uses every phrase in `MARKERS` but frames nothing and hides
+    nothing is a post. This is why the check is structural.
+    """
+    article = (
+        b"<html><body><div class='post-body'>"
+        b"I understand and wish to continue is what the content warning says. "
+        b"You must be 18. Viewer discretion advised. " * 400 + b"</div></body></html>"
+    )
+    assert not interstitial.overlay_blocked(article).blocked
+    assert not interstitial.looks_blocked(article, "https://example.blogspot.com/p.html").blocked
+
+
+def test_a_framed_gate_over_a_visible_page_is_only_a_banner() -> None:
+    """Half the signature is not the signature. Without the hiding rule the
+    page is readable underneath, and calling that blocked would flag any site
+    that merely embeds something."""
+    banner = OVERLAY_PAGE.replace(b"body * { visibility: hidden; }", b"")
+    assert not interstitial.overlay_blocked(banner).blocked
+
+
+def test_pages_hidden_under_an_overlay_are_reported_without_blaming_the_profile(
+    db: Session, settings: Settings, tmp_path: Path
+) -> None:
+    """The advice is the point. The old wording — re-mint the cookies — is
+    exactly wrong here, because the cookies worked: that is how a complete
+    page arrived to be drawn over."""
+    warc_dir = tmp_path / storage.WARC_DIR
+    warc_dir.mkdir(parents=True, exist_ok=True)
+    _write_warc(
+        warc_dir / "part-00000.warc.gz",
+        [("https://example.blogspot.com/p.html", 200, OVERLAY_PAGE)],
+    )
+    ctx = Context(
+        session=db,
+        settings=settings,
+        capture=Capture(status="ok", warc_files=[], started_at=utcnow()),
+        site=Site(seed_url="https://example.blogspot.com/", archive_path="Unfiled/blog"),
+        output_dir=tmp_path,
+        tool_version=None,
+        stats={},
+        scope={},
+        seeds=["https://example.blogspot.com/"],
+        seed_source={"manual": 1},
+        artifacts=[],
+        warnings=[],
+    )
+    step_asset_audit(ctx)
+
+    assert ctx.stats["overlay_pages"] == 1
+    # Counted in its own bucket, so the two never inflate one another.
+    assert ctx.stats["interstitial_pages"] == 0
+    assert ctx.capture.status == "partial"
+    message = " ".join(ctx.warnings)
+    assert "archived in full" in message
+    assert "not the problem" in message
+    assert "click through the warning" in message
+    assert "re-mint" not in message.lower()
+
+
 def redirect_warc(path: Path, source: str, target: str) -> None:
     from warcio.statusandheaders import StatusAndHeaders
     from warcio.warcwriter import WARCWriter

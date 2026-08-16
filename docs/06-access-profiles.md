@@ -107,6 +107,8 @@ What replaces it is two checks either side of the crawl, which between them cove
 - **Before.** A jar that is expiring, stale, or missing is re-minted while re-minting is still free. That covers the case pause-and-resume was aimed at — a cookie that would have died two hours into a six-hour capture. A failed re-mint is a warning, not a refusal: the existing jar may still work, and blocking the capture would turn a possible problem into a certain one.
 - **After.** The capture's own gap report counts how many archived pages look like a content warning rather than content, in the same WARC pass the asset audit already makes. If any do, it says so and the capture is downgraded from `ok` to `partial` — because a capture that reports success while containing 4,000 copies of an interstitial is precisely the failure this whole feature exists to prevent, and it must not be silent.
 
+  The count is **two disjoint numbers**, `interstitial_pages` and `overlay_pages`, because they carry opposite advice. A gate *instead of* the page means the content never arrived and the profile is what to fix. A gate *over* the page ([above](#it-is-no-longer-a-separate-page--it-is-drawn-over-the-real-one)) means it arrived in full and a per-browser flag is what to fix — so that warning says the content is present and never mentions re-minting, which would send somebody to work on the one thing already proven to be fine.
+
 Only a **userscript** profile can be re-minted unattended. It is the only mode that still holds the thing that does the minting: a `cookies` profile has no way to produce a new jar, and an `interactive` one needs a person.
 
 ---
@@ -170,6 +172,29 @@ Blogger shows a content warning on blogs flagged as adult: an interstitial page 
 
 **Don't hard-code a cookie name.** The exact name, domain, and path have changed over time and vary by locale and blog configuration. The tool should carry the whole jar and let the site decide what it needs.
 
+### It is no longer a separate page — it is drawn over the real one
+
+Measured on a live gated blog, 2026-08-16 (`scripts/probes/overlay_probe.py`). Blogger does **not** redirect to the warning any more, and does not serve it in place of the post. It answers `200` with the complete post — title, body, images, every asset — and injects an overlay into that same HTML:
+
+```html
+<body class='loading'><iframe id="injected-iframe"
+   src="https://www.blogger.com/interstitial/blog?u=https://blog.example.com/p.html"
+   style="position:absolute; z-index:999; visibility:visible"></iframe>
+<style>body { _height: 100%; } body * { visibility: hidden; }</style>
+```
+
+The gate's own response proves the design: it carries `content-security-policy: frame-ancestors https://<the blog>`, so it is *meant* to be framed by the blog.
+
+Three consequences, each of which cost a round to learn:
+
+- **Nothing is missing, and the profile is not broken.** 442 of 442 archived posts carried the overlay and every one was complete underneath. The cookies worked — that is precisely how a full page arrived to be drawn over. The page's own config says `'interstitialAccepted': false`, which is **per-browser state, not authentication**.
+- **Crawl-scope rejects cannot stop it.** `--exclude` filters the queue, and `--blockRules` exempts page navigation — which a frame document is. Rejecting `/interstitial/` cut each page from ~500 KB to ~80 KB by starving the frame of sub-resources, and never stopped the frame itself.
+- **Withholding it from the replay index does not reveal the post.** The `<iframe>` and the hiding rule are in the archived bytes. Take the gate out of the index and the same box shows pywb's "could not be found in this collection" instead. That is the overlay working as designed, not a second bug.
+
+**The fix is to accept the warning once inside the browser profile** — open it, visit the blog, click through, save. Blogger then stops injecting the overlay at source, and captures come back clean *and* smaller: the 149 gate documents in that capture were 43 MB of the total.
+
+**Both older checks were blind to this by construction**, which is why a capture full of it reported `ready`. `url_looks_blocked` sees the blog's own URL; the phrase list never runs because a 70–100 KB post is far past `MAX_INTERSTITIAL_BYTES`. `interstitial.overlay_blocked` now covers it, requiring *both* an interstitial-framed iframe and a rule hiding the body — structural signals, so an article that merely writes *about* content warnings is not flagged. It runs at any length, and it feeds the profile Test button as well as the capture scan.
+
 ### Discovering what your blog actually needs
 
 1. Open the blog in a normal browser with DevTools → Network, preserve log on.
@@ -185,7 +210,7 @@ Record steps 3 and 4 in the profile's notes field. When it breaks in eight month
 - **One profile can cover many blogs.** If the cookie is scoped to `.blogspot.com`, a single `blogger-interstitial` profile works for every flagged blogspot site you archive. Set `hosts: ["*.blogspot.com"]` on the profile so the UI suggests it automatically for new blogspot sites.
 - **Match the user agent.** Some interstitial implementations bind the cookie loosely to the client. Mismatched UAs are a common cause of "it worked in my browser but not in the crawl."
 - **Custom domains still hit blogspot.** A Blogger blog on `example.com` still serves images from `*.bp.blogspot.com` and may redirect through blogspot for the interstitial. Include both in the profile's host list.
-- **Verify before crawling.** The profile's **Test** button fetches `verify_url` with the jar and reports whether it got real content or the interstitial. Always run this before a multi-hour capture.
+- **Verify before crawling.** The profile's **Test** button fetches `verify_url` with the jar and reports whether it got real content or the interstitial. Always run this before a multi-hour capture. **Test in the crawler** does the same through browsertrix with the browser profile, which is the only one that can answer for a browser profile — and since both now run `overlay_blocked`, either will catch a page that is complete but curtained off. Before that they reported "real content" on exactly those pages, truthfully and uselessly.
 
 ---
 

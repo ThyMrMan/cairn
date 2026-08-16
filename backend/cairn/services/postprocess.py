@@ -379,6 +379,7 @@ def step_asset_audit(ctx: Context) -> None:
     lazy_hits = 0
     scanned = 0
     blocked = 0
+    overlaid = 0
     redirects: list[tuple[str, str]] = []
     for warc in warcs:
         try:
@@ -416,8 +417,12 @@ def step_asset_audit(ctx: Context) -> None:
                     base = record.rec_headers.get_header("WARC-Target-URI") or ""
                     referenced |= _referenced_assets(body, base)
                     # Counted in the pass that is already reading every page,
-                    # rather than a second walk over gigabytes of WARC.
-                    if interstitial.looks_blocked(body, base).blocked:
+                    # rather than a second walk over gigabytes of WARC. The
+                    # two buckets are disjoint and stay that way: they mean
+                    # different things and carry opposite advice.
+                    if interstitial.overlay_blocked(body).blocked:
+                        overlaid += 1
+                    elif interstitial.looks_blocked(body, base).blocked:
                         blocked += 1
         except Exception as exc:
             # An unreadable or truncated WARC downgrades the audit to a
@@ -477,7 +482,25 @@ def step_asset_audit(ctx: Context) -> None:
             # prevent, and it must not be silent.
             ctx.capture.status = "partial"
 
+    if overlaid:
+        ctx.warnings.append(
+            f"{overlaid} of {scanned} archived page(s) have a content warning drawn over "
+            "them. The page underneath is archived in full — this is not missing content, "
+            "and the access profile is not the problem, because the content came back. "
+            "The site injects an iframe over the page and a stylesheet rule hiding "
+            "everything else, so replay shows the warning instead of the post. Open the "
+            "browser profile, visit the site, click through the warning once, save the "
+            "profile, and capture again: the pages then arrive with no overlay in them."
+        )
+        if capture_is_ok(ctx):
+            # Partial, not ok — a capture nobody can read is not a success,
+            # and a warning beside a green "ready" is exactly what got missed
+            # the first four times this happened. Not "failed" either: every
+            # byte is here, and re-capturing with the flag set is all it needs.
+            ctx.capture.status = "partial"
+
     ctx.stats["interstitial_pages"] = blocked
+    ctx.stats["overlay_pages"] = overlaid
     ctx.stats["referenced_assets"] = len(referenced)
     # `missing_assets` counts only what the scope permitted and the crawl
     # still did not get. That is the number worth acting on; the deliberate

@@ -152,14 +152,50 @@ does not control. A run where nothing distinguishes has a broken canonicaliser.
 See [docs/07](../../docs/07-replay.md#rebuilding-a-pager-rather-than-crawling-it)
 for what a rebuild would take, and why the fabrication has to be declared.
 
+## `overlay_probe.py` — content, gate, or content under a gate?
+
+The one probe here that runs against a *real capture* rather than a fixture,
+because the thing it had to explain only happens with a real account on a real
+gated blog. A capture reported `ready`, the profile test reported `real
+content`, and replay showed a wall of content warnings. Both reports were
+truthful about the wrong thing.
+
+It sorts every 200 HTML response into clean / gate / **overlay** — the third
+being a complete page with a gate drawn over it. Blogger answers 200 with the
+whole post and injects an iframe plus `body * { visibility: hidden }`, so
+nothing is missing and nothing displays.
+
+**Measured on a gated Blogger blog, 2026-08-16:**
+
+| Bucket | Pages |
+|---|---|
+| `bucket_overlay` | 442 — every real post |
+| `bucket_classic_gate` | 149 — the framed gate, recorded at its own URL |
+| `bucket_clean` | 0 |
+| `DISAGREE` | 0 |
+
+The pages were complete: title, body text, images, every asset. What made the
+difference was `'interstitialAccepted': false` in the page's own config —
+per-browser state, not an authentication failure. The cookies worked, which is
+precisely how a complete page arrived to be drawn over, and why the old advice
+("re-mint the profile") pointed away from the fix.
+
+**The negative control is the disagreement count.** Every verdict is scored
+against a literal search for the two markers; a non-zero `DISAGREE` fails the
+run. The fixtures in `test_postprocess.py` were written from these bytes, so a
+detector checked only against them would be marking its own homework.
+
 ## Running them
 
 `resume_probe.py`, `resume_probe2.py` and `pagination_probe.py` need Docker;
 the last re-execs itself into `cairn:latest` (override with `CAIRN_IMAGE`).
-`synthetic_record_probe.py` runs against the app's own venv.
+`synthetic_record_probe.py` and `overlay_probe.py` run against the app's own
+venv; the last takes a capture's `warc/` directory and is worth pointing at any
+capture that replays as a gate.
 
 ```bash
 python scripts/probes/resume_probe.py && python scripts/probes/resume_probe2.py
 python scripts/probes/pagination_probe.py
 python scripts/probes/synthetic_record_probe.py
+python scripts/probes/overlay_probe.py /archives/Unfiled/blog/captures/<capture>/warc
 ```

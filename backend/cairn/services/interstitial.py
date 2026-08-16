@@ -47,6 +47,35 @@ URL_MARKERS = (
 # the reason the phrase list can afford to be broad.
 MAX_INTERSTITIAL_BYTES = 24_000
 
+# A gate that arrives *inside* a good page instead of in place of one, which
+# every check above is blind to.
+#
+# Blogger serves the real post — 200, full text, every asset — and injects a
+# full-viewport iframe over it plus a rule hiding everything else:
+#
+#     <body class='loading'><iframe id="injected-iframe"
+#        src="https://www.blogger.com/interstitial/blog?u=…"
+#        style="…z-index:999; visibility:visible"></iframe>
+#     <style>body { _height: 100%; } body * { visibility: hidden; }</style>
+#
+# Nothing above sees it. The URL is the blog's own, so `url_looks_blocked`
+# says nothing, and the body is a 70-100 KB article, so `MAX_INTERSTITIAL_
+# BYTES` returns CLEAR before a single phrase is tried. Measured on a real
+# capture: 442 of 442 archived posts carried it, the pages were complete, and
+# the capture was reported ready — four rounds of reading finished captures
+# went by before anyone looked at the archived bytes.
+#
+# **Both halves are required, and both are structural rather than lexical.**
+# An article *about* content warnings uses the words; it does not frame
+# Blogger's gate and it does not hide its own body. Demanding the pair is what
+# lets this run at any length, which is the entire point of having it.
+_MARKER_ALTERNATION = b"|".join(re.escape(marker.encode("ascii")) for marker in URL_MARKERS)
+OVERLAY_FRAME = re.compile(
+    rb"<iframe[^>]{0,400}src=[\"'][^\"']{0,600}(?:" + _MARKER_ALTERNATION + rb")",
+    re.IGNORECASE,
+)
+OVERLAY_HIDES_BODY = re.compile(rb"body\s*\*\s*\{[^}]{0,200}visibility\s*:\s*hidden", re.IGNORECASE)
+
 
 @dataclass(frozen=True, slots=True)
 class Verdict:
@@ -76,11 +105,36 @@ def url_looks_blocked(url: str) -> Verdict:
     return CLEAR
 
 
+def overlay_blocked(body: bytes) -> Verdict:
+    """Whether a *complete* page has a gate drawn on top of it.
+
+    Kept separate from `looks_blocked` because the two need opposite advice.
+    A classic interstitial means the content never arrived and the profile is
+    the thing to fix. This means the content did arrive, in full, and the
+    site drew over it because some per-browser flag — Blogger's
+    `interstitialAccepted` — is still false. Telling somebody to re-mint
+    cookies that demonstrably worked sends them in the wrong direction.
+    """
+    if not OVERLAY_FRAME.search(body):
+        return CLEAR
+    if not OVERLAY_HIDES_BODY.search(body):
+        # A framed gate with the page still visible underneath is a banner,
+        # not a gate. Only the pair hides the content.
+        return CLEAR
+    return Verdict(True, "an interstitial iframe is drawn over a hidden body")
+
+
 def looks_blocked(body: bytes, url: str = "") -> Verdict:
     """Whether this response is a bypass page rather than content."""
     by_url = url_looks_blocked(url)
     if by_url.blocked:
         return Verdict(True, by_url.reason.replace("the URL is", "the final URL is"))
+
+    # Before the length guard, deliberately: this shape arrives *as* a
+    # full-length page, so anything checked after the guard cannot see it.
+    overlay = overlay_blocked(body)
+    if overlay.blocked:
+        return overlay
 
     if len(body) > MAX_INTERSTITIAL_BYTES:
         # Long enough to be a real page. Say nothing rather than guess.
