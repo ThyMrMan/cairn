@@ -37,7 +37,14 @@ capabilities:
   # merged CDX at all, so `incremental.dedup_cdx` arrives null rather than
   # pointing at a file this engine would ignore.
   incremental: false
-  resumable: false
+  # It serialises its own crawl state — the finished set plus the pending
+  # queue — whenever a crawl is interrupted, and reads it back through
+  # `--config`. Measured on 1.14.1 rather than taken from the docs, because
+  # the docs say "interrupted" without naming a signal and Cairn stops a
+  # container with SIGTERM: state is written on SIGTERM, and a resumed run
+  # fetched only queued pages, re-fetching none of the finished ones.
+  # See scripts/probes/resume_probe.py.
+  resumable: true
   max_concurrency: 4
   requires_browser: true
   requires_docker: true

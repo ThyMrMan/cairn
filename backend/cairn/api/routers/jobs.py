@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import AsyncIterator
 from typing import Annotated, Any
 
@@ -14,6 +15,7 @@ from cairn.api.errors import ApiError
 from cairn.api.schemas import JobsClear, JobsCleared, JobSummary, Ok, Page
 from cairn.db.models import Job, Site
 from cairn.db.types import utcnow
+from cairn.engines.registry import EngineError
 from cairn.services import audit
 from cairn.services.events import EV_STATUS, BusEvent, EventBus, format_sse
 
@@ -37,12 +39,21 @@ def _supervisor(request: Request) -> Any:
     return request.app.state.supervisor
 
 
-def _summary(db: DbSession, job: Job) -> JobSummary:
+def _registry(request: Request) -> Any:
+    return request.app.state.registry
+
+
+def _summary(db: DbSession, job: Job, registry: Any = None) -> JobSummary:
     title = None
+    can_pause = False
     if job.site_id is not None:
         site = db.get(Site, job.site_id)
         title = site.title if site else None
+        if site is not None and registry is not None and job.status == "running":
+            with contextlib.suppress(EngineError):
+                can_pause = bool(registry.get(site.engine_id).capabilities.get("resumable"))
     return JobSummary(
+        can_pause=can_pause,
         id=job.id,
         type=job.type,
         site_id=job.site_id,
@@ -61,6 +72,7 @@ def _summary(db: DbSession, job: Job) -> JobSummary:
 def list_jobs(
     db: DbSession,
     _user: CurrentUser,
+    registry: Annotated[Any, Depends(_registry)],
     status_filter: Annotated[str | None, Query(alias="status")] = None,
     job_type: Annotated[str | None, Query(alias="type")] = None,
     site_id: int | None = None,
@@ -83,16 +95,24 @@ def list_jobs(
         stmt.order_by(Job.id.desc()).limit(per_page).offset((page - 1) * per_page)
     ).all()
     return Page[JobSummary](
-        items=[_summary(db, j) for j in rows], total=total, page=page, per_page=per_page
+        items=[_summary(db, j, registry) for j in rows],
+        total=total,
+        page=page,
+        per_page=per_page,
     )
 
 
 @router.get("/jobs/{job_id}", response_model=JobSummary)
-def get_job(job_id: int, db: DbSession, _user: CurrentUser) -> JobSummary:
+def get_job(
+    job_id: int,
+    db: DbSession,
+    _user: CurrentUser,
+    registry: Annotated[Any, Depends(_registry)],
+) -> JobSummary:
     job = db.get(Job, job_id)
     if job is None:
         raise ApiError("not_found", "That job does not exist.", status_code=404)
-    return _summary(db, job)
+    return _summary(db, job, registry)
 
 
 @router.get("/jobs/{job_id}/projection")
@@ -230,6 +250,56 @@ async def cancel_job(
     # truncated file (docs/05).
     if not await supervisor.cancel(job_id):
         raise ApiError("not_cancellable", "That job could not be cancelled.", status_code=409)
+    return Ok()
+
+
+@router.post("/jobs/{job_id}/pause", response_model=Ok)
+async def pause_job(
+    job_id: int,
+    db: DbSession,
+    user: CurrentUser,
+    ip: ClientIp,
+    registry: Annotated[Any, Depends(_registry)],
+    supervisor: Annotated[Any, Depends(_supervisor)],
+) -> Ok:
+    """Stop a running capture so it can be continued later.
+
+    Mechanically identical to cancelling — the same signal, the same flush —
+    and the difference is entirely in what is kept: the engine's own crawl
+    state, so a later run continues the queue instead of starting it again.
+
+    Refused up front for an engine that cannot do it, rather than accepted and
+    quietly downgraded to a cancel. wget has no crawl-state serialisation at
+    all, so on that engine there is nothing to pause *to*.
+    """
+    job = db.get(Job, job_id)
+    if job is None:
+        raise ApiError("not_found", "That job does not exist.", status_code=404)
+    if job.status != "running":
+        raise ApiError(
+            "not_pausable",
+            f"Only a running capture can be paused; this one is {job.status}."
+            + (" Cancel it instead." if job.status == "queued" else ""),
+            status_code=409,
+        )
+
+    site = db.get(Site, job.site_id) if job.site_id else None
+    engine = registry.get(site.engine_id) if site is not None else None
+    if engine is None or not engine.capabilities.get("resumable"):
+        name = engine.name if engine is not None else "this engine"
+        raise ApiError(
+            "not_pausable",
+            f"{name} cannot resume a stopped crawl, so pausing would lose the work "
+            "rather than hold it. Cancel it instead, or switch this site to an "
+            "engine that declares it can.",
+            status_code=409,
+        )
+
+    audit.record(db, audit.CAPTURE_CANCEL, actor=user.username, target=str(job_id), ip=ip)
+    db.commit()
+
+    if not await supervisor.pause(job_id):
+        raise ApiError("not_pausable", "That job is no longer running.", status_code=409)
     return Ok()
 
 

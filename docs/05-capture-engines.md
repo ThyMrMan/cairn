@@ -171,6 +171,8 @@ Core writes `job.json` into a fresh job directory and passes its path as `argv[1
 
 `seed_file` is a newline-delimited list written next to `job.json` containing **every** URL from sitemaps and feeds. This is the mechanism that sidesteps ArchiveBox's depth ceiling entirely (its issues 1 and 4): the crawler is handed the complete URL set up front and link-following becomes a supplement, not the primary discovery mechanism.
 
+`resume.state_file` is set only when a paused capture is being continued, and only for an engine whose manifest declares `resumable: true`. It is **opaque to core** — whatever the engine wrote to `output_dir/resume-state.yaml` at the end of its last run, staged into the job's temp directory so a containerised engine can reach it. Core never parses it; it keeps it beside the capture and hands the path back. See [Pausing a crawl](#pausing-a-crawl).
+
 `incremental.dedup_cdx` is `null` on a full capture — one is meant to stand alone — and also for any engine whose manifest says `incremental: false`, because building it means walking every prior capture and merging up to 400,000 CDX lines into a file that engine will never open. Declaring the capability honestly is therefore worth doing: an engine that says `false` gets the field skipped rather than ignored. **Absent counts as capable**, matching what the engine picker warns on, so an addon that never declared it keeps whatever behaviour it has today.
 
 ### Out — NDJSON on stdout
@@ -209,6 +211,24 @@ One JSON object per line, flushed immediately. Anything the engine writes to **s
 - Malformed stdout lines are logged and skipped, never fatal — an engine that prints a stray line shouldn't kill a six-hour crawl.
 - `SIGTERM` means finish the current record, close and flush WARCs, emit `result` with `status: "partial"`, exit. Core waits `grace_period_s` (default 60) then sends `SIGKILL`.
 - Engines must be safe to re-run against the same site — never "resume mid-stream," always "re-crawl and dedup."
+
+### Pausing a crawl
+
+A long crawl sometimes needs to stop for reasons that have nothing to do with the archive — the NAS is needed for something else, the site is being hammered, somebody wants the bandwidth back. Cancelling costs the whole crawl. **Pause** stops it the same way and keeps the engine's place.
+
+The mechanism is deliberately not a new one. Pause sends the same SIGTERM cancel does; the engine flushes its WARC exactly as before. The only differences are that the engine's own crawl state is copied into the capture as `resume-state.yaml`, and the capture lands as `paused` rather than `cancelled`.
+
+**Only where the engine can actually continue.** `resumable: true` is what puts the Pause button on screen, and the API refuses the call otherwise rather than accepting it and quietly behaving like a cancel — on wget there is no crawl state to stop into, so pausing it would throw the work away while calling it a pause.
+
+**A pause is only a pause if there is state.** The capture is marked `paused` only when the engine reported keeping it *and* the file is on disk; otherwise it was an ordinary stop. Getting this wrong would put a Resume button on something that silently starts from the beginning.
+
+**Resuming continues into the same capture.** Same directory, same row, fresh WARCs written beside the ones already there. That works without reconciliation because replay indexes across WARCs and never merges them ([D2](00-decisions.md#d2--index-across-warcs-never-merge-or-concatenate-them)) — the two halves of an interrupted crawl are just two files in one collection. `last_capture_at` is deliberately not moved by a pause: the crawl has not finished, and letting it count would push the next scheduled recapture out by a full interval for work half done.
+
+> **Measured before it was built, on `browsertrix-crawler:1.14.1`** — see [scripts/probes](../scripts/probes/README.md). The crawler's docs say state is saved when a crawl is "interrupted" without naming a signal, and Cairn stops a container with SIGTERM; an implementation that only handled SIGINT would have failed as an empty directory rather than an error. State **is** written on SIGTERM, with `--saveState` at its default of `partial` — so the file had always been produced, and had always been deleted moments later along with the job's temp directory.
+>
+> The second probe checked the half that matters more: a state file that replayed the whole crawl would make "pause" a lie. Resuming fetched 6 queued pages and re-fetched **none** of the 6 already finished, and wrote a second WARC rather than rewriting the first.
+>
+> Two details that came out of it and are easy to get wrong: an interrupted crawl exits **11**, not 0 — the engine reports `partial` off its own `terminating` flag rather than the exit code, so this does not matter, but it would if anything started reading the code. And command-line options are **not** persisted in the state file, so `--config` is passed *alongside* the full argv rather than instead of it; a resume that passed the config alone would silently lose the scope, the rejects and the profile.
 
 ### Failure statuses
 

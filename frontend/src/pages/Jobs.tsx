@@ -26,6 +26,11 @@ export default function Jobs() {
     onSuccess: refresh,
   });
 
+  const pause = useMutation({
+    mutationFn: (id: number) => endpoints.pauseJob(id),
+    onSuccess: refresh,
+  });
+
   const remove = useMutation({
     mutationFn: (id: number) => endpoints.deleteJob(id),
     onSuccess: refresh,
@@ -90,6 +95,7 @@ export default function Jobs() {
               key={job.id}
               job={job}
               onCancel={() => cancel.mutate(job.id)}
+              onPause={() => pause.mutate(job.id)}
               onDelete={() => remove.mutate(job.id)}
             />
           ))}
@@ -106,10 +112,12 @@ export default function Jobs() {
 function JobRow({
   job,
   onCancel,
+  onPause,
   onDelete,
 }: {
   job: Job;
   onCancel: () => void;
+  onPause: () => void;
   onDelete: () => void;
 }) {
   const active = ACTIVE.has(job.status);
@@ -148,9 +156,24 @@ function JobRow({
         </div>
 
         {active ? (
-          <button className="btn-ghost text-xs" onClick={onCancel}>
-            Cancel
-          </button>
+          <div className="flex items-center gap-1.5">
+            {/* Only where the engine can actually continue: on wget there is
+                no crawl state to stop into, so Pause would be a button that
+                only ever refuses. The server decides — the browser knows
+                nothing about engines. */}
+            {job.can_pause && (
+              <button
+                className="btn-ghost text-xs"
+                onClick={onPause}
+                title="Stop, keeping the crawler's place so it can carry on later"
+              >
+                Pause
+              </button>
+            )}
+            <button className="btn-ghost text-xs" onClick={onCancel}>
+              Cancel
+            </button>
+          </div>
         ) : confirming ? (
           // Inline rather than a dialog: one row is a small enough action that
           // a modal would be heavier than the thing it guards, and this still

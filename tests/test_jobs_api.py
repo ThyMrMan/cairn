@@ -221,3 +221,102 @@ def test_unlisted_paths_are_empty_while_robots_is_obeyed(authed: TestClient, db:
 
     data = authed.get(f"/api/jobs/{job_id}/projection", headers=XHR).json()
     assert data["unlisted_paths"] == []
+
+
+# ── pausing, and who is allowed to ───────────────────────────────────────
+
+
+def _site(db: Session, *, engine_id: str, slug: str = "pausable") -> Site:
+    site = Site(
+        slug=slug, title=slug.title(), seed_url=f"https://{slug}.test/",
+        primary_host=f"{slug}.test", folder_id=1, archive_path=f"Unfiled/{slug}",
+        engine_id=engine_id,
+    )  # fmt: skip
+    db.add(site)
+    db.commit()
+    return site
+
+
+def test_pause_is_refused_for_an_engine_that_cannot_resume(authed: TestClient, db: Session) -> None:
+    """wget has no crawl-state serialisation, so pausing it would throw the
+    work away while calling it a pause. Refused with the reason rather than
+    accepted and quietly downgraded to a cancel."""
+    site = _site(db, engine_id="wget-warc", slug="plainwget")
+    job_id = make_job(db, "running", site_id=site.id)
+
+    res = authed.post(f"/api/jobs/{job_id}/pause", headers=XHR)
+
+    assert res.status_code == 409
+    body = res.json()["error"]
+    assert body["code"] == "not_pausable"
+    assert "cannot resume" in body["message"]
+    assert "Cancel it instead" in body["message"]
+
+
+def test_a_queued_job_cannot_be_paused(authed: TestClient, db: Session) -> None:
+    """There is nothing to continue from — it never started."""
+    site = _site(db, engine_id="browsertrix", slug="queuedone")
+    job_id = make_job(db, "queued", site_id=site.id)
+
+    res = authed.post(f"/api/jobs/{job_id}/pause", headers=XHR)
+
+    assert res.status_code == 409
+    assert "Cancel it instead" in res.json()["error"]["message"]
+
+
+def test_only_a_running_job_on_a_resumable_engine_offers_pause(
+    authed: TestClient, db: Session
+) -> None:
+    """`can_pause` is what puts the button on screen, and the browser knows
+    nothing about engines — so the server has to answer it."""
+    btrix = _site(db, engine_id="browsertrix", slug="btrixsite")
+    wget = _site(db, engine_id="wget-warc", slug="wgetsite")
+    running = make_job(db, "running", site_id=btrix.id)
+    other = make_job(db, "running", site_id=wget.id)
+    done = make_job(db, "ok", site_id=btrix.id)
+
+    by_id = {j["id"]: j for j in authed.get("/api/jobs", headers=XHR).json()["items"]}
+
+    assert by_id[running]["can_pause"] is True
+    assert by_id[other]["can_pause"] is False, "wget cannot resume"
+    assert by_id[done]["can_pause"] is False, "and a finished job has nothing to pause"
+
+
+def test_resuming_a_capture_that_is_not_paused_is_refused(authed: TestClient, db: Session) -> None:
+    from cairn.db.models import Capture
+
+    site = _site(db, engine_id="browsertrix", slug="finished")
+    capture = Capture(
+        site_id=site.id, kind="full", engine_id="browsertrix",
+        dir_name="20260815T090000Z-full-browsertrix", status="ok", started_at=utcnow(),
+    )  # fmt: skip
+    db.add(capture)
+    db.commit()
+
+    res = authed.post(f"/api/captures/{capture.id}/resume", headers=XHR)
+
+    assert res.status_code == 409
+    assert res.json()["error"]["code"] == "not_paused"
+
+
+def test_resuming_without_a_state_file_is_refused_rather_than_silently_recrawling(
+    authed: TestClient, db: Session
+) -> None:
+    """The state file is what makes a resume a resume. Without it the job
+    would run as a full re-crawl of a site somebody thought they were
+    finishing — which costs bandwidth and looks like success."""
+    from cairn.db.models import Capture
+
+    site = _site(db, engine_id="browsertrix", slug="stateless")
+    capture = Capture(
+        site_id=site.id, kind="full", engine_id="browsertrix",
+        dir_name="20260815T090000Z-full-browsertrix", status="paused", started_at=utcnow(),
+    )  # fmt: skip
+    db.add(capture)
+    db.commit()
+
+    res = authed.post(f"/api/captures/{capture.id}/resume", headers=XHR)
+
+    assert res.status_code == 409
+    assert res.json()["error"]["code"] == "no_resume_state"
+    assert "start from the beginning" in res.json()["error"]["message"]

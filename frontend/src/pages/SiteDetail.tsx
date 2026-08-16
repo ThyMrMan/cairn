@@ -584,6 +584,17 @@ function Seeds({ siteId, onChanged }: { siteId: number; onChanged?: () => void }
 
 function CaptureRow({ summary }: { summary: Capture }) {
   const [open, setOpen] = useState(false);
+  const client = useQueryClient();
+  // A paused capture is the one row that is not finished — it is a crawl
+  // holding its place. Resuming continues into this same directory rather
+  // than starting a capture beside it.
+  const resume = useMutation({
+    mutationFn: () => endpoints.resumeCapture(summary.id),
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: ["captures"] });
+      void client.invalidateQueries({ queryKey: ["jobs"] });
+    },
+  });
   // Only once the row is opened. The list already carries everything the
   // closed row shows, and fetching each capture's detail on mount meant a site
   // with a hundred captures fired a hundred requests the moment its page
@@ -614,8 +625,29 @@ function CaptureRow({ summary }: { summary: Capture }) {
           </div>
           <p className="mt-0.5 text-xs text-muted">
             {ranFromTo(summary.started_at, summary.finished_at)} · {summary.kind}
+            {summary.status === "paused" && " · stopped with its place kept"}
           </p>
         </div>
+        {summary.status === "paused" && (
+          <span
+            role="button"
+            tabIndex={0}
+            className="btn-ghost shrink-0 text-xs"
+            onClick={(e) => {
+              e.stopPropagation();
+              resume.mutate();
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.stopPropagation();
+                resume.mutate();
+              }
+            }}
+          >
+            {resume.isPending && <Spinner className="mr-1 h-3 w-3" />}
+            Resume
+          </span>
+        )}
         <dl className="flex shrink-0 gap-6 text-right text-xs">
           <div>
             <dt className="text-muted">URLs</dt>

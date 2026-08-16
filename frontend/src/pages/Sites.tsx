@@ -406,6 +406,9 @@ export function StatusPill({ status }: { status: string }) {
       error: "bg-danger/15 text-danger",
       failed: "bg-danger/15 text-danger",
       cancelled: "bg-raised text-muted",
+      // Accent rather than a warning tone: a paused crawl is waiting, not
+      // damaged, and it is the one stopped state with something still to do.
+      paused: "bg-accent/15 text-accent",
       interrupted: "bg-warn/15 text-warn",
       archived: "bg-raised text-muted",
     }[status] ?? "bg-raised text-muted";

@@ -448,6 +448,10 @@ class JobSummary(BaseModel):
     finished_at: datetime | None
     error: str | None
     attempts: int
+    # Whether this job's engine can stop in a way that can be continued. Sent
+    # rather than inferred in the browser, which knows nothing about engines —
+    # and offering Pause on wget would mean a button that only ever 409s.
+    can_pause: bool = False
 
 
 class JobsClear(BaseModel):

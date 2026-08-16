@@ -26,6 +26,7 @@ import asyncio
 import contextlib
 import json
 import os
+import shutil
 import signal
 import time
 from dataclasses import dataclass, field
@@ -42,6 +43,7 @@ from cairn.db.types import utcnow
 from cairn.engines.protocol import (
     JOB_SPEC_FILE,
     PROTOCOL_VERSION,
+    RESUME_STATE_FILE,
     SEED_FILE,
     ArtifactEvent,
     LogEvent,
@@ -99,6 +101,11 @@ class RunningJob:
     # Cancellation has to reach whichever one is actually doing the work.
     container: str | None = None
     cancelled: bool = False
+    # Set instead of `cancelled` when the stop is meant to be continued. The
+    # signal is identical — the engine flushes and exits the same way — and the
+    # difference is only in what the capture is called afterwards and whether
+    # its resume state is kept.
+    paused: bool = False
     capture_id: int | None = None
     task: asyncio.Task[None] | None = None
     started: float = field(default_factory=time.monotonic)
@@ -226,13 +233,36 @@ class JobSupervisor:
             # Queued but not started: mark it cancelled so it never runs.
             return await asyncio.to_thread(self._cancel_queued, job_id)
         running.cancelled = True
+        await self._stop(running)
+        return True
+
+    async def pause(self, job_id: int) -> bool:
+        """Stop a running capture in a way that can be continued.
+
+        The same signal as `cancel`, and deliberately so: the engine's contract
+        is that SIGTERM makes it flush, and for browsertrix that flush is also
+        when the crawler serialises its queue. Pausing is therefore not a
+        different mechanism, only a different name for the result and a promise
+        to keep the state file.
+
+        Only meaningful for a running job. A queued one has nothing to
+        continue from, so pausing it would be indistinguishable from
+        cancelling it and the caller is told so.
+        """
+        running = self._running.get(job_id)
+        if running is None:
+            return False
+        running.paused = True
+        await self._stop(running)
+        return True
+
+    async def _stop(self, running: RunningJob) -> None:
         self._signal(running, signal.SIGTERM)
         if running.container is not None:
             from cairn.services import containers
 
             async with containers.client() as http:
                 await containers.stop(http, running.container)
-        return True
 
     def _cancel_queued(self, job_id: int) -> bool:
         with self._sessions() as session:
@@ -1128,21 +1158,38 @@ class JobSupervisor:
             config["keep_mirror"] = site.keep_mirror
 
             started = utcnow()
-            dir_name = storage.capture_dir_name(started, kind, site.engine_id)
 
-            capture = Capture(
-                site_id=site.id,
-                job_id=job.id,
-                kind=kind,
-                engine_id=site.engine_id,
-                engine_version=engine.version,
-                dir_name=dir_name,
-                started_at=started,
-                status="running",
-            )
-            session.add(capture)
-            site.status = "capturing"
-            session.flush()
+            # A resume continues the paused capture rather than starting a new
+            # one: same directory, same row, and the engine writes fresh WARCs
+            # alongside the ones already there. Replay indexes across WARCs and
+            # never merges them ([D2](docs/00)), so the two halves of an
+            # interrupted crawl need no reconciling — which is what makes
+            # continuing into the same capture the simple option rather than
+            # the clever one.
+            resuming = _paused_capture(session, job, site)
+            if resuming is not None:
+                capture = resuming
+                dir_name = capture.dir_name
+                capture.job_id = job.id
+                capture.status = "running"
+                capture.finished_at = None
+                site.status = "capturing"
+                session.flush()
+            else:
+                dir_name = storage.capture_dir_name(started, kind, site.engine_id)
+                capture = Capture(
+                    site_id=site.id,
+                    job_id=job.id,
+                    kind=kind,
+                    engine_id=site.engine_id,
+                    engine_version=engine.version,
+                    dir_name=dir_name,
+                    started_at=started,
+                    status="running",
+                )
+                session.add(capture)
+                site.status = "capturing"
+                session.flush()
 
             output_dir = storage.ensure_capture_dirs(self._settings, site.archive_path, dir_name)
             temp_dir.mkdir(parents=True, exist_ok=True)
@@ -1198,6 +1245,7 @@ class JobSupervisor:
                 "incremental": {
                     "dedup_cdx": _dedup_cdx(self._settings, session, site, kind, temp_dir, engine)
                 },
+                "resume": {"state_file": _resume_state(resuming, output_dir, temp_dir, engine)},
                 "config": config,
                 "limits": {
                     "max_bytes": scope.max_bytes,
@@ -1293,7 +1341,14 @@ class JobSupervisor:
 
         status = _final_status(collector.result, returncode, running.cancelled)
         await asyncio.to_thread(
-            self._finalize, prepared, collector, status, returncode, stderr, running.cancelled
+            self._finalize,
+            prepared,
+            collector,
+            status,
+            returncode,
+            stderr,
+            running.cancelled,
+            running.paused,
         )
         await self._announce(prepared, collector, status)
 
@@ -1375,7 +1430,14 @@ class JobSupervisor:
 
         status = _final_status(collector.result, returncode, running.cancelled)
         await asyncio.to_thread(
-            self._finalize, prepared, collector, status, returncode, stderr, running.cancelled
+            self._finalize,
+            prepared,
+            collector,
+            status,
+            returncode,
+            stderr,
+            running.cancelled,
+            running.paused,
         )
         await self._announce(prepared, collector, status)
 
@@ -1470,6 +1532,7 @@ class JobSupervisor:
         returncode: int,
         stderr: str,
         cancelled: bool,
+        paused: bool = False,
     ) -> None:
         with self._sessions() as session:
             job = session.get(Job, prepared.job_id)
@@ -1477,6 +1540,18 @@ class JobSupervisor:
             site = session.get(Site, prepared.site_id)
             if job is None or capture is None or site is None:  # pragma: no cover
                 return
+
+            # A pause is only a pause if there is something to continue from.
+            # The engine writes its state before exiting and says so; without
+            # it this was an ordinary stop, and calling the capture `paused`
+            # would put a Resume button on something that would silently start
+            # from the beginning.
+            resumable = (
+                bool(collector.stats.get("resumable"))
+                and (prepared.output_dir / RESUME_STATE_FILE).is_file()
+            )
+            if paused and resumable and status in ("ok", "partial"):
+                status = "paused"
 
             finished = utcnow()
             capture.status = status
@@ -1487,7 +1562,9 @@ class JobSupervisor:
             capture.warc_files = collector.artifacts
 
             job.status = (
-                "ok" if status in ("ok", "partial") else ("cancelled" if cancelled else "failed")
+                "ok"
+                if status in ("ok", "partial", "paused")
+                else ("cancelled" if cancelled else "failed")
             )
             job.finished_at = finished
             job.pid = None
@@ -1502,7 +1579,12 @@ class JobSupervisor:
                 # says why, and an operator holding only the first is stuck.
                 job.error = _failure_text(collector.error, stderr, returncode)
 
-            site.status = "ready" if status in ("ok", "partial") else "error"
+            # A paused site is `ready`: it is not broken, and leaving it
+            # `capturing` would block the next capture behind a job that has
+            # already exited. `last_capture_at` is deliberately not moved —
+            # this crawl has not finished, and letting it count would push the
+            # scheduled recapture out by a full interval for work half done.
+            site.status = "ready" if status in ("ok", "partial", "paused") else "error"
             if status in ("ok", "partial"):
                 site.last_capture_at = finished
             session.flush()
@@ -1936,6 +2018,60 @@ def _busy_hosts(session: Session) -> set[str]:
 # building an unbounded file on every capture.
 MAX_DEDUP_LINES = 400_000
 CDX_HEADER = " CDX a b a m s k r M V g u"
+
+
+def _resume_state(
+    resuming: Capture | None, output_dir: Path, temp_dir: Path, engine: Engine
+) -> str | None:
+    """The state file a resuming engine reads, copied where it can reach it.
+
+    Copied into the job's temp directory rather than handed over in place, for
+    the same reason the browser profile is: the engine may be a container, and
+    the capture directory is not mounted into one. The temp directory already
+    is.
+
+    A copy also means the original survives the run. If the resumed crawl is
+    itself paused it writes a fresh state over the old one — but if it dies
+    without writing anything, the capture still holds the state it had, and a
+    second resume attempt starts from the same place rather than from nothing.
+    """
+    if resuming is None or not engine.capabilities.get("resumable"):
+        return None
+    source = output_dir / RESUME_STATE_FILE
+    if not source.is_file():
+        log.warning(
+            "a paused capture has no resume state; it will start from the seeds",
+            extra={"capture": resuming.id},
+        )
+        return None
+    target = temp_dir / RESUME_STATE_FILE
+    try:
+        shutil.copy2(source, target)
+    except OSError as exc:  # pragma: no cover — permissions
+        log.warning("could not stage the resume state", extra={"error": str(exc)})
+        return None
+    return str(target)
+
+
+def _paused_capture(session: Session, job: Job, site: Site) -> Capture | None:
+    """The capture this job was asked to continue, if it still can be.
+
+    Every clause here is a way a resume can be stale by the time it runs, and
+    each one falls back to a fresh capture rather than failing: the button was
+    pressed against a state of the world that may have changed while the job
+    sat in the queue.
+    """
+    capture_id = job.spec.get("resume_capture_id")
+    if capture_id is None:
+        return None
+    capture = session.get(Capture, int(capture_id))
+    if capture is None or capture.site_id != site.id or capture.status != "paused":
+        log.warning(
+            "resume target is gone or no longer paused; capturing fresh instead",
+            extra={"job": job.id, "capture": capture_id},
+        )
+        return None
+    return capture
 
 
 def _dedup_cdx(

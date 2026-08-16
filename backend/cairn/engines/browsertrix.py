@@ -75,12 +75,25 @@ from typing import Any
 
 import httpx
 
-from cairn.engines.protocol import EventWriter, JobSpec
+from cairn.engines.protocol import RESUME_STATE_FILE, EventWriter, JobSpec
 from cairn.services.scope import Scope
 
 # Where browsertrix keeps its working tree inside its own container.
 CRAWLS = "/crawls"
 COLLECTION = "capture"
+
+# Where an interrupted crawl's resume state is kept inside the capture, and
+# what it is called there.
+#
+# Measured against 1.14.1 rather than assumed, because the whole feature rests
+# on it (see scripts/probes/resume_probe.py). `--saveState` defaults to
+# "partial", meaning the state is written whenever a crawl is interrupted — so
+# this file has always been produced, and was always deleted moments later
+# along with the job's temp directory. Confirmed written on SIGTERM, which is
+# the signal Docker's stop sends and therefore the only one that matters here;
+# an implementation that only handled SIGINT would have failed as an empty
+# directory rather than an error.
+STATE_DIR_NAME = "crawls"
 
 # Where the job's temp directory appears to the crawler when a browser profile
 # is being passed. Deliberately not under /crawls: that tree is the crawler's
@@ -163,7 +176,11 @@ class Runner:
                 return 1
 
         warcs = self._collect(work)
-        stats = {**self._stats(started), "warcs": warcs}
+        # Kept before the temp tree goes, and on every path rather than only an
+        # interrupted one: a crawl that ends by hitting its page limit is just
+        # as worth continuing, and the file costs a few kilobytes.
+        resumable = self._keep_resume_state(work)
+        stats = {**self._stats(started), "warcs": warcs, "resumable": resumable}
 
         if self.terminating:
             self.events.result("partial", stats, error="cancelled")
@@ -249,7 +266,7 @@ class Runner:
         from cairn.services import containers
 
         mounts = [(work, CRAWLS)]
-        if self._profile_tarball() is not None:
+        if self._profile_tarball() is not None or self._resume_state() is not None:
             # Its own directory, read by the crawler and nothing else. The
             # temp directory it sits in also holds the cookie jar, and there
             # is no reason to show that to a container that cannot read one.
@@ -430,6 +447,18 @@ class Runner:
             argv += ["--userAgent", agent]
         if (tarball := self._profile_tarball()) is not None:
             argv += ["--profile", f"{PROFILE_MOUNT}/{tarball.name}"]
+        if (state := self._resume_state()) is not None:
+            # Continue the crawl this state came from: browsertrix reads the
+            # finished set and the pending queue out of it and picks up where
+            # it stopped. Measured on 1.14.1 — the resumed run fetched only
+            # queued pages and re-fetched none of the finished ones, and wrote
+            # a second WARC beside the first rather than rewriting it.
+            #
+            # The flags above are passed as well, deliberately. The crawler's
+            # docs are explicit that command-line options are not persisted in
+            # the state file, so a resume that passed `--config` alone would
+            # silently lose the scope, the rejects and the profile.
+            argv += ["--config", f"{PROFILE_MOUNT}/{state.name}"]
         if self.config.get("extract_text", True):
             argv += ["--text", "to-warc"]
         return argv
@@ -458,6 +487,53 @@ class Runner:
 
         self._emit_urls(collection / "indexes" / "index.cdxj")
         return moved
+
+    def _resume_state(self) -> Path | None:
+        """The crawl state to continue from, if this job is a resume.
+
+        Existence-checked for the same reason `_profile_tarball` is: a
+        `--config` pointing at nothing does not fail loudly, it starts a fresh
+        crawl — which would silently re-archive everything the paused capture
+        already holds instead of continuing it.
+        """
+        raw = self.spec.resume.state_file
+        if not raw:
+            return None
+        path = Path(raw)
+        if not path.is_file():
+            self.events.log(
+                f"resume state {path.name} is missing; starting from the seeds instead",
+                level="warning",
+            )
+            return None
+        return path
+
+    def _keep_resume_state(self, work: Path) -> bool:
+        """Save the crawler's own resume state into the capture.
+
+        browsertrix writes one YAML per save into
+        `collections/<name>/crawls/`, newest last, holding the finished URLs
+        and the pending queue. The newest is the only one worth keeping — the
+        older ones are history of a crawl that is over.
+
+        Copied under a fixed name because the crawler's own is a timestamp
+        plus a run id, and a resume should not have to go looking. Copied
+        rather than moved so a crash here cannot destroy the only copy before
+        the capture directory is durable.
+        """
+        source = work / "collections" / COLLECTION / STATE_DIR_NAME
+        if not source.is_dir():
+            return False
+        states = sorted(source.glob("*.yaml"))
+        if not states:
+            return False
+        try:
+            shutil.copy2(states[-1], self.out / RESUME_STATE_FILE)
+        except OSError as exc:  # pragma: no cover — permissions
+            self.events.log(f"could not keep the resume state: {exc}", level="warning")
+            return False
+        self.events.log(f"resume state kept from {states[-1].name}")
+        return True
 
     def _emit_urls(self, cdxj: Path) -> None:
         """One `url` event per archived record, from browsertrix's own CDXJ.

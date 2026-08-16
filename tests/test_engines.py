@@ -635,6 +635,108 @@ def test_wget_is_quiet_when_it_has_the_jar_it_needs(tmp_path: Path) -> None:
     assert seen == []
 
 
+# ── pause and resume ─────────────────────────────────────────────────────
+#
+# The mechanism was measured against the real crawler before any of it was
+# written; see scripts/probes/resume_probe.py, which is what established that
+# state survives SIGTERM — the signal Cairn actually sends — and
+# resume_probe2.py, which established that resuming from it fetches only the
+# queued pages. These tests cover the wiring around that, not the crawler.
+
+
+def _btrix_spec(tmp_path: Path, **overrides: object) -> JobSpec:
+    out = tmp_path / "out"
+    out.mkdir(parents=True, exist_ok=True)
+    base: dict[str, object] = {
+        "job_id": 9,
+        "site": {"id": 1, "slug": "blog", "title": "Blog"},
+        "output_dir": str(out),
+        "temp_dir": str(tmp_path),
+        "seeds": ["https://blog.example/"],
+        "scope": {
+            "seeds": ["https://blog.example/"],
+            "hosts": [{"host": "blog.example", "crawl_pages": True, "fetch_assets": True}],
+        },
+        "config": {},
+    }
+    return JobSpec.model_validate({**base, **overrides})
+
+
+def test_the_newest_crawl_state_is_kept_in_the_capture(tmp_path: Path) -> None:
+    """browsertrix saves state into the job's temp tree, which is deleted the
+    moment the job ends — so the file it has always written was always thrown
+    away. This is the step that keeps it."""
+    from cairn.engines.browsertrix import COLLECTION, STATE_DIR_NAME, Runner
+    from cairn.engines.protocol import RESUME_STATE_FILE
+
+    runner = Runner(_btrix_spec(tmp_path), EventWriter())
+    states = tmp_path / "work" / "collections" / COLLECTION / STATE_DIR_NAME
+    states.mkdir(parents=True)
+    (states / "20260101000000-aaa-capture.yaml").write_text("state:\n  id: old\n", encoding="utf-8")
+    (states / "20260102000000-aaa-capture.yaml").write_text("state:\n  id: new\n", encoding="utf-8")
+
+    assert runner._keep_resume_state(tmp_path / "work") is True
+
+    kept = Path(runner.spec.output_dir) / RESUME_STATE_FILE
+    # The newest, under a fixed name — the crawler's own is a timestamp plus a
+    # run id, and a resume should not have to go looking.
+    assert "id: new" in kept.read_text(encoding="utf-8")
+
+
+def test_no_state_directory_is_not_an_error(tmp_path: Path) -> None:
+    """A crawl that died before writing anything still has to finalize."""
+    from cairn.engines.browsertrix import Runner
+
+    runner = Runner(_btrix_spec(tmp_path), EventWriter())
+    assert runner._keep_resume_state(tmp_path / "work") is False
+
+
+def test_a_resume_passes_the_state_and_keeps_every_other_flag(tmp_path: Path) -> None:
+    """The crawler's docs are explicit that command-line options are not
+    persisted in the state file, so `--config` alone would silently lose the
+    scope, the rejects and the profile."""
+    from cairn.engines.browsertrix import Runner
+
+    state = tmp_path / "resume-state.yaml"
+    state.write_text("state:\n  id: x\n", encoding="utf-8")
+    spec = _btrix_spec(
+        tmp_path,
+        resume={"state_file": str(state)},
+        scope={
+            "seeds": ["https://blog.example/"],
+            "hosts": [{"host": "blog.example", "crawl_pages": True, "fetch_assets": True}],
+            "reject_patterns": [r"[?&]m=1"],
+        },
+    )
+    argv = Runner(spec, EventWriter())._argv()
+
+    assert "--config" in argv
+    assert argv[argv.index("--config") + 1].endswith("resume-state.yaml")
+    # The scope survives alongside it.
+    assert "--include" in argv
+    assert "--exclude" in argv
+
+
+def test_a_missing_state_file_starts_fresh_rather_than_pointing_at_nothing(
+    tmp_path: Path,
+) -> None:
+    """`--config` at a path that does not exist does not fail loudly — it
+    starts a clean crawl, which would re-archive everything the paused capture
+    already holds while looking like a resume."""
+    from cairn.engines.browsertrix import Runner
+
+    spec = _btrix_spec(tmp_path, resume={"state_file": str(tmp_path / "gone.yaml")})
+    assert "--config" not in Runner(spec, EventWriter())._argv()
+
+
+def test_the_manifest_says_browsertrix_can_resume_and_wget_cannot(settings: Settings) -> None:
+    """The capability is what gates the Pause button, so the two engines
+    disagreeing here is the whole point."""
+    engines, _errors = registry.discover(settings)
+    assert engines["browsertrix"].capabilities["resumable"] is True
+    assert engines["wget-warc"].capabilities["resumable"] is False
+
+
 # ── the dedup CDX, and who gets one ──────────────────────────────────────
 
 CDX_LINE = (

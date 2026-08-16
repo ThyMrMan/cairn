@@ -49,7 +49,10 @@ JOB_TYPES = (
     "feed-poll",
     "import",
 )
-CAPTURE_STATUSES = ("running", "ok", "partial", "failed", "cancelled", "interrupted")
+# `paused` is a stopped crawl that kept its engine's resume state, so it can be
+# continued rather than restarted. Distinct from `cancelled`, which is the same
+# stop without that promise, and from `partial`, which is finished and has gaps.
+CAPTURE_STATUSES = ("running", "ok", "partial", "paused", "failed", "cancelled", "interrupted")
 CAPTURE_KINDS = ("full", "incremental", "feed", "manual", "resume", "import")
 PROFILE_MODES = ("none", "cookies", "userscript", "interactive")
 FEED_KINDS = ("auto", "rss", "atom", "sitemap", "json", "page")

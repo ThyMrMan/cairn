@@ -383,6 +383,10 @@ export type Job = {
   finished_at: string | null;
   error: string | null;
   attempts: number;
+  /** Whether this job's engine can stop in a way that can be continued. Sent
+   *  by the server, which knows the engine's manifest; false on wget, which
+   *  has no crawl state to stop into. */
+  can_pause: boolean;
 };
 
 /**
@@ -1337,6 +1341,11 @@ export const endpoints = {
   /** Rate and distance-to-cap for a running crawl. No invented percentage. */
   jobProjection: (id: number) => api.get<CrawlProjection>(`/jobs/${id}/projection`),
   cancelJob: (id: number) => api.post<{ ok: boolean }>(`/jobs/${id}/cancel`),
+  /** Stop a running capture so it can be continued. Only offered on an engine
+   *  whose manifest declares `resumable`; 409s otherwise rather than quietly
+   *  behaving like cancel. */
+  pauseJob: (id: number) => api.post<{ ok: boolean }>(`/jobs/${id}/pause`),
+  resumeCapture: (id: number) => api.post<{ job_id: number }>(`/captures/${id}/resume`),
   deleteJob: (id: number) => api.del<{ ok: boolean }>(`/jobs/${id}`),
   /** Deletes finished jobs only; queued and running ones are never touched. */
   clearJobs: (body: { status?: string; type?: string; site_id?: number }) =>

@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Request
 from fastapi.responses import PlainTextResponse
 from sqlalchemy import func, or_, select
 
 from cairn.api.deps import AppSettings, ClientIp, Csrf, CurrentUser, DbSession
 from cairn.api.errors import ApiError
-from cairn.api.schemas import CaptureDetail, CaptureUrlEntry, Ok, Page
-from cairn.db.models import Capture, CaptureUrl, Site
+from cairn.api.schemas import CaptureDetail, CaptureUrlEntry, JobAccepted, Ok, Page
+from cairn.db.models import Capture, CaptureUrl, Job, Site
 from cairn.services import audit, search, storage, textextract, urlshapes
 from cairn.services.filters import LIKE_ESCAPE, like_contains
 
@@ -161,6 +161,81 @@ def capture_url_shapes(
     """
     capture = _require_capture(db, capture_id)
     return urlshapes.summarize(db, capture.id, limit=limit)
+
+
+@router.post("/captures/{capture_id}/resume", response_model=JobAccepted, status_code=202)
+def resume_capture(
+    capture_id: int,
+    request: Request,
+    db: DbSession,
+    settings: AppSettings,
+    user: CurrentUser,
+    ip: ClientIp,
+) -> JobAccepted:
+    """Continue a paused capture where it stopped.
+
+    The job lands in the same queue as any other capture and continues into
+    the *same* capture directory, writing fresh WARCs beside the ones already
+    there. Replay indexes across WARCs rather than merging them, so the two
+    halves of an interrupted crawl need no reconciling.
+
+    Checked here rather than left to the job: a resume whose state file has
+    been deleted would run as a silent full re-crawl of a site somebody
+    thought they were finishing.
+    """
+    from cairn.engines.protocol import RESUME_STATE_FILE
+
+    capture = _require_capture(db, capture_id)
+    if capture.status != "paused":
+        raise ApiError(
+            "not_paused",
+            f"Only a paused capture can be resumed; this one is {capture.status}.",
+            status_code=409,
+        )
+
+    site = db.get(Site, capture.site_id)
+    if site is None or site.deleted_at is not None:
+        raise ApiError("not_found", "That capture's site is gone.", status_code=404)
+
+    state = _capture_dir(settings, db, capture) / RESUME_STATE_FILE
+    if not state.is_file():
+        raise ApiError(
+            "no_resume_state",
+            "This capture has no saved crawl state, so resuming it would start "
+            "from the beginning and archive everything again. Capture the site "
+            "afresh instead.",
+            status_code=409,
+        )
+
+    busy = db.scalar(
+        select(Job.id).where(Job.site_id == site.id, Job.status.in_(("queued", "running"))).limit(1)
+    )
+    if busy is not None:
+        raise ApiError(
+            "site_busy",
+            "A capture for this site is already queued or running.",
+            status_code=409,
+            detail={"job_id": busy},
+        )
+
+    supervisor = request.app.state.supervisor
+    job = supervisor.enqueue(
+        db,
+        job_type="capture",
+        site_id=site.id,
+        spec={"kind": "resume", "resume_capture_id": capture.id},
+    )
+    audit.record(
+        db,
+        "capture.resume",
+        actor=user.username,
+        target=site.slug,
+        ip=ip,
+        detail={"job_id": job.id, "capture_id": capture.id},
+    )
+    db.commit()
+    supervisor.notify()
+    return JobAccepted(job_id=job.id)
 
 
 @router.delete("/captures/{capture_id}", response_model=Ok)

@@ -42,3 +42,6 @@ secret.key
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Probe output — real crawls against a fixture, regenerated on demand.
+scripts/probes/resume-probe/

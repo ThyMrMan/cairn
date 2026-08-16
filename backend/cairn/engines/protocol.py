@@ -32,6 +32,13 @@ POSTPROCESSOR_VERSION = "cairn.postprocessor/v1"
 JOB_SPEC_FILE = "job.json"
 SEED_FILE = "seeds.txt"
 
+# Where an engine that can be resumed leaves the state to resume *from*,
+# relative to `output_dir`. Named here rather than in an engine because core
+# has to find it without knowing which engine wrote it: the file is opaque —
+# core keeps it beside the capture and hands the path back in `resume` — but
+# its location has to be agreed, the same way `seeds.txt` is.
+RESUME_STATE_FILE = "resume-state.yaml"
+
 # Terminal statuses an engine may report. `partial` is a first-class success:
 # a crawl that got 1,835 of 1,847 pages is an archive with 12 known gaps, not
 # a failure (docs/05).
@@ -76,6 +83,19 @@ class JobIncremental(BaseModel):
     dedup_cdx: str | None = None
 
 
+class JobResume(BaseModel):
+    """Continue a capture that was paused, rather than starting one.
+
+    `state_file` is engine-defined opaque state that engine produced earlier —
+    for browsertrix, its own crawl-state YAML, holding the finished URLs and
+    the pending queue. Core never reads it; it only keeps it beside the
+    capture and hands it back. An engine that declares `resumable: false`
+    never sees this block set.
+    """
+
+    state_file: str | None = None
+
+
 class JobLimits(BaseModel):
     max_bytes: int | None = None
     max_duration_s: int | None = None
@@ -98,6 +118,7 @@ class JobSpec(BaseModel):
     scope: dict[str, Any] = Field(default_factory=dict)
     auth: JobAuth = Field(default_factory=JobAuth)
     incremental: JobIncremental = Field(default_factory=JobIncremental)
+    resume: JobResume = Field(default_factory=JobResume)
     config: dict[str, Any] = Field(default_factory=dict)
     limits: JobLimits = Field(default_factory=JobLimits)
 
