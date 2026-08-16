@@ -76,7 +76,7 @@ from typing import Any
 import httpx
 
 from cairn.engines.protocol import RESUME_STATE_FILE, EventWriter, JobSpec
-from cairn.services.scope import Scope
+from cairn.services.scope import Scope, build_reject_patterns, combine_patterns
 
 # Where browsertrix keeps its working tree inside its own container.
 CRAWLS = "/crawls"
@@ -415,8 +415,27 @@ class Runner:
         if scope.obey_robots:
             argv += ["--useRobots"]
 
-        if scope.reject_patterns:
-            combined = "|".join(f"(?:{p})" for p in scope.reject_patterns)
+        # `build_reject_patterns`, not `scope.reject_patterns` — the scope's own
+        # list is only the half a human typed or a preset supplied. The other
+        # half is generated: the asset-only fence for every host whose images we
+        # want and whose pages we do not, plus the CSS-escape guard. wget has
+        # always had both, because `to_wget_args` builds through the same
+        # function.
+        #
+        # This engine used to read the raw list, so those two families were
+        # silently wget-only. The effect is not subtle on a Blogger blog:
+        # www.blogger.com is an assets-only host, so wget rejects every non-asset
+        # path on it, while this engine rejected only the four paths the preset
+        # happens to name. A real capture spent 254 requests on
+        # `/$rpc/…onegoogle…getasyncdata` — exactly what the fence exists to
+        # stop, on a host that was in scope for its images alone.
+        #
+        # A crawl is supposed to have one boundary regardless of which engine
+        # walks it, and `test_both_engines_enforce_the_same_reject_set` is the
+        # invariant that was missing.
+        rejects = build_reject_patterns(scope)
+        if rejects:
+            combined = combine_patterns(rejects)
             # Both, because they cover different halves and `--exclude` alone
             # covers the wrong one for most of these patterns.
             #

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,7 @@ from sqlalchemy.orm import Session
 from cairn.config import Settings
 from cairn.db.models import Capture, Site
 from cairn.db.types import utcnow
+from cairn.discovery.platform import BLOGGER_PRESET
 from cairn.engines import registry
 from cairn.engines.protocol import (
     EventWriter,
@@ -22,6 +24,7 @@ from cairn.engines.protocol import (
 )
 from cairn.engines.wget import build_argv, parse_cdx_line, parse_log_error
 from cairn.services import storage
+from cairn.services.scope import CSS_ESCAPE_REJECT
 
 GOOD_MANIFEST = {
     "apiVersion": "cairn.engine/v1",
@@ -555,8 +558,15 @@ def test_reject_patterns_reach_the_network_layer_not_just_the_page_queue(tmp_pat
     assert r"/b/stats\?" in argv[argv.index("--blockRules") + 1]
 
 
-def test_no_block_rules_when_nothing_is_rejected(tmp_path: Path) -> None:
-    """An empty regex would block everything."""
+def test_the_block_regex_is_never_empty(tmp_path: Path) -> None:
+    """An empty regex would block everything.
+
+    This used to assert the flags were absent when the user had rejected
+    nothing, which was true only because the engine read `scope.reject_patterns`
+    rather than building the full set. Some rejects are always generated — the
+    CSS-escape guard unconditionally, the asset-only fence for every host in
+    that role — so "nothing is rejected" is not a state a scope can be in.
+    """
     from cairn.engines.browsertrix import Runner
     from cairn.engines.protocol import EventWriter
 
@@ -566,8 +576,103 @@ def test_no_block_rules_when_nothing_is_rejected(tmp_path: Path) -> None:
         "reject_patterns": [],
     }
     argv = Runner(wget_spec(tmp_path, scope=scope, config={}), EventWriter())._argv()
-    assert "--blockRules" not in argv
-    assert "--exclude" not in argv
+
+    combined = argv[argv.index("--blockRules") + 1]
+    assert combined.strip(), "an empty regex matches everything"
+    assert CSS_ESCAPE_REJECT in combined
+
+
+def test_browsertrix_enforces_the_asset_only_fence(tmp_path: Path) -> None:
+    """The regression this test exists for, and it was silent for two engines.
+
+    An assets-only host is "fetch this host's images, do not crawl it as a
+    website", and the half that says *do not crawl it* is a generated reject
+    rather than anything a preset lists. This engine used to read the scope's
+    own pattern list, which does not contain it — so on a Blogger blog wget
+    rejected every non-asset path on www.blogger.com while browsertrix rejected
+    only the four the preset happens to name.
+
+    Measured on a real capture: 254 requests to
+    `/$rpc/…onegoogle…getasyncdata`, on a host that was in scope for its images
+    alone. Nothing reported it, because a fetch that should not have happened
+    looks exactly like one that should.
+    """
+    from cairn.engines.browsertrix import Runner
+    from cairn.engines.protocol import EventWriter
+
+    scope = {
+        "seeds": ["https://b.blogspot.com/"],
+        "hosts": [
+            {"host": "b.blogspot.com", "crawl_pages": True, "fetch_assets": True},
+            {"host": "www.blogger.com", "crawl_pages": False, "fetch_assets": True},
+        ],
+        "reject_patterns": [r"/b/stats\?"],
+    }
+    argv = Runner(wget_spec(tmp_path, scope=scope, config={}), EventWriter())._argv()
+    combined = re.compile(argv[argv.index("--blockRules") + 1])
+
+    # The non-asset path on the assets-only host: rejected.
+    assert combined.search("https://www.blogger.com/$rpc/google.internal.onegoogle/getasyncdata")
+    assert combined.search("https://www.blogger.com/navbar/123?usegapi=1")
+    # Its images: still fetched, or the fence would cost the page its appearance.
+    assert not combined.search("https://www.blogger.com/img/logo.png")
+    # And the host being crawled is untouched by the fence.
+    assert not combined.search("https://b.blogspot.com/2019/05/post.html")
+
+
+def test_both_engines_enforce_the_same_reject_set(tmp_path: Path) -> None:
+    """A crawl has one boundary, whichever engine walks it.
+
+    This is the invariant that was missing. browsertrix built its regex from
+    `scope.reject_patterns` and wget from `build_reject_patterns(scope)`, so the
+    two engines disagreed about the scope they were both handed — and the
+    difference only showed up as a bigger crawl, never as an error. Comparing
+    the compiled regex rather than the flag spelling, because the two tools take
+    different flags and it is the boundary that has to match, not the CLI.
+    """
+    from cairn.engines.browsertrix import Runner
+    from cairn.engines.protocol import EventWriter
+
+    scope_dict = {
+        "seeds": ["https://b.blogspot.com/"],
+        "hosts": [
+            {"host": "b.blogspot.com", "crawl_pages": True, "fetch_assets": True},
+            {"host": "www.blogger.com", "crawl_pages": False, "fetch_assets": True},
+            {
+                "host": "lh3.googleusercontent.com",
+                "crawl_pages": False,
+                "fetch_assets": True,
+                "allow_extensionless": True,
+            },
+        ],
+        "reject_patterns": [p for p, _note in BLOGGER_PRESET.reject_patterns],
+    }
+    spec = wget_spec(tmp_path, scope=scope_dict, config={})
+
+    bt = Runner(spec, EventWriter())._argv()
+    browsertrix_regex = bt[bt.index("--blockRules") + 1]
+
+    wget = build_argv(spec, tmp_path / "out", tmp_path / "tmp", tmp_path / "tmp")
+    wget_regex = next(a.split("=", 1)[1] for a in wget if a.startswith("--reject-regex="))
+
+    assert browsertrix_regex == wget_regex
+
+    # Not just equal strings — equal answers, on the URLs the difference was
+    # actually costing.
+    compiled = re.compile(browsertrix_regex)
+    for url in (
+        "https://www.blogger.com/$rpc/google.internal.onegoogle/getasyncdata",
+        "https://www.blogger.com/navbar/123?usegapi=1",
+        "https://b.blogspot.com/2019/05/post.html?m=1",
+        "https://b.blogspot.com/b/stats?style=BLACK",
+    ):
+        assert compiled.search(url), url
+    for url in (
+        "https://b.blogspot.com/2019/05/post.html",
+        "https://lh3.googleusercontent.com/blogger_img_proxy/AEn0k_abc",
+        "https://www.blogger.com/img/logo.png",
+    ):
+        assert not compiled.search(url), url
 
 
 def test_browsertrix_progress_says_it_is_counting_pages(tmp_path: Path) -> None:
