@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from cairn.config import Settings
 from cairn.crypto.sealing import Sealer
 from cairn.db.models import AccessProfile
-from cairn.db.types import utcnow
+from cairn.db.types import to_iso, utcnow
 from cairn.services import profiles
 from tests.conftest import XHR
 
@@ -547,3 +547,134 @@ def test_the_host_count_is_the_total_not_the_length_of_the_capped_list() -> None
     assert report["cookies"] == len(rows)
     assert report["host_count"] == len(rows), "the total must not be capped"
     assert len(report["hosts"]) == profiles.HOST_LIST_LIMIT, "the list still is"
+
+
+# ── when a browser profile stops working ─────────────────────────────────
+
+
+def _tarball(rows: list[tuple[str, str, int]]) -> bytes:
+    import io as _io
+    import tarfile
+
+    db = tmp_sqlite_cookies(rows)
+    buffer = _io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+        info = tarfile.TarInfo("./Default/Cookies")
+        info.size = len(db)
+        archive.addfile(info, _io.BytesIO(db))
+    return buffer.getvalue()
+
+
+def _chromium_stamp(when: datetime) -> int:
+    """A datetime as Chromium stores it: microseconds since 1601."""
+    return int((when.timestamp() + profiles.CHROMIUM_EPOCH_OFFSET_S) * 1_000_000)
+
+
+def test_expiries_are_the_soonest_per_host_not_one_date_for_the_file() -> None:
+    """A profile holds a consent cookie expiring next week beside a sign-in
+    that lasts months. One date for the tarball would be the consent cookie's,
+    which is a warning about nothing — so the readout is keyed by host and the
+    judging happens where the crawl's own hosts are known."""
+    from datetime import timedelta
+
+    now = utcnow()
+    raw = _tarball(
+        [
+            (".google.com", "SID", _chromium_stamp(now + timedelta(days=90))),
+            (".google.com", "CONSENT", _chromium_stamp(now + timedelta(days=400))),
+            ("blog.example", "GATE", _chromium_stamp(now + timedelta(days=3))),
+            ("blog.example", "SESSION", 0),
+        ]
+    )
+
+    report = profiles.describe_browser_profile(raw)
+
+    assert set(report["expiries"]) == {".google.com", "blog.example"}
+    # The soonest per host, not the latest and not the average.
+    google = datetime.fromisoformat(report["expiries"][".google.com"])
+    blog = datetime.fromisoformat(report["expiries"]["blog.example"])
+    assert 89 <= (google - now).days <= 90
+    assert 2 <= (blog - now).days <= 3
+    # Session cookies have no expiry; they must not be read as 1601.
+    assert report["session_cookies"] == 1
+
+
+def test_an_absurd_expiry_is_dropped_rather_than_reported() -> None:
+    """A corrupt row would otherwise render as "expires in 28,000 years",
+    which reads as a bug in Cairn rather than in the tarball."""
+    raw = _tarball([("blog.example", "BROKEN", 99_999_999_999_999_999)])
+    assert profiles.describe_browser_profile(raw)["expiries"] == {}
+
+
+def test_a_zero_expiry_is_a_session_cookie_not_the_year_1601() -> None:
+    assert profiles._chromium_epoch(0) is None
+    assert profiles._chromium_epoch("not a number") is None
+
+
+def _profile_with(expiries: dict[str, str]) -> object:
+    from types import SimpleNamespace
+
+    return SimpleNamespace(browser_profile={"expiries": expiries}, cookie_meta={})
+
+
+def test_the_warning_only_fires_for_hosts_this_site_actually_crawls() -> None:
+    """The whole point of matching. A tarball made in a real browser carries
+    dozens of hosts from wherever that session had been; warning on all of
+    them is a warning every day about nothing, which teaches the reader to
+    skip it — the exact failure the thumbnail step's comment names."""
+    from datetime import timedelta
+
+    from cairn.services.jobs import _browser_profile_expiry_warnings
+
+    soon = to_iso(utcnow() + timedelta(days=2))
+    profile = _profile_with({"analytics.example": soon, "unrelated.test": soon})
+
+    assert _browser_profile_expiry_warnings(profile, ["blog.example"]) == []
+    assert _browser_profile_expiry_warnings(profile, ["analytics.example"]) != []
+
+
+def test_a_dot_prefixed_cookie_domain_covers_the_subdomain_the_site_uses() -> None:
+    """Cookies are stored on `.google.com`; a site crawls
+    `accounts.google.com`. The two are written at different levels of the same
+    tree, so an exact match would silently never fire — which is the failure
+    mode that looks exactly like "nothing is expiring"."""
+    from datetime import timedelta
+
+    from cairn.services.jobs import _browser_profile_expiry_warnings
+
+    profile = _profile_with({".google.com": to_iso(utcnow() + timedelta(days=3))})
+
+    assert _browser_profile_expiry_warnings(profile, ["accounts.google.com"]) != []
+    assert _browser_profile_expiry_warnings(profile, ["google.com"]) != []
+    # But not a host that merely ends in the same letters.
+    assert _browser_profile_expiry_warnings(profile, ["notgoogle.com"]) == []
+
+
+def test_a_distant_expiry_says_nothing() -> None:
+    from datetime import timedelta
+
+    from cairn.services.jobs import _browser_profile_expiry_warnings
+
+    profile = _profile_with({"blog.example": to_iso(utcnow() + timedelta(days=90))})
+    assert _browser_profile_expiry_warnings(profile, ["blog.example"]) == []
+
+
+def test_an_already_expired_profile_says_so_in_the_past_tense() -> None:
+    """Different advice: there is nothing to do before a deadline that has
+    gone, and the capture about to run will archive the sign-in page."""
+    from datetime import timedelta
+
+    from cairn.services.jobs import _browser_profile_expiry_warnings
+
+    profile = _profile_with({"blog.example": to_iso(utcnow() - timedelta(days=1))})
+    (note,) = _browser_profile_expiry_warnings(profile, ["blog.example"])
+
+    assert "expired on" in note
+    assert "archive the sign-in page" in note
+
+
+def test_a_profile_with_no_expiry_data_warns_about_nothing() -> None:
+    """Every tarball uploaded before this shipped has no `expiries` key."""
+    from cairn.services.jobs import _browser_profile_expiry_warnings
+
+    assert _browser_profile_expiry_warnings(_profile_with({}), ["blog.example"]) == []

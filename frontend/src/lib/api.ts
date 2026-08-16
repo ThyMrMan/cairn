@@ -403,6 +403,13 @@ export type BrowserProfileMeta = {
   host_count?: number;
   cookies?: number;
   session_cookies?: number;
+  /**
+   * Soonest expiry per host, ISO. Per host rather than one date for the file:
+   * a profile holds consent cookies expiring next week beside a sign-in that
+   * lasts months, so the earliest overall means nothing. Nothing refreshes a
+   * browsertrix profile automatically, so this is the only notice there is.
+   */
+  expiries?: Record<string, string>;
   /** False when the file could not be opened as a tarball at all. */
   readable?: boolean;
 };

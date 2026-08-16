@@ -19,7 +19,7 @@ import io
 import os
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -454,6 +454,28 @@ def storage_note(meta: dict[str, Any] | None) -> str | None:
 # browser session, which is a stronger credential than the cookie jar.
 
 
+# Chromium counts from 1601-01-01, in microseconds. The offset to the Unix
+# epoch, which is also what browsertrix's own `--cookieDays` converts through.
+CHROMIUM_EPOCH_OFFSET_S = 11_644_473_600
+
+
+def _chromium_epoch(expires_utc: Any) -> int | None:
+    """One Chromium `expires_utc` as a Unix timestamp, or None if it is not one.
+
+    Zero means a session cookie — no expiry rather than an expiry in 1601 —
+    and is handled by the caller, which counts those separately. Anything
+    outside a plausible range is discarded rather than reported: a corrupt row
+    that reads as the year 30828 would otherwise become "expires in 28,000
+    years" on the profile card.
+    """
+    try:
+        seconds = int(expires_utc) // 1_000_000 - CHROMIUM_EPOCH_OFFSET_S
+    except (TypeError, ValueError):
+        return None
+    # 2001-09-09 to 2100. Below the floor is a clock that was never set.
+    return seconds if 1_000_000_000 < seconds < 4_102_444_800 else None
+
+
 def describe_browser_profile(raw: bytes) -> dict[str, Any]:
     """Which hosts a browsertrix profile tarball actually carries cookies for.
 
@@ -516,6 +538,7 @@ def describe_browser_profile(raw: bytes) -> dict[str, Any]:
             return report
 
     hosts: dict[str, int] = {}
+    soonest: dict[str, int] = {}
     session = 0
     for host_key, expires in rows:
         host = str(host_key or "")
@@ -523,9 +546,25 @@ def describe_browser_profile(raw: bytes) -> dict[str, Any]:
             hosts[host] = hosts.get(host, 0) + 1
         if not expires:
             session += 1
+            continue
+        stamp = _chromium_epoch(expires)
+        if stamp is not None and host:
+            known = soonest.get(host)
+            if known is None or stamp < known:
+                soonest[host] = stamp
 
     report["cookies"] = len(rows)
     report["session_cookies"] = session
+    # Per host rather than one number for the profile, and that is the whole
+    # design of this part. A tarball holds consent and analytics cookies that
+    # expire next week alongside the sign-in that lasts months, so "the
+    # earliest cookie in the file" is a date that means nothing and would cry
+    # wolf every time. Which host's cookies matter is a question only the
+    # *site* can answer — it knows what it is crawling — so the readout says
+    # what it saw per host and the answering is done where the context is.
+    report["expiries"] = {
+        host: to_iso(datetime.fromtimestamp(ts, tz=UTC)) for host, ts in soonest.items()
+    }
     # The true count, separate from the list. Deriving "how many hosts?" from
     # a truncated list makes the cap the answer: a profile covering 47 hosts
     # reported 30, and would have reported 30 for any larger number too.

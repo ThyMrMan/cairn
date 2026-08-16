@@ -66,6 +66,21 @@ export function day(iso: string | null | undefined): string {
 }
 
 /**
+ * Whole days from now until `iso`. Negative once it has passed, null if there
+ * is no date at all.
+ *
+ * Floored rather than rounded, and that direction is deliberate: something
+ * expiring in 30 hours is "1 day", not "2". Rounding up on a deadline reads as
+ * more notice than there is.
+ */
+export function daysUntil(iso: string | null | undefined): number | null {
+  if (!iso) return null;
+  const when = new Date(iso).getTime();
+  if (Number.isNaN(when)) return null;
+  return Math.floor((when - Date.now()) / 86_400_000);
+}
+
+/**
  * How long something took, from two timestamps.
  *
  * Coarser as it gets longer, because "1h 4m" is the useful shape of a long

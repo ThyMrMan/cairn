@@ -30,6 +30,7 @@ import shutil
 import signal
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -1229,7 +1230,13 @@ class JobSupervisor:
                         auth["profile_file"] = str(material.profile_file)
                     if material.user_agent:
                         auth["user_agent"] = material.user_agent
-                warnings.extend(_credential_warnings(session, site.profile_id))
+                warnings.extend(
+                    _credential_warnings(
+                        session,
+                        site.profile_id,
+                        [r.host for r in scope.hosts if r.crawl_pages or r.fetch_assets],
+                    )
+                )
 
             spec = {
                 "protocol": PROTOCOL_VERSION,
@@ -1892,7 +1899,7 @@ def _final_status(result: ResultEvent | None, returncode: int, cancelled: bool) 
     return result.status
 
 
-def _credential_warnings(session: Session, profile_id: int) -> list[str]:
+def _credential_warnings(session: Session, profile_id: int, hosts: list[str]) -> list[str]:
     """Say so before the crawl when the jar carries an account session.
 
     A WARC records the request as well as the response, so every `Cookie:`
@@ -1908,14 +1915,86 @@ def _credential_warnings(session: Session, profile_id: int) -> list[str]:
     profile = session.get(AccessProfile, profile_id)
     if profile is None:
         return []
+    notes: list[str] = []
     sensitive = list((profile.cookie_meta or {}).get("sensitive") or [])
-    if not sensitive:
+    if sensitive:
+        notes.append(
+            f"This profile carries account session cookies ({', '.join(sorted(sensitive)[:4])}). "
+            "A WARC stores the request headers as well as the responses, so those cookies will "
+            "be inside this archive — treat the files as credentials, and prefer a profile "
+            "holding only what the gate needs."
+        )
+    notes.extend(_browser_profile_expiry_warnings(profile, hosts))
+    return notes
+
+
+# How much notice is worth interrupting for. A week is roughly the gap between
+# somebody noticing a warning and being somewhere they can act on it — the
+# profile refresh is a human at a VNC window, not a button.
+EXPIRY_WARN_DAYS = 7
+
+
+def _on(when: datetime) -> str:
+    """`3 Sep 2026`. Built rather than formatted: `%-d` is a glibc extension
+    that raises on Windows, and `%d` pads a single digit with a zero."""
+    return f"{when.day} {when:%b %Y}"
+
+
+def _browser_profile_expiry_warnings(profile: Any, hosts: list[str]) -> list[str]:
+    """Say a browsertrix profile is about to stop working, before it does.
+
+    The failure this exists for: a tarball that worked for weeks starts
+    archiving the interstitial, with nothing anywhere saying why. Unlike the
+    cookie path there is no unattended re-mint to fall back on — refreshing one
+    means a person at a VNC window — so notice is the only thing that helps,
+    and notice is worth nothing after the fact.
+
+    **Only the hosts this site actually needs.** A profile holds consent and
+    analytics cookies expiring next week beside a sign-in that lasts months,
+    so the earliest cookie in the file is a date that means nothing. Matching
+    against the crawl's own hosts is what makes the warning specific enough to
+    act on rather than noise to learn to ignore.
+    """
+    meta = (profile.browser_profile or {}) if hasattr(profile, "browser_profile") else {}
+    expiries = (meta or {}).get("expiries") or {}
+    if not expiries:
         return []
+
+    now = utcnow()
+    horizon = now + timedelta(days=EXPIRY_WARN_DAYS)
+    wanted = {h.lower().lstrip(".") for h in hosts if h}
+    hits: list[tuple[datetime, str]] = []
+    for host, iso in expiries.items():
+        bare = str(host).lower().lstrip(".")
+        # A cookie on `.google.com` covers `accounts.google.com`, so a suffix
+        # match in both directions — the site's host list and the cookie's
+        # domain are written at different levels of the same tree.
+        if not any(bare == w or w.endswith(f".{bare}") or bare.endswith(f".{w}") for w in wanted):
+            continue
+        try:
+            when = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
+        except ValueError:  # pragma: no cover — written by us, in ISO
+            continue
+        if when <= horizon:
+            hits.append((when, str(host)))
+
+    if not hits:
+        return []
+    hits.sort()
+    when, host = hits[0]
+    days = (when - now).days
+    if when <= now:
+        return [
+            f"The browser profile's cookies for {host} expired on {_on(when)}. "
+            "This capture will almost certainly archive the sign-in page instead of the "
+            "site. Rebuild the profile with create-login-profile and upload it again."
+        ]
     return [
-        f"This profile carries account session cookies ({', '.join(sorted(sensitive)[:4])}). "
-        "A WARC stores the request headers as well as the responses, so those cookies will "
-        "be inside this archive — treat the files as credentials, and prefer a profile "
-        "holding only what the gate needs."
+        f"The browser profile's cookies for {host} expire "
+        f"{'today' if days < 1 else f'in {days} day(s)'}, on {_on(when)}. "
+        "Nothing refreshes a browsertrix profile automatically — rebuild it with "
+        "create-login-profile before then, or a later capture will quietly archive "
+        "the gate instead of the site."
     ]
 
 

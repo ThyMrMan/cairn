@@ -12,7 +12,7 @@ import {
   type VerifyResult,
   endpoints,
 } from "../lib/api";
-import { dateTime, relative } from "../lib/format";
+import { dateTime, daysUntil, relative } from "../lib/format";
 
 export default function Profiles() {
   const [adding, setAdding] = useState(false);
@@ -555,11 +555,31 @@ function BrowserProfile({ profile }: { profile: Profile }) {
           */}
           <div className="mt-1.5 max-h-40 overflow-y-auto rounded border border-border p-1.5">
             <div className="flex flex-wrap gap-1.5">
-              {(profile.browser_profile.hosts ?? []).map((host) => (
-                <span key={host} className="rounded bg-raised px-2 py-0.5 font-mono text-[11px]">
-                  {host}
-                </span>
-              ))}
+              {(profile.browser_profile.hosts ?? []).map((host) => {
+                // The expiry beside the host it belongs to, because which host
+                // matters depends on what is being crawled and only the reader
+                // knows that. A profile that stops working stops because one
+                // of these dates passed, and the alternative to showing them
+                // is finding out from an archive full of sign-in pages.
+                const iso = profile.browser_profile?.expiries?.[host];
+                const soon = iso ? daysUntil(iso) : null;
+                return (
+                  <span
+                    key={host}
+                    className={`rounded px-2 py-0.5 font-mono text-[11px] ${
+                      soon !== null && soon <= 7 ? "bg-warn/15 text-warn" : "bg-raised"
+                    }`}
+                    title={iso ? `soonest cookie expiry ${dateTime(iso)}` : "session cookies only"}
+                  >
+                    {host}
+                    {soon !== null && (
+                      <span className="ml-1 opacity-70">
+                        {soon <= 0 ? "expired" : `${soon}d`}
+                      </span>
+                    )}
+                  </span>
+                );
+              })}
             </div>
           </div>
           {(profile.browser_profile.host_count ?? 0) >
