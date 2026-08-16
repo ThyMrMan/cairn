@@ -373,7 +373,11 @@ def apply_plan(session: Session, settings: Settings, site: Site, plan_: Plan) ->
     if result.pruned:
         # The index still names the WARCs that just went, and a stale index is
         # replay answering 503 for pages that are still there.
-        replay.build_index(settings, site.archive_path)
+        replay.build_index(
+            settings,
+            site.archive_path,
+            withhold=replay.withheld_patterns(session, site),
+        )
         site.size_bytes = storage.directory_size(storage.site_dir(settings, site.archive_path))
         session.flush()
         log.info(

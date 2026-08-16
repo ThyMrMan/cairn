@@ -83,7 +83,11 @@ def _cmd_reindex(args: argparse.Namespace) -> int:
             print("No matching site." if args.slug else "No sites yet.")
             return 1
         for site in sites:
-            result = replay.build_index(settings, site.archive_path)
+            result = replay.build_index(
+                settings,
+                site.archive_path,
+                withhold=replay.withheld_patterns(session, site),
+            )
             replay.link_collection(settings, site.id, site.archive_path)
             print(f"{site.slug}: {result.records} record(s) from {result.warcs} WARC(s)")
     return 0

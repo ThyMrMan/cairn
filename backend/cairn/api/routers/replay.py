@@ -116,7 +116,11 @@ def reindex(
     """
     site = _require_site(db, site_id)
     try:
-        result = replay.build_index(settings, site.archive_path)
+        result = replay.build_index(
+            settings,
+            site.archive_path,
+            withhold=replay.withheld_patterns(db, site),
+        )
         replay.link_collection(settings, site.id, site.archive_path)
     except replay.ReplayError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc

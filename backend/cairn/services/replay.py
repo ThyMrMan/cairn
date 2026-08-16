@@ -36,6 +36,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 import shutil
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -69,6 +70,9 @@ class IndexResult:
     path: Path
     records: int
     warcs: int
+    #: Records present in the WARCs and deliberately left out of the index.
+    #: See `build_index`.
+    withheld: int = 0
 
 
 def collection_name(site_id: int) -> str:
@@ -96,13 +100,36 @@ def site_warcs(settings: Settings, archive_path: str) -> list[Path]:
     return sorted(p for p in captures.glob(f"*/{storage.WARC_DIR}/*.warc.gz") if p.is_file())
 
 
-def build_index(settings: Settings, archive_path: str) -> IndexResult:
+def build_index(
+    settings: Settings, archive_path: str, *, withhold: list[str] | None = None
+) -> IndexResult:
     """Rebuild a site's CDXJ across all of its captures.
 
     Always a full rebuild, never an append: rebuilds are fast and appending
     invites a whole class of drift bugs where the index and the WARCs disagree
     about a capture that was deleted. Written to a temp file and renamed, so
     replay never reads a half-written index.
+
+    **`withhold` keeps a recorded URL out of replay without touching the
+    archive.** Some things get into a WARC despite the scope rejecting them,
+    because no crawler flag can stop them. Measured on a real Blogger blog:
+    the content warning is an *iframe* — Blogger returns it with
+    `content-security-policy: frame-ancestors <the blog>` — so it is a frame
+    navigation, and browsertrix exempts page navigation from `--blockRules`
+    while `--exclude` only ever filtered the crawl queue. The result was 149
+    archived warnings replaying on top of 351 correctly archived posts, with
+    the reject patterns naming them exactly and unable to do anything.
+
+    Dropping the *index* entry is the lever that does work. The frame fails to
+    resolve, the real page underneath is what the reader sees, and the bytes
+    stay in the WARC — which matters, because a WARC is immutable
+    ([D2](../../../docs/00-decisions.md)) and "we deleted it for you" is not a
+    property an archive should have. Rebuild without the filter and every
+    record is back.
+
+    Deliberately not applied to `cdxj_lines`, which the WACZ packager shares.
+    An export is the archive, and withholding is a statement about *this
+    instance's replay* rather than about what was captured.
     """
     site_root = storage.site_dir(settings, archive_path)
     warcs = site_warcs(settings, archive_path)
@@ -114,6 +141,10 @@ def build_index(settings: Settings, archive_path: str) -> IndexResult:
         return IndexResult(path=target, records=0, warcs=0)
 
     lines = cdxj_lines(site_root, warcs)
+    withheld = 0
+    if withhold:
+        keep, withheld = _without(lines, withhold)
+        lines = keep
     # A CDXJ line is `<surt> <timestamp> <json>`, and the timestamp is a
     # fixed-width 14 digits, so ordinary string sort is SURT-then-time order —
     # which is what makes "every capture of this URL" a range scan.
@@ -123,7 +154,65 @@ def build_index(settings: Settings, archive_path: str) -> IndexResult:
     # copy written on Windows must be byte-identical to one written in the
     # container, or "rebuild and compare" stops meaning anything.
     storage.write_atomic(target, "".join(lines).encode("utf-8"))
-    return IndexResult(path=target, records=len(lines), warcs=len(warcs))
+    return IndexResult(path=target, records=len(lines), warcs=len(warcs), withheld=withheld)
+
+
+def withheld_patterns(session: Any, site: Any) -> list[str]:
+    """What this site keeps out of replay: its own reject patterns.
+
+    The scope's explicit list only — what a person or a preset actually asked
+    to skip. Not `build_reject_patterns`, whose generated asset fences are
+    about *what to fetch*: withholding by those would drop an image whose URL
+    happens not to end in a known extension, and a missing photo is a worse
+    outcome than an archived content warning.
+
+    Used by every caller of `build_index`, so a manual rebuild cannot quietly
+    restore what a capture withheld.
+    """
+    from cairn.services import sites as site_service
+
+    try:
+        return list(site_service.resolved_scope(session, site).reject_patterns)
+    except Exception:  # pragma: no cover — a site mid-delete
+        return []
+
+
+def _without(lines: list[str], patterns: list[str]) -> tuple[list[str], int]:
+    """Drop the index lines whose URL matches any pattern.
+
+    Matched against the record's own `url`, not the SURT key at the front of
+    the line. The SURT is canonicalised — host reversed, case folded, some
+    parameters reordered — so a pattern a person wrote against the URL they
+    saw in a fetch list would match it only by accident.
+
+    A pattern that will not compile is skipped rather than fatal. These come
+    from a scope somebody typed into, and one bad character should not cost
+    the site its whole replay index.
+    """
+    compiled = []
+    for pattern in patterns:
+        try:
+            compiled.append(re.compile(pattern))
+        except re.error as exc:
+            log.warning("skipping an unusable withhold pattern", extra={"err": str(exc)})
+    if not compiled:
+        return lines, 0
+
+    keep: list[str] = []
+    dropped = 0
+    for line in lines:
+        parts = line.split(" ", 2)
+        url = ""
+        if len(parts) == 3:
+            try:
+                url = str(json.loads(parts[2]).get("url") or "")
+            except ValueError:  # pragma: no cover — the indexer writes JSON
+                url = ""
+        if url and any(p.search(url) for p in compiled):
+            dropped += 1
+            continue
+        keep.append(line)
+    return keep, dropped
 
 
 def cdxj_lines(site_root: Path, warcs: list[Path]) -> list[str]:

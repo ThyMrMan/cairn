@@ -375,7 +375,11 @@ def _import_host(
         tag_service.add_to_sites(session, [site.id], names)
 
     try:
-        index = replay.build_index(settings, site.archive_path)
+        index = replay.build_index(
+            settings,
+            site.archive_path,
+            withhold=replay.withheld_patterns(session, site),
+        )
         capture.indexed_at = utcnow()
         if not index.records:
             result.problems.append(f"{host}: the WARCs indexed to no records")

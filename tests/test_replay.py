@@ -442,3 +442,74 @@ def test_the_record_count_is_not_recounted_until_the_index_changes(site_tree: Se
     make_capture(site_tree, "20260811T120000Z-full-wget", [(POST, "2026-08-11T12:00:00Z", b"x")])
     replay.build_index(site_tree, ARCHIVE_PATH)
     assert replay.index_stats(site_tree, ARCHIVE_PATH)[0] > first
+
+
+# ── keeping a recorded URL out of replay ─────────────────────────────────
+
+
+def _cdxj(url: str, ts: str = "20260816120000") -> str:
+    """One index line in the shape cdxj-indexer writes."""
+    import json as _json
+
+    key = "com,example)/" + url.split("/", 3)[-1] if "/" in url else "com,example)/"
+    return f"{key} {ts} {_json.dumps({'url': url, 'mime': 'text/html', 'status': '200'})}\n"
+
+
+def test_withholding_drops_only_the_matching_records() -> None:
+    from cairn.services.replay import _without
+
+    lines = [
+        _cdxj("https://blog.example/2019/11/post.html"),
+        _cdxj("https://www.blogger.com/interstitial/blog?u=https://blog.example/"),
+        _cdxj("https://blog.example/2020/01/other.html"),
+        _cdxj("https://draft.blogger.com/interstitial/blog?u=https://blog.example/"),
+    ]
+
+    keep, dropped = _without(lines, [r"/interstitial/"])
+
+    assert dropped == 2
+    assert len(keep) == 2
+    assert all("interstitial" not in line for line in keep)
+
+
+def test_the_pattern_is_matched_against_the_url_not_the_surt_key() -> None:
+    """The SURT reverses the host and folds case, so a pattern somebody wrote
+    against the URL they saw in a fetch list would match it only by accident.
+    A rule that silently never fires is worse than no rule."""
+    from cairn.services.replay import _without
+
+    line = _cdxj("https://www.blogger.com/interstitial/blog?u=https://blog.example/")
+    assert line.startswith("com,example)"), "the key really is reversed"
+
+    _keep, dropped = _without([line], [r"^https://www\.blogger\.com/interstitial/"])
+    assert dropped == 1, "anchored at the start of the real URL, which the key is not"
+
+
+def test_an_unusable_pattern_does_not_cost_the_site_its_index() -> None:
+    """These come out of a scope somebody typed into."""
+    from cairn.services.replay import _without
+
+    lines = [_cdxj("https://blog.example/a.html"), _cdxj("https://blog.example/b.html")]
+    keep, dropped = _without(lines, ["(unclosed", r"/b\.html"])
+    assert dropped == 1
+    assert len(keep) == 1
+
+
+def test_no_patterns_means_every_record_is_served(settings: Settings, tmp_path: Path) -> None:
+    from cairn.services.replay import _without
+
+    lines = [_cdxj("https://blog.example/a.html")]
+    assert _without(lines, []) == (lines, 0)
+
+
+def test_the_export_is_not_filtered_only_replay_is() -> None:
+    """A WACZ is the archive; withholding is a statement about this instance's
+    replay. `cdxj_lines` is what the packager shares, and it must stay
+    complete — so the filter lives in `build_index` alone."""
+    import inspect
+
+    from cairn.services import replay as replay_service
+
+    source = inspect.getsource(replay_service.cdxj_lines)
+    assert "_without" not in source
+    assert "withhold" not in source

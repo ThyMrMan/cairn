@@ -181,8 +181,25 @@ def step_cdxj_index(ctx: Context) -> None:
     Rebuild index action, and failing the capture over it would be a lie
     about what is on disk.
     """
-    result = replay.build_index(ctx.settings, ctx.site.archive_path)
+    result = replay.build_index(
+        ctx.settings,
+        ctx.site.archive_path,
+        withhold=replay.withheld_patterns(ctx.session, ctx.site),
+    )
     ctx.stats["index_records"] = result.records
+    # Declared, never silent. The bytes are in the WARC and replay will not
+    # serve them, and a future reader has to be able to tell that apart from
+    # "it was never captured" — otherwise the archive is quietly lying about
+    # its own contents.
+    ctx.stats["index_withheld"] = result.withheld
+    if result.withheld:
+        ctx.warnings.append(
+            f"{result.withheld} archived record(s) match this site's skip patterns and are "
+            "kept out of replay. The bytes are still in the WARCs — this only stops them "
+            "being served, which is the only lever that works on something the crawler "
+            "records anyway, like Blogger's content-warning iframe. Clear the pattern and "
+            "rebuild the index to get them back."
+        )
     try:
         replay.link_collection(ctx.settings, ctx.site.id, ctx.site.archive_path)
     except replay.ReplayError as exc:
