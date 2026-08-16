@@ -10,12 +10,13 @@ from __future__ import annotations
 import io
 from pathlib import Path
 
+import pytest
 from sqlalchemy.orm import Session
 
 from cairn.config import Settings
 from cairn.db.models import Capture, EngineRecord, Site
 from cairn.db.types import utcnow
-from cairn.services import interstitial, sites, storage
+from cairn.services import interstitial, postprocess, sites, storage
 from cairn.services.htmlrefs import parse_page
 from cairn.services.postprocess import (
     Context,
@@ -677,6 +678,198 @@ def test_an_overlay_replay_will_uncover_is_not_a_partial_capture(
     assert "No action is needed" in message
     # Nothing that reads as a defect to fix.
     assert "do not count on it" not in message
+
+
+# ── revisiting a stored verdict ──────────────────────────────────────────
+#
+# A status rule changed under captures already on disk. The risk here is not
+# failing to promote — that costs a wrong label — but promoting something that
+# was rightly partial, which throws away a real signal. So most of these are
+# about what it refuses.
+
+
+def _partial_capture(
+    db: Session,
+    settings: Settings,
+    tmp_path: Path,
+    stats: dict,
+    *,
+    job_error: str | None = None,
+    write_manifest: bool = True,
+) -> tuple[Site, Capture]:
+    from cairn.db.models import Job
+
+    site = Site(
+        title="Blog",
+        slug="blog",
+        seed_url="https://example.blogspot.com/",
+        primary_host="example.blogspot.com",
+        folder_id=1,
+        archive_path="Unfiled/blog",
+    )
+    db.add(site)
+    db.flush()
+    job = None
+    if job_error is not None:
+        job = Job(type="capture", site_id=site.id, status="failed", error=job_error)
+        db.add(job)
+        db.flush()
+    capture = Capture(
+        site_id=site.id,
+        job_id=job.id if job else None,
+        kind="full",
+        engine_id="wget-warc",
+        dir_name="20260816T120000Z-full-wget",
+        status="partial",
+        started_at=utcnow(),
+    )
+    db.add(capture)
+    db.flush()
+    if write_manifest:
+        path = storage.manifest_path(settings, site.archive_path, capture.dir_name)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        storage.write_json(path, {"status": "partial", "stats": stats})
+    return site, capture
+
+
+def test_a_recorded_reason_that_no_longer_applies_is_cleared(
+    db: Session, settings: Settings, tmp_path: Path
+) -> None:
+    _partial_capture(db, settings, tmp_path, {"partial_reasons": ["overlay-pages"], "urls": 40})
+    results = postprocess.recompute_status(db, settings)
+
+    assert len(results) == 1
+    assert results[0].after == "ok"
+    assert results[0].changed
+    assert "no longer apply" in results[0].reason
+
+
+def test_a_recorded_reason_that_still_applies_is_kept(
+    db: Session, settings: Settings, tmp_path: Path
+) -> None:
+    """Two reasons, one retired: the capture is still partial for the other."""
+    _partial_capture(
+        db,
+        settings,
+        tmp_path,
+        {"partial_reasons": ["overlay-pages", "interstitial-pages"], "urls": 40},
+    )
+    results = postprocess.recompute_status(db, settings)
+
+    assert results[0].after == "partial"
+    assert not results[0].changed
+    assert "interstitial-pages" in results[0].reason
+
+
+def test_the_engines_own_error_is_never_overridden(
+    db: Session, settings: Settings, tmp_path: Path
+) -> None:
+    """The engine said the run went wrong. Nothing here knows what it meant,
+    and postprocess never overrode it either."""
+    _partial_capture(
+        db,
+        settings,
+        tmp_path,
+        {"partial_reasons": ["overlay-pages"], "urls": 40},
+        job_error="the crawler exited 11",
+    )
+    results = postprocess.recompute_status(db, settings)
+
+    assert results[0].after == "partial"
+    assert "the engine reported an error" in results[0].reason
+
+
+def test_an_older_capture_is_inferred_only_when_nothing_else_is_wrong(
+    db: Session, settings: Settings, tmp_path: Path
+) -> None:
+    """No recorded reasons — the evidence has to come from the rest of it."""
+    _partial_capture(db, settings, tmp_path, {"overlay_pages": 442, "urls": 591})
+    results = postprocess.recompute_status(db, settings)
+
+    assert results[0].after == "ok"
+    assert "442" in results[0].reason
+
+
+@pytest.mark.parametrize(
+    ("stats", "expect"),
+    [
+        # Each of the other four downgrade causes, one at a time.
+        ({"overlay_pages": 5, "urls": 20, "interstitial_pages": 3}, "interstitial page"),
+        ({"overlay_pages": 5, "urls": 20, "gate_redirects": 1}, "gate redirect"),
+        ({"overlay_pages": 5, "urls": 0}, "no URLs archived"),
+        (
+            {"overlay_pages": 5, "urls": 20, "warnings": ["checksum failed: disk full"]},
+            "post-processing step failed",
+        ),
+        # And the case that is simply not this one.
+        ({"urls": 20, "missing_assets": 4}, "no curtained pages"),
+    ],
+)
+def test_inference_refuses_anything_it_cannot_account_for(
+    db: Session, settings: Settings, tmp_path: Path, stats: dict, expect: str
+) -> None:
+    _partial_capture(db, settings, tmp_path, stats)
+    results = postprocess.recompute_status(db, settings)
+
+    assert results[0].after == "partial", f"promoted despite {expect}"
+    assert expect in results[0].reason
+
+
+def test_an_unreadable_manifest_leaves_the_capture_alone(
+    db: Session, settings: Settings, tmp_path: Path
+) -> None:
+    """Absence of evidence is not evidence. The one thing it must not do is
+    treat "I cannot tell" as "nothing was wrong"."""
+    _partial_capture(db, settings, tmp_path, {}, write_manifest=False)
+    results = postprocess.recompute_status(db, settings)
+
+    assert results[0].after == "partial"
+    assert "manifest could not be read" in results[0].reason
+
+
+def test_it_never_touches_a_capture_that_is_not_partial(
+    db: Session, settings: Settings, tmp_path: Path
+) -> None:
+    """It can only ever promote partial to ok. Everything else is out of
+    scope, including a failed capture whose manifest would otherwise qualify."""
+    _site, capture = _partial_capture(
+        db, settings, tmp_path, {"partial_reasons": ["overlay-pages"]}
+    )
+    capture.status = "failed"
+    db.flush()
+
+    assert postprocess.recompute_status(db, settings) == []
+    assert capture.status == "failed"
+
+
+def test_the_manifest_is_restamped_so_disk_agrees_with_the_row(
+    db: Session, settings: Settings, tmp_path: Path
+) -> None:
+    """The manifest is the rebuildable half. A status corrected only in the
+    database would be undone by the next rebuild, silently and much later."""
+    site, capture = _partial_capture(
+        db, settings, tmp_path, {"partial_reasons": ["overlay-pages"], "urls": 40}
+    )
+    postprocess.recompute_status(db, settings)
+
+    written = storage.read_json(
+        storage.manifest_path(settings, site.archive_path, capture.dir_name)
+    )
+    assert written["status"] == "ok"
+    # The evidence it was judged on stays exactly as recorded.
+    assert written["stats"]["partial_reasons"] == ["overlay-pages"]
+
+
+def test_with_uncovering_off_nothing_is_promoted(
+    db: Session, settings: Settings, tmp_path: Path
+) -> None:
+    """The reason is retired by a setting, so flipping the setting back must
+    bring the verdict back with it."""
+    _partial_capture(db, settings, tmp_path, {"partial_reasons": ["overlay-pages"], "urls": 40})
+    settings.replay_uncover_overlays = False
+    results = postprocess.recompute_status(db, settings)
+
+    assert results[0].after == "partial"
 
 
 def redirect_warc(path: Path, source: str, target: str) -> None:

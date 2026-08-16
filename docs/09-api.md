@@ -338,6 +338,7 @@ The interactive session is a **CDP screencast over a WebSocket**, not the `vnc_u
 | `POST` | `/api/maintenance/rebuild-symlinks` | Regenerate `/data/by-tag` |
 | `POST` | `/api/maintenance/rebuild-collections` | Re-point every pywb collection |
 | `POST` | `/api/maintenance/rebuild-db` | Reconstruct DB rows from on-disk manifests |
+| `POST` | `/api/maintenance/recompute-status` | Re-decide `partial` captures from their manifests |
 | `POST` | `/api/maintenance/purge-trash` | Purge only what is past the retention window |
 
 `/api/search` never receives FTS5 syntax. What somebody types is translated: every bare term becomes a quoted string literal, and only `"a phrase"`, a trailing `*` and a leading `-` are read as operators. Typing `c++` or a stray quote is a MATCH syntax error otherwise, and `AND` is an operator rather than the word somebody meant — a search box that answers with *fts5: syntax error near* is a search box people stop using.

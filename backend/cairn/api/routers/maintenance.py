@@ -16,7 +16,7 @@ from cairn.api.deps import AppSettings, ClientIp, Csrf, CurrentUser, DbSession
 from cairn.api.errors import ApiError
 from cairn.api.schemas import JobAccepted, MediaPolicy, Ok, ThumbnailSettings, TrashEntry
 from cairn.db.models import Folder
-from cairn.services import audit, replay, symlinks, trash
+from cairn.services import audit, postprocess, replay, symlinks, trash
 
 router = APIRouter(tags=["maintenance"], dependencies=[Csrf])
 
@@ -90,6 +90,37 @@ def rebuild_collections(
     linked, removed = replay.sync_collections(db, settings)
     audit.record(db, "maintenance.collections", actor=user.username, ip=ip)
     return {"linked": linked, "removed": removed}
+
+
+@router.post("/maintenance/recompute-status")
+def recompute_capture_status(
+    db: DbSession, settings: AppSettings, user: CurrentUser, ip: ClientIp
+) -> dict[str, Any]:
+    """Re-decide every `partial` capture from what it recorded about itself.
+
+    For when a status rule changed under captures already on disk — which it
+    did when replay learned to uncover a content warning, and every archive
+    holding one was left carrying a verdict that had stopped being true.
+    Correcting that by re-crawling would cost hours per site to fix a label.
+
+    Only ever promotes `partial` to `ok`, only on recorded evidence, and
+    returns a line per capture either way — including the ones it refused,
+    with the reason. Nothing here can downgrade a capture.
+    """
+    results = postprocess.recompute_status(db, settings)
+    changed = [r for r in results if r.changed]
+    audit.record(
+        db,
+        "maintenance.recompute_status",
+        actor=user.username,
+        ip=ip,
+        detail={"examined": len(results), "changed": len(changed)},
+    )
+    return {
+        "examined": len(results),
+        "changed": len(changed),
+        "captures": [r.to_dict() for r in results],
+    }
 
 
 @router.post(

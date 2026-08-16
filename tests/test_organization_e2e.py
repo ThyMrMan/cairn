@@ -225,3 +225,33 @@ def test_a_folder_directory_recreated_empty_is_restored_at_boot(
         session.commit()
 
     assert (settings.archives_dir / "Reference" / "Manuals").is_dir()
+
+
+# ── rechecking a stored verdict ──────────────────────────────────────────
+
+
+def test_recompute_status_is_reachable_and_explains_every_capture(
+    authed: TestClient, organized: dict[str, int]
+) -> None:
+    """The endpoint answers, and answers per capture rather than with a count.
+
+    A maintenance action that exists because a stored verdict can be wrong has
+    to say which verdicts it touched; "changed 3" is the same unexplained
+    answer it was built to correct.
+    """
+    response = authed.post("/api/maintenance/recompute-status", headers=XHR)
+    assert response.status_code == 200
+    body = response.json()
+
+    assert set(body) == {"examined", "changed", "captures"}
+    assert body["examined"] == len(body["captures"])
+    assert body["changed"] <= body["examined"]
+    for row in body["captures"]:
+        assert row["before"] == "partial", "it must only ever look at partial captures"
+        assert row["after"] in ("ok", "partial")
+        assert row["reason"], "every capture is accounted for, including the untouched ones"
+
+
+def test_recompute_status_needs_a_session(client: TestClient) -> None:
+    """It writes to every site's captures, so it is not an anonymous action."""
+    assert client.post("/api/maintenance/recompute-status", headers=XHR).status_code == 401

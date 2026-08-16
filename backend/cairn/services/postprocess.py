@@ -475,12 +475,11 @@ def step_asset_audit(ctx: Context) -> None:
                 "through. Re-mint or re-export the profile and capture again."
             )
         )
-        if capture_is_ok(ctx):
-            # Not "ok": the pages are there and they are the wrong pages. A
-            # capture that reports success and contains four thousand copies
-            # of an interstitial is the failure this whole feature exists to
-            # prevent, and it must not be silent.
-            ctx.capture.status = "partial"
+        # Not "ok": the pages are there and they are the wrong pages. A
+        # capture that reports success and contains four thousand copies of an
+        # interstitial is the failure this whole feature exists to prevent,
+        # and it must not be silent.
+        _downgrade(ctx, PARTIAL_INTERSTITIAL)
 
     if overlaid:
         common = (
@@ -513,11 +512,10 @@ def step_asset_audit(ctx: Context) -> None:
                 "CAIRN_REPLAY_UNCOVER_OVERLAYS=true, or read these pages through the "
                 "reader view, which never applies the site's CSS."
             )
-            if capture_is_ok(ctx):
-                # Only now is it partial: the pages are all here and the
-                # archive will not show them. Not "failed" either — every byte
-                # is present and one setting makes them readable.
-                ctx.capture.status = "partial"
+            # Only now is it partial: the pages are all here and the archive
+            # will not show them. Not "failed" either — every byte is present
+            # and one setting makes them readable.
+            _downgrade(ctx, PARTIAL_OVERLAY)
 
     ctx.stats["interstitial_pages"] = blocked
     ctx.stats["overlay_pages"] = overlaid
@@ -590,6 +588,215 @@ def capture_is_ok(ctx: Context) -> bool:
     return ctx.capture.status == "ok"
 
 
+# Why a capture was downgraded, recorded alongside the downgrade.
+#
+# A status rule can stop being true. `PARTIAL_OVERLAY` was correct until replay
+# learned to uncover a curtained page, and at that point every capture already
+# on disk was carrying a verdict nobody could revisit without re-crawling —
+# because the manifest recorded *that* it was partial and never *why*.
+#
+# These strings are stored in manifests and read back by `recompute_status`,
+# so they are a format: add to them, do not rename them.
+PARTIAL_INTERSTITIAL = "interstitial-pages"
+PARTIAL_OVERLAY = "overlay-pages"
+PARTIAL_GATE_REDIRECT = "gate-redirect"
+PARTIAL_NOTHING_ARCHIVED = "nothing-archived"
+PARTIAL_STEP_FAILED = "step-failed"
+
+
+def _downgrade(ctx: Context, reason: str) -> None:
+    """Record a reason this capture is not clean, and downgrade if it still is.
+
+    The reason is recorded even when the status is already `partial` — the
+    engine may have said so first, and "the engine reported an error *and*
+    every page is curtained" is two facts, not one.
+    """
+    reasons = ctx.stats.setdefault("partial_reasons", [])
+    if reason not in reasons:
+        reasons.append(reason)
+    if capture_is_ok(ctx):
+        ctx.capture.status = "partial"
+
+
+# ── revisiting a stored verdict ──────────────────────────────────────────
+
+
+@dataclass(frozen=True, slots=True)
+class Recomputed:
+    """One capture's outcome, whether or not it changed."""
+
+    capture_id: int
+    site_title: str
+    dir_name: str
+    before: str
+    after: str
+    reason: str
+
+    @property
+    def changed(self) -> bool:
+        return self.before != self.after
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "capture_id": self.capture_id,
+            "site": self.site_title,
+            "capture": self.dir_name,
+            "before": self.before,
+            "after": self.after,
+            "changed": self.changed,
+            "reason": self.reason,
+        }
+
+
+#: Reasons a currently-running Cairn would no longer downgrade for. Keyed on
+#: the setting that decides it, so this table is the whole policy.
+def _still_applies(reason: str, settings: Settings) -> bool:
+    if reason == PARTIAL_OVERLAY:
+        return not settings.replay_uncover_overlays
+    return True
+
+
+def recompute_status(session: Session, settings: Settings) -> list[Recomputed]:
+    """Re-decide `partial` from what each capture recorded about itself.
+
+    A status rule changed under captures that were already on disk: an overlay
+    stopped meaning "this archive cannot show its pages" the moment replay
+    learned to uncover one. Without this, the only way to correct a stored
+    verdict is to crawl the site again, which can be hours to fix a label.
+
+    **It only ever promotes `partial` to `ok`, and only on evidence.** Nothing
+    else is touched — not `failed`, not `cancelled`, not `ok`. A capture it
+    cannot account for keeps its status and says why, because the failure that
+    matters here is clearing a verdict that was right.
+
+    Two grades of evidence, and the weaker one is deliberately timid:
+
+    - **Recorded.** Captures written since `partial_reasons` existed name
+      their own reasons, and this is then exact: drop the ones that no longer
+      apply and see whether any remain.
+    - **Inferred.** Older captures recorded no reasons, so the evidence is the
+      rest of the manifest. Promotion needs the overlay count to be positive
+      *and* every other known cause to be provably absent. Anything unaccounted
+      for — including a manifest that will not parse — is left alone.
+
+    In both grades a capture whose job recorded an error is refused outright.
+    That is the engine's own verdict on its own run, this function knows
+    nothing about what it meant, and postprocess never overrode it either.
+    """
+    from cairn.db.models import Job
+
+    out: list[Recomputed] = []
+    rows = session.execute(
+        select(Capture, Site)
+        .join(Site, Site.id == Capture.site_id)
+        .where(Capture.status == "partial")
+    ).all()
+
+    for capture, site in rows:
+        result = _recompute_one(session, settings, capture, site, Job)
+        out.append(result)
+        if result.changed:
+            capture.status = result.after
+            _restamp_manifest(settings, site, capture)
+    session.flush()
+    return out
+
+
+#: `(after, reason) -> Recomputed`, closed over the capture being judged, so
+#: the two halves of this cannot disagree about which capture they mean.
+Verdict = Callable[[str, str], Recomputed]
+
+
+def _recompute_one(
+    session: Session, settings: Settings, capture: Capture, site: Site, job_model: Any
+) -> Recomputed:
+    def verdict(after: str, reason: str) -> Recomputed:
+        return Recomputed(
+            capture_id=capture.id,
+            site_title=site.title or site.slug,
+            dir_name=capture.dir_name,
+            before=capture.status,
+            after=after,
+            reason=reason,
+        )
+
+    if capture.job_id is not None:
+        error = session.scalar(select(job_model.error).where(job_model.id == capture.job_id))
+        if error:
+            return verdict("partial", f"the engine reported an error: {str(error)[:120]}")
+
+    try:
+        manifest = storage.read_json(
+            storage.manifest_path(settings, site.archive_path, capture.dir_name)
+        )
+    except Exception as exc:
+        return verdict("partial", f"its manifest could not be read: {exc}")
+    stats = manifest.get("stats") or {}
+    if not isinstance(stats, dict):
+        return verdict("partial", "its manifest records no stats")
+
+    recorded = stats.get("partial_reasons")
+    if isinstance(recorded, list) and recorded:
+        remaining = [r for r in recorded if _still_applies(str(r), settings)]
+        if remaining:
+            return verdict("partial", f"still partial: {', '.join(str(r) for r in remaining)}")
+        return verdict("ok", f"recorded reason(s) no longer apply: {', '.join(map(str, recorded))}")
+
+    return _infer(stats, settings, verdict)
+
+
+def _infer(stats: dict[str, Any], settings: Settings, verdict: Verdict) -> Recomputed:
+    """The timid path, for captures written before reasons were recorded."""
+
+    def count(key: str) -> int:
+        try:
+            return int(stats.get(key) or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    if not settings.replay_uncover_overlays:
+        return verdict("partial", "replay is not uncovering overlays, so nothing has changed")
+    if not count("overlay_pages"):
+        return verdict("partial", "it records no curtained pages, so this is not that case")
+
+    # Every other cause, each of which would still downgrade it today.
+    blockers = []
+    if count("interstitial_pages"):
+        blockers.append(f"{count('interstitial_pages')} interstitial page(s)")
+    if count("gate_redirects"):
+        blockers.append(f"{count('gate_redirects')} gate redirect(s)")
+    if not count("urls"):
+        blockers.append("no URLs archived")
+    for warning in stats.get("warnings") or []:
+        # The shape `run_chain` writes when a required step raises. It is the
+        # one cause with no counter, so it has to be read off the text.
+        if re.search(r"^\S+ failed: ", str(warning)):
+            blockers.append(f"a post-processing step failed ({str(warning)[:60]})")
+    if blockers:
+        return verdict("partial", f"other reason(s) remain: {'; '.join(blockers)}")
+
+    return verdict(
+        "ok",
+        f"{count('overlay_pages')} curtained page(s) and no other cause; replay uncovers them",
+    )
+
+
+def _restamp_manifest(settings: Settings, site: Site, capture: Capture) -> None:
+    """Keep the manifest agreeing with the row.
+
+    The manifest is the rebuildable half of the pair — a restore reads it. A
+    status corrected only in the database would be undone by the next rebuild,
+    silently and much later.
+    """
+    path = storage.manifest_path(settings, site.archive_path, capture.dir_name)
+    try:
+        payload = storage.read_json(path)
+        payload["status"] = capture.status
+        storage.write_json(path, payload)
+    except Exception as exc:  # pragma: no cover — a read-only share
+        log.warning("could not restamp a manifest", extra={"capture": capture.id, "err": str(exc)})
+
+
 def _report_gate_redirects(ctx: Context, redirects: list[tuple[str, str]], scanned: int) -> None:
     """Explain a capture that was turned away at the door.
 
@@ -631,8 +838,7 @@ def _report_gate_redirects(ctx: Context, redirects: list[tuple[str, str]], scann
             "worth archiving if it were. Give this site an access profile that carries the "
             "cookie the warning sets, test it, and capture again."
         )
-        if capture_is_ok(ctx):
-            ctx.capture.status = "partial"
+        _downgrade(ctx, PARTIAL_GATE_REDIRECT)
         return
 
     # No recognisable gate, and nothing else came back either.
@@ -644,8 +850,7 @@ def _report_gate_redirects(ctx: Context, redirects: list[tuple[str, str]], scann
             "the site, turn it on in the domain picker; if it is a sign-in or a content "
             "warning, this site needs an access profile."
         )
-        if capture_is_ok(ctx):
-            ctx.capture.status = "partial"
+        _downgrade(ctx, PARTIAL_NOTHING_ARCHIVED)
 
 
 def _partition_missing(ctx: Context, missing: list[str]) -> tuple[list[str], list[str]]:
@@ -781,8 +986,8 @@ def run_chain(
         except Exception as exc:
             log.exception("post-processor failed", extra={"step": step.id, "capture": capture.id})
             ctx.warnings.append(f"{step.id} failed: {exc}")
-            if step.required and capture.status == "ok":
-                capture.status = "partial"
+            if step.required:
+                _downgrade(ctx, PARTIAL_STEP_FAILED)
 
     # Rewritten unconditionally, after everything has run. The manifest is
     # written at order 35 so that a chain that dies partway through still

@@ -758,6 +758,25 @@ function StorageSection() {
         >
           Re-point replay collections
         </button>
+        <button
+          className="btn-ghost text-xs"
+          title="Re-decide partial captures from what each one recorded. It can only clear a partial, never create one."
+          onClick={async () => {
+            const out = await endpoints.recomputeStatus();
+            const kept = out.captures.filter((c) => !c.changed);
+            setResult(
+              out.changed === 0
+                ? `Examined ${out.examined} partial capture(s); none needed changing.`
+                : `${out.changed} of ${out.examined} partial capture(s) are now ok` +
+                  // Name what it refused. "3 changed" without saying which is
+                  // the same unexplained answer this action exists to correct.
+                  (kept.length ? `; ${kept.length} left as they were.` : "."),
+            );
+            await client.invalidateQueries({ queryKey: ["sites"] });
+          }}
+        >
+          Recheck partial captures
+        </button>
       </div>
       {result && (
         <p className="mt-2 text-xs text-muted">{result}</p>

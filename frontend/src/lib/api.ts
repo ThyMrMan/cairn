@@ -1230,6 +1230,20 @@ export const endpoints = {
     api.post<{ linked: number; removed: number }>("/maintenance/rebuild-symlinks"),
   rebuildCollections: () =>
     api.post<{ linked: number; removed: number }>("/maintenance/rebuild-collections"),
+  recomputeStatus: () =>
+    api.post<{
+      examined: number;
+      changed: number;
+      captures: {
+        capture_id: number;
+        site: string;
+        capture: string;
+        before: string;
+        after: string;
+        changed: boolean;
+        reason: string;
+      }[];
+    }>("/maintenance/recompute-status"),
   verifyArchive: (params: { site_id?: number; deep?: boolean } = {}) =>
     api.post<JobAccepted>(`/maintenance/verify${query(params as never)}`),
   integrity: () => api.get<IntegrityHealth>("/maintenance/integrity"),

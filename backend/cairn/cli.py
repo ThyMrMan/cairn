@@ -76,6 +76,30 @@ def _cmd_replay_init(_args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_recompute_status(_args: argparse.Namespace) -> int:
+    """Every capture it looked at, changed or not, with the reason.
+
+    Printing the refusals is the point — this exists because a stored verdict
+    can be wrong, so "it examined 40 and changed 3" without saying which is
+    the same kind of unexplained answer it is meant to fix.
+    """
+    from cairn.services import postprocess
+
+    settings = get_settings()
+    engine = get_engine(settings.db_url)
+    with sessionmaker_for(engine)() as session:
+        results = postprocess.recompute_status(session, settings)
+        session.commit()
+
+    for result in results:
+        mark = "->" if result.changed else "  "
+        print(f"{mark} {result.before:8} {result.after:8} {result.site_title}/{result.dir_name}")
+        print(f"      {result.reason}")
+    changed = sum(1 for r in results if r.changed)
+    print(f"\nExamined {len(results)} partial capture(s); {changed} changed.")
+    return 0
+
+
 def _cmd_reindex(args: argparse.Namespace) -> int:
     from cairn.db.models import Site
     from cairn.services import replay
@@ -434,6 +458,11 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser(
         "rebuild-symlinks", help="Regenerate /data/by-tag from the database"
     ).set_defaults(func=_cmd_rebuild_symlinks)
+
+    sub.add_parser(
+        "recompute-status",
+        help="Re-decide partial captures from what each recorded about itself",
+    ).set_defaults(func=_cmd_recompute_status)
 
     purge = sub.add_parser("purge-trash", help="Delete trashed sites past the retention window")
     purge.add_argument(
