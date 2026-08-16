@@ -386,6 +386,10 @@ class SiteDetail(SiteSummary):
     # and no jar is useless to wget, which is the mirror of the case above
     # and just as silent.
     profile_has_cookies: bool = False
+    # The second pass this site's preset offers, or None. Present so the UI can
+    # offer it without knowing which presets have one — a site whose scope was
+    # built by hand simply has no pass and no button.
+    companion_pass: dict[str, Any] | None = None
 
 
 # ── captures ─────────────────────────────────────────────────────────────
@@ -394,6 +398,12 @@ class SiteDetail(SiteSummary):
 class CaptureRequest(BaseModel):
     kind: str = Field(default="full", pattern="^(full|incremental)$")
     extra_seeds: list[str] = Field(default_factory=list, max_length=1000)
+
+
+class CompanionPassRequest(BaseModel):
+    """Which second pass to run. Empty means "the one this site offers"."""
+
+    pass_id: str = Field(default="", max_length=32)
 
 
 class JobAccepted(BaseModel):

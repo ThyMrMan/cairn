@@ -184,7 +184,6 @@ def build_argv(spec: JobSpec, out: Path, tmp: Path, job_dir: Path) -> list[str]:
         f"description: {spec.site.title}",
         # ── recursion ────────────────────────────────────────────────────
         "--recursive",
-        "--page-requisites",
         # ── container hygiene ────────────────────────────────────────────
         # wget writes ~/.wget-hsts by default; $HOME may be read-only here.
         "--hsts-file",
@@ -193,6 +192,14 @@ def build_argv(spec: JobSpec, out: Path, tmp: Path, job_dir: Path) -> list[str]:
         "--output-file",
         str(out / "crawl.log"),
     ]
+
+    # On unless a caller says otherwise. The one caller that says otherwise is a
+    # companion pass over pages whose images another capture already holds under
+    # the same URLs — there, requisites would re-fetch the entire archive's
+    # imagery to add nothing, and `--page-requisites` is not subject to the
+    # reject regex (see the scope module), so no pattern can stand in for this.
+    if cfg.get("page_requisites", True):
+        argv.append("--page-requisites")
 
     argv += to_wget_args(scope).args
 

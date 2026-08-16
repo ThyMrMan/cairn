@@ -15,6 +15,7 @@ from cairn.api.schemas import (
     BulkSiteResponse,
     CaptureRequest,
     CaptureSummary,
+    CompanionPassRequest,
     HostRuleModel,
     JobAccepted,
     MediaPolicy,
@@ -33,7 +34,7 @@ from cairn.config import Settings
 from cairn.db.models import Capture, Folder, Job, Site
 from cairn.db.types import utcnow
 from cairn.engines.registry import EngineConfigError, EngineError
-from cairn.services import audit, media, moves, symlinks, thumbnail, trash
+from cairn.services import audit, discovery_service, media, moves, symlinks, thumbnail, trash
 from cairn.services import folders as folder_service
 from cairn.services import profiles as profile_service
 from cairn.services import sites as site_service
@@ -222,6 +223,9 @@ def _detail(db: DbSession, settings: Settings, site: Site) -> SiteDetail:
             site.profile is not None and profile_service.has_browser_profile(site.profile)
         ),
         profile_has_cookies=(site.profile is not None and site.profile.cookies_enc is not None),
+        companion_pass=(
+            pass_.to_dict() if (pass_ := discovery_service.companion_pass_for(site)) else None
+        ),
     )
 
 
@@ -660,6 +664,73 @@ def start_capture(
         target=site.slug,
         ip=ip,
         detail={"job_id": job.id, "kind": body.kind},
+    )
+    db.commit()
+    supervisor.notify()
+    return JobAccepted(job_id=job.id)
+
+
+@router.post(
+    "/sites/{site_id}/capture/companion",
+    response_model=JobAccepted,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def start_companion_pass(
+    site_id: int,
+    body: CompanionPassRequest,
+    db: DbSession,
+    user: CurrentUser,
+    ip: ClientIp,
+    supervisor: Annotated[Any, Depends(_supervisor)],
+) -> JobAccepted:
+    """Run the second, cheap capture this site's preset offers.
+
+    Separate from `/capture` rather than another `kind` on it, because it is a
+    different question: `/capture` archives the site, and this fills a gap the
+    site's own scope was configured to leave. Conflating them would put "which
+    preset is applied" into the meaning of a general endpoint.
+    """
+    site = _require_site(db, site_id)
+    companion = discovery_service.companion_pass_for(site)
+    if companion is None:
+        raise ApiError(
+            "no_companion_pass",
+            "This site's preset does not offer a second pass. It is available on presets "
+            "that deliberately skip something a cheaper crawl can fetch afterwards — the "
+            "lean Blogger preset and its pagination trail.",
+            status_code=400,
+        )
+    if body.pass_id and body.pass_id != companion.id:
+        raise ApiError(
+            "unknown_companion_pass",
+            f"This site offers the {companion.id!r} pass, not {body.pass_id!r}.",
+            status_code=400,
+        )
+
+    existing = db.scalar(
+        select(Job.id).where(Job.site_id == site.id, Job.status.in_(("queued", "running"))).limit(1)
+    )
+    if existing:
+        raise ApiError(
+            "already_running",
+            "A capture for this site is already queued or running.",
+            status_code=409,
+            detail={"job_id": existing},
+        )
+
+    job = supervisor.enqueue(
+        db,
+        job_type="capture",
+        site_id=site.id,
+        spec={"kind": "companion", "pass": companion.id},
+    )
+    audit.record(
+        db,
+        "capture.companion",
+        actor=user.username,
+        target=site.slug,
+        ip=ip,
+        detail={"job_id": job.id, "pass": companion.id},
     )
     db.commit()
     supervisor.notify()

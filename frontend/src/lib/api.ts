@@ -329,6 +329,16 @@ export type SiteDetail = Site & {
   /** Detail only — the summary would need a profile lookup per row. */
   profile_has_browser_profile: boolean;
   profile_has_cookies: boolean;
+  /** The second, cheap capture this site's preset offers — null for most sites.
+   *  Absent on responses from before companion passes existed. */
+  companion_pass?: CompanionPass | null;
+};
+
+export type CompanionPass = {
+  id: string;
+  name: string;
+  engine_id: string;
+  description: string;
 };
 
 export type Capture = {
@@ -1365,6 +1375,8 @@ export const endpoints = {
   // ── captures ───────────────────────────────────────────────────────────
   startCapture: (id: number, kind = "full") =>
     api.post<{ job_id: number }>(`/sites/${id}/capture`, { kind }),
+  startCompanionPass: (id: number, passId = "") =>
+    api.post<{ job_id: number }>(`/sites/${id}/capture/companion`, { pass_id: passId }),
   captures: (id: number) => api.get<Capture[]>(`/sites/${id}/captures`),
   capture: (id: number) => api.get<CaptureDetail>(`/captures/${id}`),
   captureLog: (id: number, tail = 500) => api.text(`/captures/${id}/log?tail=${tail}`),

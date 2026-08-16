@@ -51,6 +51,17 @@ export default function SiteDetail() {
     onSuccess: (result) => setWatching(result.job_id),
   });
 
+  // Beside Capture rather than inside the engine picker. The pass is not a
+  // choice about how to crawl this site — the site keeps its engine and its
+  // scope — it is a second, cheaper capture that fills a gap the site's own
+  // scope was configured to leave. Offered only when the applied preset
+  // declares one, so most sites never see it.
+  const companion = site.data?.companion_pass ?? null;
+  const startCompanion = useMutation({
+    mutationFn: () => endpoints.startCompanionPass(siteId, companion?.id ?? ""),
+    onSuccess: (result) => setWatching(result.job_id),
+  });
+
   const cancel = useMutation({
     mutationFn: (jobId: number) => endpoints.cancelJob(jobId),
   });
@@ -101,6 +112,17 @@ export default function SiteDetail() {
             {start.isPending && <Spinner />}
             {watching !== null ? "Capture running" : "Capture now"}
           </button>
+          {companion && (
+            <button
+              className="btn-ghost"
+              disabled={startCompanion.isPending || watching !== null}
+              onClick={() => startCompanion.mutate()}
+              title={companion.description}
+            >
+              {startCompanion.isPending && <Spinner />}
+              {companion.name}
+            </button>
+          )}
           {watching !== null && (
             <button className="btn-ghost" onClick={() => cancel.mutate(watching)}>
               Cancel
@@ -110,6 +132,9 @@ export default function SiteDetail() {
       </header>
 
       {start.error && <Alert kind="error">{(start.error as ApiError).message}</Alert>}
+      {startCompanion.error && (
+        <Alert kind="error">{(startCompanion.error as ApiError).message}</Alert>
+      )}
 
       {watching !== null && <CrawlProjection jobId={watching} />}
 

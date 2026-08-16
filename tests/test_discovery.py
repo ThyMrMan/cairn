@@ -942,3 +942,107 @@ def test_the_lean_variant_is_offered_beside_the_detected_preset() -> None:
     # And no platform detects as the variant itself.
     assert PRESETS[BLOGGER_LEAN] is BLOGGER_LEAN_PRESET
     assert fingerprint(url="https://b.blogspot.com/").platform == BLOGGER
+
+
+# ── the companion pass ───────────────────────────────────────────────────
+
+
+def test_only_the_lean_preset_offers_a_companion_pass() -> None:
+    """It is the other half of a bargain only that preset makes.
+
+    The standard preset crawls the trail in the main capture, so a second pass
+    would fetch what it already has. Offering one everywhere would turn a
+    specific remedy into a button nobody can tell the purpose of.
+    """
+    assert BLOGGER_PRESET.companion_pass is None
+    assert BLOGGER_LEAN_PRESET.companion_pass is not None
+    assert BLOGGER_LEAN_PRESET.companion_pass.engine_id == "wget-warc", (
+        "the saving is that the pass does not run a browser"
+    )
+    for preset in PRESETS.values():
+        if preset.companion_pass is None:
+            continue
+        assert preset.companion_pass.lifts_rejects, "a pass that lifts nothing has nothing to fetch"
+
+
+def test_the_pass_accepts_exactly_what_its_preset_rejects() -> None:
+    """Otherwise the two halves do not meet.
+
+    Every URL the lean preset keeps out of the main crawl has to be one this
+    pass is allowed to fetch — and nothing else, or the "cheap second pass"
+    quietly becomes a second full crawl with the wrong engine.
+    """
+    companion = BLOGGER_LEAN_PRESET.companion_pass
+    assert companion is not None
+    accept = re.compile(companion.accept_pattern)
+
+    lean_only = {p for p, _ in BLOGGER_LEAN_PRESET.reject_patterns} - {
+        p for p, _ in BLOGGER_PRESET.reject_patterns
+    }
+    assert set(companion.lifts_rejects) == lean_only
+
+    # The four spellings a real Blogger theme emitted, from a measured crawl.
+    for url in (
+        "https://b.blogspot.com/search?by-date=false&max-results=7&start=7&updated-max=2019-12-09T22:33:00%2B01:00",
+        "https://b.blogspot.com/search?max-results=7&reverse-paginate=true&updated-max=2019-01-01T00:00:00-06:00",
+        "https://b.blogspot.com/search?max-results=7&updated-max=2016-07-07T23:22:00-05:00",
+        "https://b.blogspot.com/2019/04/?updated-max=2019-04-09T00:00:00-07:00",
+    ):
+        assert accept.search(url), url
+
+    # And nothing the main capture already holds.
+    for url in (
+        "https://b.blogspot.com/2019/04/a-post.html",
+        "https://b.blogspot.com/search/label/Recipes",
+        "https://b.blogspot.com/",
+        "https://1.bp.blogspot.com/-abc/s1600/photo.jpg",
+    ):
+        assert not accept.search(url), url
+
+
+def test_the_companion_scope_lifts_only_its_own_rejects() -> None:
+    """A pass must not become a way to crawl what the site refused.
+
+    It lifts the two patterns it names and leaves every other reject standing,
+    so `?m=1`, the beacons and the comment iframes stay out of the second
+    capture exactly as they stay out of the first.
+    """
+    from cairn.services.jobs import _companion_scope
+
+    companion = BLOGGER_LEAN_PRESET.companion_pass
+    assert companion is not None
+    scope = Scope(
+        seeds=["https://b.blogspot.com/"],
+        hosts=[HostRule("b.blogspot.com", crawl_pages=True, fetch_assets=True)],
+        reject_patterns=[p for p, _ in BLOGGER_LEAN_PRESET.reject_patterns],
+        max_pages=500,
+    )
+    narrowed = _companion_scope(scope, companion)
+
+    assert narrowed.accept_patterns == [companion.accept_pattern]
+    for lifted in companion.lifts_rejects:
+        assert lifted not in narrowed.reject_patterns
+    assert r"[?&]m=1" in narrowed.reject_patterns
+    assert r"/b/stats\?" in narrowed.reject_patterns
+    # A whole-site cap has no business stopping a pass part-way; a half-walked
+    # trail is dead links, which is what the pass exists to prevent.
+    assert narrowed.max_pages is None
+    # And the site's own scope is untouched — this runs inside a job.
+    assert scope.max_pages == 500
+    assert set(companion.lifts_rejects) <= set(scope.reject_patterns)
+
+
+def test_a_site_without_an_applied_preset_is_offered_no_pass() -> None:
+    """The pass rewrites a boundary, so it needs one somebody declared.
+
+    Reading it from the fingerprint instead would offer to lift rejects on a
+    scope that was built by hand and never asked for them.
+    """
+    from cairn.db.models import Site
+    from cairn.services.discovery_service import companion_pass_for
+
+    assert companion_pass_for(Site(scope_settings=None)) is None
+    assert companion_pass_for(Site(scope_settings={})) is None
+    assert companion_pass_for(Site(scope_settings={"preset": "blogger"})) is None
+    offered = companion_pass_for(Site(scope_settings={"preset": "blogger-lean"}))
+    assert offered is not None and offered.id == "pagination"

@@ -958,3 +958,24 @@ def test_a_full_capture_is_never_deduplicated_whatever_the_engine_says(
     site = _site_with_a_captured_cdx(db, settings)
     engine = _fake_engine(incremental=True)
     assert _dedup_cdx(settings, db, site, "full", tmp_path, engine) is None
+
+
+def test_page_requisites_can_be_turned_off_for_a_second_pass(tmp_path: Path) -> None:
+    """The flag exists for exactly one caller, and without it the pass is pointless.
+
+    A companion pass re-walks index pages whose images another capture already
+    holds under identical URLs. `--page-requisites` is not subject to the reject
+    regex — the scope module's first finding — so no pattern can stand in for
+    this, and left on it would re-fetch the archive's entire imagery to add
+    nothing at all.
+    """
+    on = build_argv(wget_spec(tmp_path), tmp_path / "out", tmp_path / "tmp", tmp_path / "tmp")
+    assert "--page-requisites" in on, "still the default"
+
+    spec = wget_spec(
+        tmp_path, config={**dict(wget_spec(tmp_path).config), "page_requisites": False}
+    )
+    off = build_argv(spec, tmp_path / "out", tmp_path / "tmp", tmp_path / "tmp")
+    assert "--page-requisites" not in off
+    # And nothing else about the crawl changed.
+    assert "--recursive" in off

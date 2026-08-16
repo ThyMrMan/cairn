@@ -32,6 +32,60 @@ UNKNOWN = "unknown"
 
 
 @dataclass(slots=True)
+class CompanionPass:
+    """A second, cheap capture that fills in what the main one deliberately skips.
+
+    The case this exists for is Blogger pagination, and the shape of the
+    problem is worth stating because it decides the design.
+
+    Measured on a 71-post blog: the Older/Newer trail was **86 distinct index
+    URLs** addressing about eleven pages of content — 1.2 pagination URLs per
+    post, because every post page carries links back into the index and Blogger
+    computes a different `updated-max`/`start`/`reverse-paginate` combination
+    for each arrival context. Nothing is fetched twice; the same content simply
+    has 7.8 addresses. That ratio is per *post*, so it does not flatten out on
+    a bigger blog — it is why the trail balloons there.
+
+    Two things follow. Generating the URLs is not possible: the boundaries
+    depend on the context you arrived from, not on the page index, so a
+    generated URL is a guess and a wrong guess is a dead link. And dropping any
+    of them is not possible either, if both directions are to work, because
+    every one is linked from a page that is in the archive.
+
+    So the lever is not *fewer* fetches, it is *cheaper* ones. Index pages on
+    these platforms are server-rendered, so a non-scripting engine gets the same
+    HTML without the browser page load — and their images are already in the
+    archive from the post pages, under identical URLs, so replay resolves them
+    without fetching anything again.
+
+    It is a separate capture rather than a phase of the main one because replay
+    indexes across captures and never merges them ([D2](docs/00-decisions.md)),
+    which is precisely what makes two halves need no reconciling.
+    """
+
+    id: str
+    name: str
+    # What the pass is allowed to fetch. Everything else is out of scope for it,
+    # including the pages the main capture already holds.
+    accept_pattern: str
+    # Rejects from the main scope that would contradict the accept pattern. The
+    # lean preset exists to keep these URLs *out* of the main crawl; this pass
+    # is the other half of that bargain and has to be allowed to fetch them.
+    lifts_rejects: tuple[str, ...] = ()
+    # Non-scripting on purpose — that is the entire saving.
+    engine_id: str = "wget-warc"
+    description: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "engine_id": self.engine_id,
+            "description": self.description,
+        }
+
+
+@dataclass(slots=True)
 class Preset:
     id: str
     name: str
@@ -58,6 +112,9 @@ class Preset:
     # Sibling presets to offer alongside this one when it is detected. Ids
     # rather than objects, because the pair reference each other.
     alternatives: tuple[str, ...] = ()
+    # Offered after a capture that skipped something recoverable. Only presets
+    # whose main scope rejects something worth a second pass carry one.
+    companion_pass: CompanionPass | None = None
     sitemap_paths: tuple[str, ...] = ()
     feed_paths: tuple[str, ...] = ()
     notes: str = ""
@@ -71,6 +128,7 @@ class Preset:
             "extensionless_ok": self.extensionless_ok,
             "reject_patterns": [{"pattern": p, "note": n} for p, n in self.reject_patterns],
             "alternatives": list(self.alternatives),
+            "companion_pass": self.companion_pass.to_dict() if self.companion_pass else None,
             "notes": self.notes,
         }
 
@@ -90,6 +148,29 @@ BLOGGER_PAGER_REJECT = r"/search\?[^#]*updated-(max|min)="
 # `/search/label/` chain is already rejected by the standard preset; this is
 # the third member of the same family.
 BLOGGER_ARCHIVE_PAGER_REJECT = r"/[0-9]{4}/[0-9]{2}/\?[^#]*updated-(max|min)="
+
+# The other half of the lean preset's bargain: it keeps the trail out of the
+# expensive crawl, and this fetches the same URLs cheaply afterwards so both
+# Older *and* Newer Posts still resolve in replay.
+#
+# The accept pattern is the two rejects the lean preset adds, in the positive.
+# Nothing else is in scope for the pass — not the posts, not the labels, not the
+# images — because the main capture already holds all of it and index pages
+# reference their images under identical URLs.
+BLOGGER_PAGINATION_PASS = CompanionPass(
+    id="pagination",
+    name="Pagination pass",
+    accept_pattern=(rf"(?:{BLOGGER_PAGER_REJECT})|(?:{BLOGGER_ARCHIVE_PAGER_REJECT})"),
+    lifts_rejects=(BLOGGER_PAGER_REJECT, BLOGGER_ARCHIVE_PAGER_REJECT),
+    engine_id="wget-warc",
+    description=(
+        "Fetches the Older/Newer Posts trail the lean preset skipped, with a "
+        "non-scripting engine and no page requisites. Blogger renders its index "
+        "pages server-side, so the HTML is the same one a browser would get, and "
+        "their images are already in the archive from the post pages. Run it "
+        "after a lean capture to make both pagination directions work in replay."
+    ),
+)
 
 # What pywb 2.9.1 does with a rejected URL when somebody clicks the link that
 # points at it. Measured in the container against the pinned version rather
@@ -327,6 +408,7 @@ BLOGGER_LEAN_PRESET = Preset(
     # the other way is what needs the retirement, and the standard preset has it.
     retired_patterns=[],
     alternatives=(BLOGGER,),
+    companion_pass=BLOGGER_PAGINATION_PASS,
     sitemap_paths=BLOGGER_PRESET.sitemap_paths,
     feed_paths=BLOGGER_PRESET.feed_paths,
     notes=(
@@ -338,12 +420,18 @@ BLOGGER_LEAN_PRESET = Preset(
         "time than of its URL count. It costs more again on every recapture: "
         "one new post shifts every pagination boundary, so the entire trail is "
         "re-crawled as new URLs each time, and the old chain stays in the index.\n\n"
-        "**What you lose, today.** The 'Older posts' link at the bottom of every "
-        "archived page. Measured against pywb: it is a clean 404, not a page "
-        "that silently serves the wrong content — so the archive is honest "
-        "about the gap rather than pretending to paginate. Every post is still "
-        "in the archive and still reachable, from the sitemap, from search, and "
-        "from any link inside another post.\n\n"
+        "**What you lose until you run the pass.** The Older and Newer Posts "
+        "links at the bottom of every archived page. Measured against pywb: a "
+        "clean 404, not a page that silently serves the wrong content — so the "
+        "archive is honest about the gap rather than pretending to paginate. "
+        "Every post is still in the archive and still reachable, from the "
+        "sitemap, from search, and from any link inside another post.\n\n"
+        "**And how you get them back.** This preset comes with a Pagination "
+        "pass: a second, cheap capture that fetches exactly the trail this one "
+        "skipped, with a non-scripting engine and no page requisites. Blogger "
+        "renders its index pages server-side, so the HTML is what a browser "
+        "would have got, and their images are already in the archive under the "
+        "same URLs. Run it after a lean capture and both directions work.\n\n"
         "Posts, static pages, labels and month archives are all untouched. This "
         "removes redundant *views* of content the crawl already has; it does "
         "nothing about the posts and images themselves, which are the floor.\n\n"

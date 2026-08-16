@@ -470,6 +470,42 @@ So the log is not only for failures. At the end of a crawl the engine reconciles
 
 ---
 
+## Companion passes
+
+A second, cheap capture that fills a gap the site's own scope was configured to leave. One exists: the lean Blogger preset's **Pagination pass**.
+
+**The measurement that produced it.** On a 71-post blog, the Older/Newer trail was **86 distinct index URLs** addressing about eleven pages of content — 1.2 pagination URLs per *post*. Every post page carries links back into the index, and Blogger computes a different `updated-max`/`start`/`reverse-paginate` combination for each arrival context. Nothing is fetched twice; the same content simply has 7.8 addresses. Because the ratio is per post, it does not flatten out on a larger blog, which is why the trail balloons there.
+
+Two dead ends fall out of that, and both were tried on paper first:
+
+- **The URLs cannot be generated.** `start` took only three values across the whole crawl and 23 of 41 boundaries appeared under more than one spelling. The boundary depends on where you arrived from, not on the page index, so a generated URL is a guess and a wrong guess is a dead link.
+- **None of them can be dropped**, if both directions are to work, because every one is linked from a page that is in the archive and pywb does not fuzzy-match an extension-less path ([07](07-replay.md#what-replay-does-with-a-url-that-was-never-captured)).
+
+So the lever is not fewer fetches, it is cheaper ones. Blogger renders index pages server-side, so a non-scripting engine gets the same HTML without the browser page load — and their images are already in the archive from the post pages, under identical URLs, so replay resolves them without fetching anything again.
+
+```
+capture 1   browsertrix, lean preset      posts, labels, assets      ~225 s
+capture 2   wget, pagination pass         the trail, HTML only       ~130 s
+```
+
+**It is a separate capture, not a phase of the first.** Replay indexes across captures and never merges them ([D2](00-decisions.md)), which is exactly what makes the two halves need no reconciling — the same property that makes resuming into one capture directory work.
+
+**What the pass changes about the scope**, and each is load-bearing:
+
+| | |
+|---|---|
+| `accept_patterns` | set to the pass's pattern, so the seed is fetched, its links are read, and only the trail is followed |
+| named rejects | lifted — the lean preset rejects the trail so the expensive crawl skips it, and this pass exists to fetch it |
+| every other reject | still applies, so a pass cannot become a way to crawl something the site refused |
+| `max_pages` | dropped: a whole-site cap stopping a pass part-way leaves a half-walked trail, which is dead links |
+| `page_requisites` | off, and this is the saving. `--page-requisites` is not subject to the reject regex ([04](04-discovery-and-scoping.md)), so no pattern can stand in for the flag |
+
+The pass is declared by the **preset**, not by the engine and not in the UI: platform knowledge lives with the platform, and a preset that rejects nothing recoverable simply has no pass. It is offered only when the preset was actually *applied* — read from `scope_settings`, not from the fingerprint — because it lifts rejects, and doing that to a scope somebody built by hand would rewrite a boundary its author chose.
+
+**In the UI** it is a secondary button beside Capture, labelled with the pass's name, shown only on sites whose preset has one. Deliberately not in the engine picker: the site keeps its engine and its scope, and this is a capture rather than a setting.
+
+---
+
 ## Post-processors
 
 The second addon type. Same manifest and protocol, different hook point — they run after a capture completes and receive the capture directory instead of a scope.

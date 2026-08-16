@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from cairn.db.models import DiscoveredHost, Discovery, Feed, Site
 from cairn.db.types import utcnow
 from cairn.discovery import hosts as host_classify
-from cairn.discovery.platform import PRESETS, Preset, matches_host_pattern
+from cairn.discovery.platform import PRESETS, CompanionPass, Preset, matches_host_pattern
 from cairn.discovery.runner import DiscoveryResult
 from cairn.logging import get_logger
 from cairn.services.scope import HostRule, Scope
@@ -212,6 +212,20 @@ def apply_preset_to_scope(scope: Scope, preset: Preset, hosts_seen: list[str]) -
 
 def preset_by_id(preset_id: str) -> Preset | None:
     return PRESETS.get(preset_id)
+
+
+def companion_pass_for(site: Site) -> CompanionPass | None:
+    """The second capture this site's preset offers, if it offers one.
+
+    Read from the preset that was actually *applied*, recorded in
+    `scope_settings`, rather than from what the site fingerprints as. A scope
+    somebody built by hand has no preset and gets no companion pass, because
+    the pass lifts specific rejects and re-adds them as an accept rule — doing
+    that to a scope nobody declared would be rewriting a boundary its author
+    chose.
+    """
+    preset = PRESETS.get(str((site.scope_settings or {}).get("preset") or ""))
+    return preset.companion_pass if preset else None
 
 
 def seeds_for_capture(

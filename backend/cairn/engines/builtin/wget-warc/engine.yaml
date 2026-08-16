@@ -66,6 +66,14 @@ config_schema:
       title: "Archive error page bodies (404s etc.)"
       description: "Often the only record of a page that broke."
       default: true
+    page_requisites:
+      type: boolean
+      title: "Fetch each page's images, CSS and fonts"
+      description: >-
+        On by default, and the only reason to turn it off is a second pass over
+        pages whose assets another capture already holds. Off, this fetches
+        HTML and nothing else.
+      default: true
     user_agent:
       type: string
       title: "User agent"

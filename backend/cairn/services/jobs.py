@@ -29,7 +29,7 @@ import os
 import shutil
 import signal
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -67,6 +67,7 @@ from cairn.services.events import (
     EV_WARNING,
     EventBus,
 )
+from cairn.services.scope import Scope
 from cairn.services.storage import StoragePathError
 
 log = get_logger(__name__)
@@ -1124,11 +1125,26 @@ class JobSupervisor:
             if site is None or site.deleted_at is not None:
                 raise JobError("the site was deleted before the capture started")
 
-            engine = self._registry.get(site.engine_id)
-            config = engine.validate_config(dict(site.engine_config or {}))
-
             kind = str(job.spec.get("kind") or "full")
             scope = sites.resolved_scope(session, site)
+
+            # A companion pass runs a *different* engine against a *narrower*
+            # scope than the site's own, so both are resolved before anything
+            # else reads them. Everything downstream — the capture row, the
+            # directory name, the manifest — then records what actually ran
+            # rather than what the site is configured for, which is the whole
+            # point of it being a capture of its own.
+            companion = _companion_pass(session, job, site) if kind == "companion" else None
+            if companion is not None:
+                engine = self._registry.get(companion.engine_id)
+                config = engine.defaults()
+                # The assets are already in the archive under identical URLs;
+                # fetching them again would undo the saving this pass exists for.
+                config["page_requisites"] = False
+                scope = _companion_scope(scope, companion)
+            else:
+                engine = self._registry.get(site.engine_id)
+                config = engine.validate_config(dict(site.engine_config or {}))
             # A feed capture is about the posts it was given, not about the
             # site. Left at the site's depth it would follow the new post's
             # link to the archive index and re-crawl everything, which is
@@ -1177,12 +1193,12 @@ class JobSupervisor:
                 site.status = "capturing"
                 session.flush()
             else:
-                dir_name = storage.capture_dir_name(started, kind, site.engine_id)
+                dir_name = storage.capture_dir_name(started, kind, engine.id)
                 capture = Capture(
                     site_id=site.id,
                     job_id=job.id,
                     kind=kind,
-                    engine_id=site.engine_id,
+                    engine_id=engine.id,
                     engine_version=engine.version,
                     dir_name=dir_name,
                     started_at=started,
@@ -1204,7 +1220,14 @@ class JobSupervisor:
             from cairn.services import discovery_service
 
             extra = list(job.spec.get("extra_seeds") or [])
-            if job.spec.get("only_extra_seeds"):
+            if companion is not None:
+                # The seed and nothing else. A companion pass walks to its
+                # targets by following links, and handing it the discovered URL
+                # set would make it fetch every post again — with the wrong
+                # engine, into a capture that is not supposed to hold them.
+                seeds = list(scope.seeds)
+                seed_source = {"manual": len(seeds)}
+            elif job.spec.get("only_extra_seeds"):
                 # The whole discovered URL set is what makes a *full* capture
                 # complete; handing it to an incremental one turns "archive
                 # this new post" back into "archive the site". The seed URL is
@@ -2034,6 +2057,59 @@ def _settle_feed_items(
         return
     feed.capture_failures += 1
     feed.next_capture_at = feed_service.next_capture_due(feed)
+
+
+def _companion_pass(session: Session, job: Job, site: Site) -> Any:
+    """Which companion pass this job is, refusing rather than guessing.
+
+    The id is carried in the spec and checked against the one the site's preset
+    actually offers. A job that names a pass the site does not have is a job
+    whose scope nobody chose, and running it would archive URLs against a
+    boundary that was never declared.
+    """
+    from cairn.services import discovery_service
+
+    available = discovery_service.companion_pass_for(site)
+    wanted = str(job.spec.get("pass") or "")
+    if available is None:
+        raise JobError(
+            "this site's preset offers no companion pass; apply a preset that has one first"
+        )
+    if wanted and wanted != available.id:
+        raise JobError(f"this site offers the {available.id!r} pass, not {wanted!r}")
+    return available
+
+
+def _companion_scope(scope: Scope, companion: Any) -> Scope:
+    """The site's scope narrowed to exactly what the pass may fetch.
+
+    Three changes, and each one is load-bearing:
+
+    **The accept pattern** is what keeps the pass to its own job. wget applies
+    it to recursive downloads but not to the seed, so the crawl starts at the
+    home page, reads its links, and follows only the ones the pass is for.
+
+    **The lifted rejects** are the point of the whole arrangement. The lean
+    preset rejects the pagination trail so the expensive capture skips it; this
+    pass exists to fetch that trail, so it has to be allowed to. Only the
+    patterns the pass names are lifted — every other reject the scope carries
+    still applies, so a pass cannot become a way to crawl something the site
+    was configured to refuse.
+
+    **`max_pages` is dropped.** It is a whole-site cap and this is not a whole
+    site; leaving it would stop the pass part-way for a reason that has nothing
+    to do with the pass, and a half-walked trail is dead links.
+
+    A copy, never the site's own scope object: this runs inside the job and the
+    site's boundary must read the same afterwards as it did before.
+    """
+    lifted = set(companion.lifts_rejects)
+    return replace(
+        scope,
+        accept_patterns=[companion.accept_pattern],
+        reject_patterns=[p for p in scope.reject_patterns if p not in lifted],
+        max_pages=None,
+    )
 
 
 def _scope_was_edited(session: Session, site: Site) -> bool:
