@@ -180,6 +180,39 @@ per-browser state, not an authentication failure. The cookies worked, which is
 precisely how a complete page arrived to be drawn over, and why the old advice
 ("re-mint the profile") pointed away from the fix.
 
+### Re-accepting the warning is not a durable fix either
+
+The obvious next answer — "click through the warning again and save the
+profile" — was measured across three captures of the same blog and does not
+hold. The acceptance cookie was **present and sent** the whole time:
+
+| Capture | Time | Posts clean | Posts curtained |
+|---|---|---|---|
+| `old-preset-test` | 03:15–03:27 | **70** | 0 |
+| `new-preset-test-2` | 13:57–14:08 | 0 | **70** |
+
+The same 70 posts, ten hours apart. Between them, byte-identical:
+
+- the `INTERSTITIAL` cookie — one 63-char value across *every* capture and
+  every site, sent on 499 of 500 requests to the blog
+- the User-Agent, `Sec-Ch-Ua`, `Sec-Ch-Ua-Platform`, `Sec-Fetch-*`
+
+So the profile did not change and the client did not change; the server
+stopped honouring the same token. Within the earlier capture it was already
+inconsistent — all 70 posts clean, while 254 of 364 `/search` pages were
+curtained at the same moment.
+
+**What that rules out.** Not expiry of the profile, not a mismatched user
+agent (the documented suspect in [06](../../docs/06-access-profiles.md)), not
+sign-in state — no Google auth cookie is sent to the blog at all, and none is
+needed, because this gate is a content warning rather than a login.
+
+**What it means.** Nothing the profile controls makes this stick, so any fix
+that lives at capture time is a coin flip. The durable observation is the one
+that held in every run: the content came back **complete every time**, curtain
+or no curtain. The damage is presentational and it is in the archived bytes,
+which puts the only reliable fix at replay.
+
 **The negative control is the disagreement count.** Every verdict is scored
 against a literal search for the two markers; a non-zero `DISAGREE` fails the
 run. The fixtures in `test_postprocess.py` were written from these bytes, so a

@@ -121,8 +121,10 @@ def main(argv: list[str]) -> int:
         share = counts["bucket_overlay"] / counts["html_200"]
         print(
             f"\n{counts['bucket_overlay']} page(s), {share:.0%} of this capture, are complete "
-            "but drawn over.\nAccept the warning once inside the browser profile and capture "
-            "again; the profile\nitself is fine, which is why the content arrived at all."
+            "but drawn over.\nThe profile is not the problem -- that is how a whole page "
+            "arrived to be drawn over --\nand re-accepting the warning is not a dependable "
+            "fix either: see the README for the\ntwo runs where the same cookie and user "
+            "agent were honoured and then refused."
         )
     return 0
 

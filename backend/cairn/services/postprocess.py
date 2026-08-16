@@ -488,9 +488,12 @@ def step_asset_audit(ctx: Context) -> None:
             "them. The page underneath is archived in full — this is not missing content, "
             "and the access profile is not the problem, because the content came back. "
             "The site injects an iframe over the page and a stylesheet rule hiding "
-            "everything else, so replay shows the warning instead of the post. Open the "
-            "browser profile, visit the site, click through the warning once, save the "
-            "profile, and capture again: the pages then arrive with no overlay in them."
+            "everything else, so replay shows the warning instead of the post. Accepting "
+            "the warning again inside the browser profile may clear it, but do not count "
+            "on it: measured on Blogger, the same acceptance cookie and user agent were "
+            "honoured on a run and refused on the next one hours later, with nothing "
+            "changed either end. The reader view renders these pages today, and search "
+            "already indexes them, because neither one applies the site's CSS."
         )
         if capture_is_ok(ctx):
             # Partial, not ok — a capture nobody can read is not a success,

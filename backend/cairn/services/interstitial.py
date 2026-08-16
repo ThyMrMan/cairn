@@ -114,6 +114,13 @@ def overlay_blocked(body: bytes) -> Verdict:
     site drew over it because some per-browser flag — Blogger's
     `interstitialAccepted` — is still false. Telling somebody to re-mint
     cookies that demonstrably worked sends them in the wrong direction.
+
+    Nor is re-accepting the warning a fix: measured across three captures of
+    one blog, the acceptance cookie and every client header were byte-
+    identical while the same 70 posts came back clean on one run and curtained
+    ten hours later. So this is not a transient worth retrying past once — it
+    is a standing property of the archive, and the reason the count is
+    reported rather than silently retried.
     """
     if not OVERLAY_FRAME.search(body):
         return CLEAR

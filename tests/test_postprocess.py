@@ -623,8 +623,14 @@ def test_pages_hidden_under_an_overlay_are_reported_without_blaming_the_profile(
     message = " ".join(ctx.warnings)
     assert "archived in full" in message
     assert "not the problem" in message
-    assert "click through the warning" in message
+    # Never blame the profile, and never promise the one fix that was measured
+    # not to hold: the same acceptance cookie and user agent were honoured on
+    # one run and refused ten hours later. Advice that sends somebody to spend
+    # a multi-hour capture on a coin flip is worse than no advice.
     assert "re-mint" not in message.lower()
+    assert "do not count on it" in message
+    # It names something that works today instead of only something that might.
+    assert "reader view" in message
 
 
 def redirect_warc(path: Path, source: str, target: str) -> None:
