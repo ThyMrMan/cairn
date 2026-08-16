@@ -458,7 +458,17 @@ class JobSupervisor:
             # ends up describing that instead of the blog.
             if site.profile_id is not None:
                 temp_dir.mkdir(parents=True, exist_ok=True)
-                material = profiles.materialize(session, self._sealer, site.profile_id, temp_dir)
+                material = profiles.materialize(
+                    session,
+                    self._sealer,
+                    site.profile_id,
+                    temp_dir,
+                    # Discovery is where the host list comes *from*, so there
+                    # is no resolved scope to narrow by yet — the seed's own
+                    # host is the most that can honestly be said.
+                    self._settings,
+                    hosts=[site.primary_host] if site.primary_host else None,
+                )
                 if material is not None:
                     # Discovery has no use for a browsertrix tarball, so a
                     # profile holding only one leaves this unset rather than
@@ -1244,7 +1254,15 @@ class JobSupervisor:
             auth: dict[str, Any] = {"user_agent": config.get("user_agent"), "headers": {}}
             if site.profile_id is not None:
                 material = profiles.materialize(
-                    session, self._sealer, site.profile_id, temp_dir, self._settings
+                    session,
+                    self._sealer,
+                    site.profile_id,
+                    temp_dir,
+                    self._settings,
+                    # The hosts this crawl may touch, so a jar derived from a
+                    # browser profile carries this site's cookies and not the
+                    # whole browser's. The scope is already resolved here.
+                    hosts=[rule.host for rule in scope.hosts if rule.host],
                 )
                 if material is not None:
                     if material.cookies_file is not None:

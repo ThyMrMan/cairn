@@ -709,8 +709,180 @@ class Material:
     profile_file: Path | None = None
 
 
+# Chromium's Linux cookie encryption, for the case where there is no OS
+# keyring to hold the real key — which is every container, including the one
+# browsertrix runs its Brave in. `OSCrypt` then derives from a **hardcoded**
+# password, so the values are readable by anyone holding the file.
+#
+# Measured against browsertrix-crawler 1.14.1 rather than recalled
+# (`scripts/probes/cookie_bridge_probe.py`): a profile it wrote stored a known
+# cookie as `v10`, and these parameters returned the exact plaintext.
+_CHROMIUM_PASSWORD = b"peanuts"
+_CHROMIUM_SALT = b"saltysalt"
+_CHROMIUM_ITERATIONS = 1
+_CHROMIUM_KEY_BYTES = 16
+_CHROMIUM_IV = b" " * 16
+_CHROMIUM_PREFIXES = (b"v10", b"v11")
+#: Chromium 130+ prepends a SHA-256 of the cookie's domain to the plaintext
+#: before encrypting, as a binding check. Present in 1.14.1's Brave.
+_DOMAIN_HASH_BYTES = 32
+
+
+def _decrypt_chromium_value(blob: bytes, host: str) -> str | None:
+    """One `encrypted_value`, or None if it is not one this can read.
+
+    Returns None rather than guessing. A wrong key decrypts to bytes just the
+    same, and a jar full of garbage would fail as a mystery at crawl time
+    instead of as a refusal here.
+    """
+    if not blob:
+        return ""
+    if blob[:3] not in _CHROMIUM_PREFIXES:
+        # `v20` is the app-bound scheme, and there is no unattended way to
+        # read it. Saying so is better than shipping half a jar.
+        return None
+    try:
+        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+        key = hashlib.pbkdf2_hmac(
+            "sha1",
+            _CHROMIUM_PASSWORD,
+            _CHROMIUM_SALT,
+            _CHROMIUM_ITERATIONS,
+            dklen=_CHROMIUM_KEY_BYTES,
+        )
+        decryptor = Cipher(algorithms.AES(key), modes.CBC(_CHROMIUM_IV)).decryptor()
+        plain = decryptor.update(blob[3:]) + decryptor.finalize()
+    except Exception:
+        return None
+
+    if plain and 1 <= plain[-1] <= 16:  # PKCS#7
+        plain = plain[: -plain[-1]]
+    if len(plain) >= _DOMAIN_HASH_BYTES:
+        expected = hashlib.sha256(host.lstrip(".").encode("utf-8")).digest()
+        if plain[:_DOMAIN_HASH_BYTES] == expected:
+            plain = plain[_DOMAIN_HASH_BYTES:]
+    try:
+        return plain.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
+def cookies_from_browser_profile(raw: bytes, hosts: list[str] | None = None) -> list[Cookie]:
+    """A cookie jar out of a browsertrix browser profile.
+
+    The bridge D4 assumed existed. `docs/00` D4 says every auth mode ends as a
+    jar and the engine only ever sees `--load-cookies`; that stopped being true
+    when the browser profile arrived, because it was the one producer with no
+    jar. So a browser profile silently meant "and therefore browsertrix", which
+    coupled two choices that have nothing to do with each other.
+
+    **This reads cookie values, which `describe_browser_profile` deliberately
+    does not.** That function answers "does this cover my blog?" for the UI and
+    must never handle the credential to do it. This one exists to hand the
+    credential to an engine, which is the same job `load_cookies` already does
+    for a jar-mode profile, under the same terms: written only into the job's
+    temp directory, `chmod 600`, deleted when the job ends. The two are kept
+    apart by name so neither drifts into the other's guarantees.
+
+    `hosts` narrows the result to the site's own scope, and passing it is
+    strongly preferred. A profile minted by signing into Google is a full
+    account session; a jar is a far more portable form of that than an
+    encrypted 41 MB tarball, and there is no reason a blog crawl needs the
+    whole browser's cookies on disk to fetch one host.
+    """
+    import sqlite3
+    import tarfile
+    import tempfile
+
+    wanted = ("Default/Cookies", "./Default/Cookies")
+    try:
+        with tarfile.open(fileobj=io.BytesIO(raw), mode="r:gz") as archive:
+            member = next((m for m in archive.getmembers() if m.name in wanted), None)
+            if member is None:
+                return []
+            handle = archive.extractfile(member)
+            if handle is None:
+                return []
+            blob = handle.read()
+    except (tarfile.TarError, OSError, EOFError):
+        return []
+
+    # Copied out rather than extracted, for the same reason as the readout: a
+    # member name must never choose where a file lands.
+    with tempfile.TemporaryDirectory() as tmp:
+        copy = Path(tmp) / "Cookies"
+        copy.write_bytes(blob)
+        try:
+            connection = sqlite3.connect(f"file:{copy}?mode=ro", uri=True)
+            try:
+                rows = connection.execute(
+                    "SELECT host_key, name, encrypted_value, path, expires_utc, "
+                    "is_secure, is_httponly FROM cookies"
+                ).fetchall()
+            finally:
+                connection.close()
+        except sqlite3.Error:
+            return []
+
+    patterns = [h.lower().lstrip(".") for h in (hosts or []) if h]
+    out: list[Cookie] = []
+    for host_key, name, encrypted, path, expires, secure, http_only in rows:
+        host = str(host_key or "")
+        if not host or not name:
+            continue
+        if patterns and not any(_host_matches(host, p) for p in patterns):
+            continue
+        value = _decrypt_chromium_value(bytes(encrypted or b""), host)
+        if value is None:
+            continue
+        stamp = _chromium_epoch(expires)
+        out.append(
+            Cookie(
+                domain=host,
+                # Chromium's leading dot is exactly the Netscape flag.
+                include_subdomains=host.startswith("."),
+                path=str(path or "/"),
+                secure=bool(secure),
+                # A session cookie is 0 in both formats, so this needs no
+                # special case — but wget drops them unless it is told not to,
+                # which is why the engine passes --keep-session-cookies.
+                expires=stamp if stamp is not None else 0,
+                name=str(name),
+                value=value,
+                http_only=bool(http_only),
+            )
+        )
+    return out
+
+
+def _host_matches(host_key: str, pattern: str) -> bool:
+    """Whether a Chromium `host_key` belongs to a host the site may fetch.
+
+    A leading dot on either side means "and subdomains", which is the whole
+    point of the field, so `.blogspot.com` covers `example.blogspot.com` and a
+    scope naming `*.blogspot.com` covers it too.
+    """
+    host = host_key.lower().lstrip(".")
+    pattern = pattern.lstrip("*.")
+    return host == pattern or host.endswith("." + pattern) or pattern.endswith("." + host)
+
+
+def jar_from_browser_profile(raw: bytes, hosts: list[str] | None = None) -> str | None:
+    """The same cookies as Netscape text, or None if there are none to write."""
+    cookies = cookies_from_browser_profile(raw, hosts)
+    if not cookies:
+        return None
+    return "# Netscape HTTP Cookie File\n" + "\n".join(c.to_line() for c in cookies) + "\n"
+
+
 def materialize(
-    session: Session, sealer: Sealer, profile_id: int, temp_dir: Path, settings: Any = None
+    session: Session,
+    sealer: Sealer,
+    profile_id: int,
+    temp_dir: Path,
+    settings: Any = None,
+    hosts: list[str] | None = None,
 ) -> Material | None:
     """Write the plaintext material into a job's temp directory.
 
@@ -722,14 +894,50 @@ def materialize(
     a browsertrix tarball and no jar is a complete credential for the engine
     that can use one, and refusing it here would be the same silent failure
     this whole feature exists to remove.
+
+    `hosts` is the site's own scope, and it narrows a jar derived from a
+    browser profile to the hosts this crawl may fetch. Omitting it writes the
+    browser's whole cookie store — every site it has ever visited — into the
+    temp directory to fetch one blog, so callers with a site in hand pass it.
     """
     profile = session.get(AccessProfile, profile_id)
     if profile is None:
         return None
 
     temp_dir.mkdir(parents=True, exist_ok=True)
-    target: Path | None = None
     text = load_cookies(sealer, profile)
+
+    tarball: Path | None = None
+    if settings is not None:
+        tarball = write_browser_profile(
+            sealer, profile, settings, temp_dir / BROWSER_PROFILE_FILE_NAME
+        )
+
+    # A browser profile can now answer for a jar as well as for itself, so a
+    # profile minted by signing in works on every engine rather than only on
+    # the one that reads tarballs. Derived, never stored: the tarball stays the
+    # single source, and a jar that outlived one job would be a credential
+    # nobody remembered leaving behind.
+    #
+    # An uploaded jar still wins. It is what somebody chose for this site, it
+    # may be narrower than the browser's whole cookie store, and silently
+    # preferring a derivation over a deliberate act is how a profile stops
+    # meaning what it says.
+    if text is None and tarball is not None:
+        try:
+            text = jar_from_browser_profile(tarball.read_bytes(), hosts or None)
+        except Exception as exc:  # pragma: no cover — unreadable temp file
+            log.warning(
+                "could not derive a cookie jar from the browser profile",
+                extra={"profile": profile_id, "err": str(exc)},
+            )
+        if text:
+            log.info(
+                "derived a cookie jar from the browser profile",
+                extra={"profile": profile_id, "hosts": len(hosts or [])},
+            )
+
+    target: Path | None = None
     if text is not None:
         target = temp_dir / COOKIE_FILE_NAME
         # Written 600 before any content lands in it: creating world-readable
@@ -737,12 +945,6 @@ def materialize(
         fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(text if text.endswith("\n") else text + "\n")
-
-    tarball: Path | None = None
-    if settings is not None:
-        tarball = write_browser_profile(
-            sealer, profile, settings, temp_dir / BROWSER_PROFILE_FILE_NAME
-        )
 
     if target is None and tarball is None:
         log.warning("site has a profile with nothing stored in it", extra={"profile": profile_id})

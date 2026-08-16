@@ -815,3 +815,230 @@ def test_the_check_works_under_the_configured_temp_dir_not_the_system_one(
     assert not any(m.startswith(_tempfile.gettempdir()) for m in made), (
         f"the crawl tree must not go to the system temp: {made}"
     )
+
+
+# ── the jar a browser profile can answer for ─────────────────────────────
+#
+# docs/00 D4 says every auth mode ends as a cookie jar and the engine only
+# ever sees `--load-cookies`. The browser profile broke that: it was the one
+# producer with no jar, so choosing it silently also chose browsertrix.
+#
+# The bridge is possible because there is no OS keyring in a container, so
+# Chromium falls back to a hardcoded password. Measured against the real
+# browsertrix image in scripts/probes/cookie_bridge_probe.py; encrypted here
+# with the same scheme so these exercise the decryption rather than mock it.
+
+
+def chromium_encrypt(value: str, host: str) -> bytes:
+    import hashlib
+
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+    key = hashlib.pbkdf2_hmac("sha1", b"peanuts", b"saltysalt", 1, dklen=16)
+    # Chromium 130+ binds the value to its domain by prepending a hash.
+    plain = hashlib.sha256(host.lstrip(".").encode()).digest() + value.encode()
+    pad = 16 - (len(plain) % 16)
+    plain += bytes([pad]) * pad
+    encryptor = Cipher(algorithms.AES(key), modes.CBC(b" " * 16)).encryptor()
+    return b"v10" + encryptor.update(plain) + encryptor.finalize()
+
+
+def browser_profile_with(rows: list[tuple]) -> bytes:
+    """A tarball shaped like the one browsertrix writes.
+
+    `rows` are (host_key, name, value, path, expires_utc, secure, httponly);
+    a `bytes` value is stored as-is so a test can plant something undecryptable.
+    """
+    import io as _io
+    import sqlite3
+    import tarfile
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "Cookies"
+        conn = sqlite3.connect(path)
+        conn.execute(
+            "CREATE TABLE cookies (host_key TEXT, name TEXT, encrypted_value BLOB, "
+            "path TEXT, expires_utc INTEGER, is_secure INTEGER, is_httponly INTEGER)"
+        )
+        for host, name, value, cpath, expires, secure, httponly in rows:
+            blob = value if isinstance(value, bytes) else chromium_encrypt(value, host)
+            conn.execute(
+                "INSERT INTO cookies VALUES (?,?,?,?,?,?,?)",
+                (host, name, blob, cpath, expires, secure, httponly),
+            )
+        conn.commit()
+        conn.close()
+        db = path.read_bytes()
+
+    buffer = _io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+        info = tarfile.TarInfo("./Default/Cookies")
+        info.size = len(db)
+        archive.addfile(info, _io.BytesIO(db))
+    return buffer.getvalue()
+
+
+def test_a_cookie_comes_back_out_of_a_browser_profile() -> None:
+    """The whole bridge, as the one property that matters."""
+    raw = browser_profile_with(
+        [("blog.example", "INTERSTITIAL", "yes-please", "/", 13390000000000000, 1, 1)]
+    )
+    cookies = profiles.cookies_from_browser_profile(raw)
+
+    assert len(cookies) == 1
+    assert cookies[0].name == "INTERSTITIAL"
+    assert cookies[0].value == "yes-please"
+    assert cookies[0].domain == "blog.example"
+    assert cookies[0].secure and cookies[0].http_only
+
+
+def test_the_jar_is_narrowed_to_the_hosts_the_site_may_fetch() -> None:
+    """A profile minted by signing into Google is a full account session.
+
+    Writing all of it into a job's temp directory to fetch one blog makes a
+    far more portable copy of that session than the sealed tarball is, for no
+    benefit the crawl can use.
+    """
+    raw = browser_profile_with(
+        [
+            ("example.blogspot.com", "INTERSTITIAL", "keep", "/", 13390000000000000, 1, 0),
+            (".google.com", "SID", "do-not-copy", "/", 13390000000000000, 1, 1),
+            ("unrelated.example", "OTHER", "do-not-copy", "/", 13390000000000000, 0, 0),
+        ]
+    )
+    cookies = profiles.cookies_from_browser_profile(raw, ["example.blogspot.com"])
+
+    assert [c.name for c in cookies] == ["INTERSTITIAL"]
+    assert "do-not-copy" not in repr(cookies)
+
+
+def test_a_subdomain_cookie_reaches_the_host_it_covers() -> None:
+    """`.blogspot.com` is exactly the Netscape include-subdomains flag, and a
+    jar that dropped it would lose the cookie the gate actually reads."""
+    raw = browser_profile_with(
+        [(".blogspot.com", "INTERSTITIAL", "shared", "/", 13390000000000000, 1, 0)]
+    )
+    cookies = profiles.cookies_from_browser_profile(raw, ["example.blogspot.com"])
+
+    assert len(cookies) == 1
+    assert cookies[0].include_subdomains is True
+
+
+def test_a_value_this_cannot_read_is_dropped_rather_than_guessed() -> None:
+    """`v20` is app-bound encryption with no unattended way in.
+
+    A wrong key decrypts to bytes just the same, so the failure to avoid is a
+    jar full of garbage that fails at crawl time as a mystery.
+    """
+    raw = browser_profile_with(
+        [
+            ("blog.example", "GOOD", "readable", "/", 13390000000000000, 1, 0),
+            ("blog.example", "BAD", b"v20" + b"\x00" * 32, "/", 13390000000000000, 1, 0),
+        ]
+    )
+    cookies = profiles.cookies_from_browser_profile(raw)
+
+    assert [c.name for c in cookies] == ["GOOD"]
+
+
+def test_the_jar_is_netscape_text_wget_can_load() -> None:
+    raw = browser_profile_with(
+        [("blog.example", "INTERSTITIAL", "yes", "/", 13390000000000000, 1, 1)]
+    )
+    text = profiles.jar_from_browser_profile(raw)
+
+    assert text is not None
+    assert text.startswith("# Netscape HTTP Cookie File")
+    # It parses back through the same reader an uploaded jar goes through.
+    report = profiles.parse_cookies(text)
+    assert report.ok, report.errors
+    assert report.cookies[0].value == "yes"
+
+
+def test_a_profile_with_no_cookies_yields_no_jar() -> None:
+    """None, not an empty file: an empty jar handed to wget looks like auth
+    that worked and archives the gate."""
+    assert profiles.jar_from_browser_profile(browser_profile_with([])) is None
+    assert profiles.jar_from_browser_profile(b"not a tarball") is None
+
+
+def _settings_for(tmp_path: Path) -> Settings:
+    return Settings(
+        config_dir=tmp_path / "config", data_dir=tmp_path / "data",
+        secret_key="x" * 40, _env_file=None,
+    )  # fmt: skip
+
+
+def test_materialize_derives_a_jar_from_a_browser_profile(
+    db: Session, sealer: Sealer, tmp_path: Path
+) -> None:
+    """The coupling this removes, end to end.
+
+    Before this, a site with a browser profile and no jar handed wget nothing,
+    so choosing the profile silently chose the engine too.
+    """
+    settings = _settings_for(tmp_path)
+    profile = make_profile(db)
+    source = tmp_path / "profile.tar.gz"
+    source.write_bytes(
+        browser_profile_with(
+            [("blog.example", "INTERSTITIAL", "yes", "/", 13390000000000000, 1, 0)]
+        )
+    )
+    profiles.store_browser_profile(db, sealer, profile, settings, source)
+
+    material = profiles.materialize(
+        db, sealer, profile.id, tmp_path / "job-1", settings, hosts=["blog.example"]
+    )
+
+    assert material is not None
+    assert material.cookies_file is not None, "wget gets a jar from a browser profile"
+    assert material.profile_file is not None, "and browsertrix still gets the tarball"
+    text = material.cookies_file.read_text(encoding="utf-8")
+    assert "INTERSTITIAL\tyes" in text
+
+
+def test_an_uploaded_jar_is_never_replaced_by_a_derived_one(
+    db: Session, sealer: Sealer, tmp_path: Path
+) -> None:
+    """It is what somebody chose for this site, and it may be deliberately
+    narrower than the browser's whole cookie store."""
+    settings = _settings_for(tmp_path)
+    profile = make_profile(db)
+    profiles.store_cookies(db, sealer, profile, JAR)
+    source = tmp_path / "profile.tar.gz"
+    source.write_bytes(
+        browser_profile_with(
+            [("blog.example", "FROM_PROFILE", "derived", "/", 13390000000000000, 1, 0)]
+        )
+    )
+    profiles.store_browser_profile(db, sealer, profile, settings, source)
+
+    material = profiles.materialize(db, sealer, profile.id, tmp_path / "job-2", settings)
+
+    assert material is not None and material.cookies_file is not None
+    text = material.cookies_file.read_text(encoding="utf-8")
+    assert "FROM_PROFILE" not in text, "the uploaded jar must win"
+
+
+def test_a_derived_jar_is_not_world_readable_either(
+    db: Session, sealer: Sealer, tmp_path: Path
+) -> None:
+    """Same terms as an uploaded one: it is the same credential."""
+    import os
+    import stat
+
+    settings = _settings_for(tmp_path)
+    profile = make_profile(db)
+    source = tmp_path / "profile.tar.gz"
+    source.write_bytes(
+        browser_profile_with([("blog.example", "X", "y", "/", 13390000000000000, 1, 0)])
+    )
+    profiles.store_browser_profile(db, sealer, profile, settings, source)
+
+    material = profiles.materialize(db, sealer, profile.id, tmp_path / "job-3", settings)
+    assert material is not None and material.cookies_file is not None
+    if os.name != "nt":
+        mode = stat.S_IMODE(material.cookies_file.stat().st_mode)
+        assert mode == 0o600, f"derived jar is {mode:o}"

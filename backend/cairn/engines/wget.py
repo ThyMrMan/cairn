@@ -325,25 +325,33 @@ class Runner:
                 self.proc.terminate()
 
     def _warn_about_auth(self) -> None:
-        """Say when a profile is attached that this engine cannot use.
+        """Say when a profile is attached that this engine got nothing from.
 
-        The mirror of the browsertrix warning, and it was missing. A profile
-        holding only a browsertrix browser profile hands wget nothing at all:
-        `--load-cookies` is simply not passed, the crawl runs signed out, and
-        the archive fills with the gate. Reported exactly that way — a second
-        blog set up with a browser profile, captured with this engine by
-        mistake, and stuck at the interstitial with no explanation anywhere.
+        Narrower than it was. A browser profile used to hand wget nothing at
+        all — `--load-cookies` was simply not passed, the crawl ran signed
+        out, and the archive filled with the gate. Cairn now derives a jar
+        from the tarball's cookie store, so the common case is handled before
+        this runs.
+
+        What is left is the case where the derivation came back empty, and it
+        is worth its own message because the fixes are different: a profile
+        whose cookies are all for other hosts needs re-minting against *this*
+        site, and one encrypted with a key this cannot read needs a jar
+        exported by hand.
         """
         if self.spec.auth.cookies_file:
             return
         if self.spec.auth.profile_file:
             self.events.warning(
                 "auth_unsupported",
-                "This site's access profile holds a browsertrix browser profile and no "
-                "cookie jar, and wget cannot use one — it takes `--load-cookies` and "
-                "nothing else. This crawl is running signed out, so anything behind the "
-                "gate will be archived as the gate. Switch this site to the browsertrix "
-                "engine, or add a cookies.txt to the profile.",
+                "This site's access profile holds a browsertrix browser profile, and no "
+                "cookie jar could be derived from it for this site's hosts. wget takes "
+                "`--load-cookies` and nothing else, so this crawl is running signed out "
+                "and anything behind a gate will be archived as the gate. Either the "
+                "profile carries no cookies for these hosts — re-mint it against this "
+                "site — or its cookie store is encrypted with a key Cairn cannot read, "
+                "in which case export a cookies.txt by hand or use the browsertrix "
+                "engine, which reads the tarball directly.",
             )
 
     def run(self) -> int:

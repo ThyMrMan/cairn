@@ -254,10 +254,46 @@ run against a real archived page, recorded in
 — gate removed, hiding rule removed, post computed `visible`, and an ordinary
 page left with all four of its `<style>` elements intact.
 
+## `cookie_bridge_probe.py` — can wget use a browsertrix profile's cookies?
+
+`docs/00` D4 says every auth mode ends as a cookie jar and the engine only
+ever sees `--load-cookies`. The browser profile broke that: it was the one
+producer with no jar, so choosing a browser profile silently also chose
+browsertrix.
+
+Whether a bridge is possible turns on one thing — where Chromium got the key
+that encrypts `Default/Cookies`. With an OS keyring, from the keyring, and
+there is none in a container. Without one, from a **hardcoded** password.
+
+**Measured on `webrecorder/browsertrix-crawler:1.14.1`, 2026-08-16:**
+
+| | |
+|---|---|
+| profile tarball | 41,308,619 bytes for one page visit |
+| stored value | 67 bytes, prefix `v10` |
+| domain hash | present — Chromium 130+ prepends SHA-256 of the host |
+| recovered | equal to the known plaintext |
+
+`v10` is the answer. `PBKDF2-HMAC-SHA1("peanuts", "saltysalt", 1, 16)`,
+AES-128-CBC, IV of sixteen spaces.
+
+**The check is equality, not absence of an exception.** A wrong key decrypts
+to bytes just the same, so "it ran" proves nothing; the fixture serves a known
+value and the probe compares against it. It also asserts that narrowing by
+host *excludes* — a bridge that quietly copied the whole cookie store would
+otherwise pass.
+
+It runs the shipped `profiles.cookies_from_browser_profile`, not a copy, so it
+cannot pass against a mock of the thing being shipped.
+
+**The fixture is a login page on purpose.** `create-login-profile --automated`
+hunts for username and password fields and waits indefinitely when a page has
+none — one five-minute timeout to discover.
+
 ## Running them
 
-`resume_probe.py`, `resume_probe2.py`, `pagination_probe.py` and
-`head_insert_probe.py` need Docker;
+`resume_probe.py`, `resume_probe2.py`, `pagination_probe.py`,
+`head_insert_probe.py` and `cookie_bridge_probe.py` need Docker;
 the last re-execs itself into `cairn:latest` (override with `CAIRN_IMAGE`).
 `synthetic_record_probe.py` and `overlay_probe.py` run against the app's own
 venv; the last takes a capture's `warc/` directory and is worth pointing at any
@@ -269,4 +305,5 @@ python scripts/probes/pagination_probe.py
 python scripts/probes/synthetic_record_probe.py
 python scripts/probes/overlay_probe.py /archives/Unfiled/blog/captures/<capture>/warc
 python scripts/probes/head_insert_probe.py
+python scripts/probes/cookie_bridge_probe.py
 ```

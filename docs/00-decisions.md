@@ -42,6 +42,14 @@ Every non-obvious choice, why it was made, and what was rejected. Read this befo
 
 **Rejected.** Making userscript support conditional on a browser engine. That would mean "pick cookies *or* userscript" also silently means "pick wget *or* browser", coupling two unrelated choices in the UI.
 
+**The coupling arrived anyway, from the other end.** M7's browsertrix engine takes `--profile <tar.gz>` and has no cookie option at all, so the browser-profile mode became the one producer with *no* jar — and choosing it silently chose the engine, which is exactly the shape rejected above. It went unnoticed because it reads as an engine capability rather than a UI coupling.
+
+Closed by deriving the jar from the tarball. A profile is a Brave user-data-dir whose `Default/Cookies` is SQLite with plaintext `host_key` and `name` and encrypted values; in a container there is no OS keyring, so Chromium falls back to a hardcoded password and the values are readable. Measured against browsertrix-crawler 1.14.1 rather than recalled (`scripts/probes/cookie_bridge_probe.py`): a real 41 MB tarball, values stored `v10`, plaintext recovered exactly.
+
+So D4 holds again in both directions — **every mode produces a jar, and a browser profile now works on every engine.** The reverse does not: browsertrix still cannot use a jar, because a jar cannot be turned back into a browser profile. That asymmetry is worth stating plainly in the UI rather than hiding, and it makes the browser profile the mode to prefer when either would do.
+
+**The jar is narrowed to the site's own hosts.** A profile minted by signing into Google is a full account session, and a jar is a far more portable form of it than a sealed 41 MB tarball. There is no reason a blog crawl needs the whole browser's cookies on disk to fetch one host.
+
 ---
 
 ## D5 — SQLite, not Postgres

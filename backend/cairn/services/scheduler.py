@@ -380,9 +380,24 @@ class Scheduler:
                 temp_dir.mkdir(parents=True, exist_ok=True)
                 with contextlib.suppress(OSError):
                     temp_dir.chmod(0o700)
-                material = profiles.materialize(session, self._sealer, site.profile_id, temp_dir)
+                material = profiles.materialize(
+                    session,
+                    self._sealer,
+                    site.profile_id,
+                    temp_dir,
+                    # Passed so a browser-profile-only site can have a jar
+                    # derived for it. A feed poll is a plain HTTP fetch and has
+                    # no way to use a tarball, so before this a gated blog with
+                    # a browser profile polled its feed signed out.
+                    self._settings,
+                    hosts=[site.primary_host] if site.primary_host else None,
+                )
                 if material is not None:
-                    auth["cookies_file"] = str(material.cookies_file)
+                    # Guarded: `str(None)` wrote the literal "None" as a path,
+                    # which is a file that does not exist and an error nobody
+                    # would recognise.
+                    if material.cookies_file is not None:
+                        auth["cookies_file"] = str(material.cookies_file)
                     if material.user_agent:
                         auth["user_agent"] = material.user_agent
             return state, auth, temp_dir

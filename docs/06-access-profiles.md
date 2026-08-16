@@ -15,10 +15,23 @@ flowchart LR
     A["Mode: cookies<br/>upload cookies.txt"] --> J[("Cookie jar<br/>Netscape format")]
     B["Mode: userscript<br/>upload .user.js"] -->|"headless Chromium<br/>pre-flight"| J
     C["Mode: interactive<br/>click through in UI"] -->|"save browser session"| J
-    J --> W["Engine<br/>--load-cookies"]
+    D["Browser profile<br/>browsertrix tarball"] -->|"decrypt Default/Cookies,<br/>narrowed to this site's hosts"| J
+    D --> X["browsertrix<br/>--profile"]
+    J --> W["Any engine<br/>--load-cookies"]
 ```
 
 This is what makes the per-site mode selector meaningful. Choosing `userscript` changes *how the credential is obtained*, not which crawler you're allowed to use.
+
+**The browser profile broke that for a while, and the fourth arrow is the repair.** browsertrix takes `--profile <tar.gz>` and has no cookie option at all, so the profile was the one producer with no jar — and attaching one silently also chose the engine, which is precisely the coupling [D4](00-decisions.md#d4--tampermonkey-userscripts-run-in-a-pre-flight-not-during-the-crawl) rejected. It went unnoticed because it looks like an engine capability rather than a UI coupling. Cairn now reads the tarball's `Default/Cookies` and derives a jar, so a profile minted by signing in works on every engine.
+
+**The asymmetry is real and worth saying out loud rather than hiding.** A tarball can produce a jar; a jar cannot produce a tarball. So:
+
+| You have | wget | browsertrix |
+|---|---|---|
+| `cookies.txt`, userscript, or interactive | yes | **no** |
+| browser profile | yes, derived | yes, native |
+
+Which makes the browser profile the mode to prefer whenever either would do — it is the only one that constrains nothing. An uploaded jar still wins over a derived one when a profile holds both: it is what somebody chose for this site, and it may be deliberately narrower than the browser's whole cookie store.
 
 ---
 
