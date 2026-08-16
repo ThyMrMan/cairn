@@ -334,6 +334,21 @@ export type SiteDetail = Site & {
   companion_pass?: CompanionPass | null;
 };
 
+/** Which links in the archived pages replay cannot answer. Only links to
+ *  pages on a crawled host that the scope did not refuse are counted — a link
+ *  off-site or to something deliberately rejected is the boundary, not a gap. */
+export type LinkReport = {
+  ok: boolean;
+  pages_scanned: number;
+  links_seen: number;
+  in_scope: number;
+  resolved: number;
+  dead_count: number;
+  dead: { target: string; sources: string[]; link_count: number }[];
+  truncated: boolean;
+  index_records: number;
+};
+
 export type CompanionPass = {
   id: string;
   name: string;
@@ -1480,6 +1495,7 @@ export const endpoints = {
         (timestamp ? `&timestamp=${timestamp}` : ""),
     ),
   reindex: (id: number) => api.post<{ records: number; warcs: number }>(`/sites/${id}/reindex`),
+  checkLinks: (id: number) => api.get<LinkReport>(`/sites/${id}/replay/links`),
 
   // ── the reader view ────────────────────────────────────────────────────
   readerPage: (id: number, url: string, capture?: string) =>

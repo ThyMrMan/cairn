@@ -25,7 +25,7 @@ from cairn.api.deps import AppSettings, CurrentUser, DbSession
 from cairn.api.errors import ApiError
 from cairn.db.models import Site
 from cairn.logging import get_logger
-from cairn.services import replay
+from cairn.services import linkcheck, replay
 from cairn.services import sites as site_service
 
 log = get_logger(__name__)
@@ -125,6 +125,26 @@ def reindex(
     except replay.ReplayError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     return {"records": result.records, "warcs": result.warcs}
+
+
+@router.get("/sites/{site_id}/replay/links")
+def check_links(
+    site_id: int,
+    db: DbSession,
+    settings: AppSettings,
+    _user: CurrentUser,
+    budget: int = Query(linkcheck.DEFAULT_PAGE_BUDGET, ge=1, le=100_000),
+) -> dict[str, Any]:
+    """Which links in the archived pages does replay fail to answer?
+
+    Read-only and idempotent, so a GET — it opens WARCs and the index and
+    changes neither. Synchronous like the export verifier, and bounded by
+    `budget` for the same reason: a check somebody runs after a capture should
+    answer, not queue.
+    """
+    site = _require_site(db, site_id)
+    report = linkcheck.check_links(db, settings, site, budget=budget)
+    return report.to_dict()
 
 
 @router.get("/sites/{site_id}/replay/record")

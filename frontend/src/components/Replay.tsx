@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState, type FormEvent } from "react";
 
-import { endpoints, type CdxVersion } from "../lib/api";
+import { ApiError, endpoints, type CdxVersion, type LinkReport } from "../lib/api";
 import { dateTime, readableTimestamp } from "../lib/format";
 import { Reader } from "./Reader";
 import { Alert, EmptyState, Spinner } from "./ui";
@@ -87,6 +87,12 @@ export function Replay({
       await client.invalidateQueries({ queryKey: ["replay-versions", siteId] });
     },
   });
+
+  // Beside Rebuild index because it answers the question people ask right
+  // after pressing it: the index says how many records it holds, and this says
+  // whether the archived pages can actually reach them. Read-only, so it runs
+  // on demand rather than after every capture — it opens every WARC.
+  const links = useMutation({ mutationFn: () => endpoints.checkLinks(siteId) });
 
   if (status.isLoading) return <Spinner className="h-5 w-5 text-muted" />;
   if (!status.data) return <Alert kind="error">Replay status could not be loaded.</Alert>;
@@ -344,11 +350,25 @@ export function Replay({
           {data.records.toLocaleString()} records indexed
           {data.indexed_at ? ` · ${dateTime(new Date(data.indexed_at * 1000).toISOString())}` : ""}
         </p>
-        <button className="btn-ghost text-xs" onClick={() => reindex.mutate()} disabled={reindex.isPending}>
-          {reindex.isPending && <Spinner />}
-          Rebuild index
-        </button>
+        <div className="flex gap-2">
+          <button
+            className="btn-ghost text-xs"
+            onClick={() => links.mutate()}
+            disabled={links.isPending}
+            title="Open the archived pages and check that every link they carry resolves in the index"
+          >
+            {links.isPending && <Spinner />}
+            Check links
+          </button>
+          <button className="btn-ghost text-xs" onClick={() => reindex.mutate()} disabled={reindex.isPending}>
+            {reindex.isPending && <Spinner />}
+            Rebuild index
+          </button>
+        </div>
       </div>
+
+      {links.error && <Alert kind="error">{(links.error as ApiError).message}</Alert>}
+      {links.data && <LinkReportPanel report={links.data} />}
     </div>
   );
 }
@@ -389,3 +409,61 @@ function ModeSwitch({
 }
 
 export type { CdxVersion };
+
+
+/**
+ * What the link check found.
+ *
+ * Leads with the number that decides whether to act, and names the linking
+ * page for each dead target rather than only the target — "this URL is
+ * missing" is a fact, "and these pages point at it" is where you go to see it.
+ *
+ * A clean result says how much was checked. "No dead links" over an archive
+ * where nothing was in scope would read as a pass and mean nothing.
+ */
+function LinkReportPanel({ report }: { report: LinkReport }) {
+  if (report.ok) {
+    return (
+      <Alert kind="ok">
+        Every one of {report.in_scope.toLocaleString()} in-scope link
+        {report.in_scope === 1 ? "" : "s"} across {report.pages_scanned.toLocaleString()} archived
+        page{report.pages_scanned === 1 ? "" : "s"} resolves in the index.
+        {report.truncated && " Stopped at the page budget — re-run with a larger one to check the rest."}
+      </Alert>
+    );
+  }
+  return (
+    <div className="card p-4">
+      <p className="text-sm font-medium">
+        {report.dead_count.toLocaleString()} link target
+        {report.dead_count === 1 ? "" : "s"} do not resolve in replay
+      </p>
+      <p className="hint mt-0.5">
+        Out of {report.in_scope.toLocaleString()} link{report.in_scope === 1 ? "" : "s"} worth
+        checking across {report.pages_scanned.toLocaleString()} page
+        {report.pages_scanned === 1 ? "" : "s"}. Links off-site, and links the scope deliberately
+        rejects, are not counted.
+        {report.truncated && " Stopped at the page budget, so there may be more."}
+      </p>
+      <ul className="mt-3 space-y-2">
+        {report.dead.slice(0, 25).map((entry) => (
+          <li key={entry.target} className="border-t border-border pt-2 text-xs">
+            <code className="break-all">{entry.target}</code>
+            <p className="hint mt-0.5">
+              linked from {entry.link_count} page{entry.link_count === 1 ? "" : "s"}
+              {entry.sources.length > 0 && (
+                <>
+                  {" · e.g. "}
+                  <code className="break-all">{entry.sources[0]}</code>
+                </>
+              )}
+            </p>
+          </li>
+        ))}
+      </ul>
+      {report.dead.length > 25 && (
+        <p className="hint mt-2">…and {report.dead.length - 25} more.</p>
+      )}
+    </div>
+  );
+}
