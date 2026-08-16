@@ -76,9 +76,15 @@ export function DomainPicker({ siteId, onChanged }: { siteId: number; onChanged?
     },
   });
 
-  const preset = discovery.data?.discovery?.summary.fingerprint.preset ?? null;
+  const fingerprint = discovery.data?.discovery?.summary.fingerprint ?? null;
+  const preset = fingerprint?.preset ?? null;
+  // Variants of the detected preset. Offered as their own buttons rather than
+  // hidden behind a menu, because the point of a variant is that you try it,
+  // capture, and switch back — and each preset retires what the other adds, so
+  // switching is a real comparison rather than an accumulation.
+  const alternatives = fingerprint?.alternatives ?? [];
   const applyPreset = useMutation({
-    mutationFn: () => endpoints.applyPreset(siteId, preset?.id ?? ""),
+    mutationFn: (presetId: string) => endpoints.applyPreset(siteId, presetId),
     onSuccess: async () => {
       setDraft(null);
       await client.invalidateQueries({ queryKey: ["discovery", siteId] });
@@ -182,13 +188,26 @@ export function DomainPicker({ siteId, onChanged }: { siteId: number; onChanged?
         {preset && (
           <button
             className="btn-ghost px-2 py-1 text-xs"
-            onClick={() => applyPreset.mutate()}
+            onClick={() => applyPreset.mutate(preset.id)}
             disabled={applyPreset.isPending}
+            title={preset.notes}
           >
-            {applyPreset.isPending && <Spinner />}
+            {applyPreset.isPending && applyPreset.variables === preset.id && <Spinner />}
             apply the {preset.name} preset
           </button>
         )}
+        {alternatives.map((alt) => (
+          <button
+            key={alt.id}
+            className="btn-ghost px-2 py-1 text-xs"
+            onClick={() => applyPreset.mutate(alt.id)}
+            disabled={applyPreset.isPending}
+            title={alt.notes}
+          >
+            {applyPreset.isPending && applyPreset.variables === alt.id && <Spinner />}
+            apply {alt.name}
+          </button>
+        ))}
       </div>
 
       <div className="card overflow-x-auto">

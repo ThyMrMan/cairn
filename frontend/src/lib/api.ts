@@ -780,6 +780,8 @@ export type DiscoveredHost = {
   allow_extensionless: boolean;
 };
 
+export type PlatformPreset = { id: string; name: string; notes: string };
+
 export type DiscoverySummary = {
   seed_url: string;
   seed_host: string;
@@ -788,7 +790,11 @@ export type DiscoverySummary = {
     platform: string;
     confidence: string;
     evidence: string[];
-    preset: { id: string; name: string; notes: string } | null;
+    preset: PlatformPreset | null;
+    /** Variants of the detected preset, offered beside it so the two can be
+     * compared on the same site. Absent on discoveries recorded before
+     * variants existed. */
+    alternatives?: PlatformPreset[];
   };
   robots: { fetched: boolean; sitemaps: string[]; disallowed: string[] };
   sitemaps: string[];

@@ -207,6 +207,64 @@ datapackage-digest.json                sha256 of datapackage.json
 
 ---
 
+## What replay does with a URL that was never captured
+
+Every reject in a scope is a bet that the link pointing at that URL either does not exist or does not matter. Replay is where the bet settles, and pywb's answer is not "404" as often as you would think — it has a fuzzy matcher that rescues some misses and not others. Which ones is worth knowing exactly, because it is the difference between a reject that is free and a reject that leaves a dead link on every page.
+
+**Measured against the pinned 2.9.1 in the image**, not reasoned about. The catch-all rule in pywb's `rules.yaml` is:
+
+```yaml
+    - url_prefix: ''
+      fuzzy_lookup:
+        match: '()'
+```
+
+Its prefix is empty, so `is_custom` is false and every candidate must additionally pass `match_general_fuzzy_query` in `pywb/warcserver/index/fuzzymatcher.py`. That accepts on one of two grounds:
+
+1. **The request path's last segment has a file extension** — and is not one of `asp`, `aspx`, `jsp`, `php`, `pl`, `exe`, `dll`. Then *any* query string resolves to that path.
+2. The two URLs differ only by a known cache-buster: `_`, `cb`, `uncache`, `utm_*`, `callback=jsonpCallback…`.
+
+Everything else is an exact lookup. On Blogger that one distinction decides the whole table, because posts and static pages end in `.html` while `/`, `/search` and `/search/label/X` do not:
+
+| Requested | Result |
+|---|---|
+| `/2019/04/post.html?m=1` | **200** — replays the post |
+| `/2019/04/post.html?showComment=…` | **200** — replays the post |
+| `/2019/04/post.html?replytocom=…` | **200** — replays the post |
+| `/p/about.html?m=1` | **200** — replays the page |
+| `/?m=1` | **404** |
+| `/search/label/Recipes?m=1` | **404** |
+| `/search/label/Recipes?updated-max=…` | **404** |
+| `/search?updated-max=…` never captured | **404** |
+
+Two things follow.
+
+**Some rejects are free.** `?m=1`, `?showComment=` and `?replytocom=` are rejected by the Blogger preset and still replay correctly wherever they appear in bulk, because they appear on `.html` URLs. What `?m=1` does cost is the footer's "View mobile version" link on the homepage and on label pages.
+
+**A missing pagination URL 404s cleanly.** It does not silently serve a different page — confirmed with bare `/search` present in the collection, which is a real page on every Blogger blog and still did not get substituted. An archive with a rejected pager is honest about the gap rather than pretending to paginate.
+
+**The trap is opting in to fuzzy matching, not the default.** A rule with a non-empty `url_prefix` sets `is_custom`, which skips the general check entirely and accepts whatever the prefix search returns. A rule like `fuzzy_lookup: [updated-max, max-results]` for a blog's key prefix would therefore serve an arbitrary pagination page for any pagination URL — a pager that looks like it works and loops. It also needs a patched `rules.yaml` inside the image, which nothing here generates. Don't.
+
+### Rebuilding a pager rather than crawling it
+
+This is why the lean Blogger preset exists, and it is worth recording what a rebuild would take, since the measurements above are most of the design.
+
+The mechanism is not a pywb feature. It is **synthetic WARC records**: generate the index pages after the crawl, write them as ordinary `response` records in their own WARC, and let `build_index` pick them up. It globs `captures/*/warc/*.warc.gz` and fully rebuilds every time, so the layer costs one file in the tree and nothing in code. Downstream — CDXJ, pywb, the capture selector, WACZ export, ReplayWeb.page — cannot tell a synthetic record from a crawled one.
+
+Verified against the pinned `warcio`, `cdxj-indexer` and `surt`:
+
+- A hand-written `response` record indexes byte-identically to a crawled one and reads back at its offset through the same path `read_record` uses. Custom response headers survive.
+- Canonicalization collapses parameter order, `%2B` vs `+`, `%3A` vs `:`, and trailing `#fragments` to one key. You do not have to reproduce Blogger's encoding.
+- **It does not collapse anything else.** `&start=7&by-date=false` is a different key, and so is `&m=1`. With no fuzzy safety net for extension-less paths, every synthetic record must be keyed under the exact parameter set of the link pointing at it.
+
+The last point constrains the design in one specific way: **the first hop is the only link you do not control.** Page 1 is the real captured homepage and its pager href is whatever the theme wrote, so page 2 must be minted under exactly that URL, parsed out of the archived homepage. From page 2 onward the generator emits both the page and its links and can hold one spelling. Building the chain should end by walking it and asserting every href resolves in the CDXJ — the same shape as the WACZ export's `verify`.
+
+The post list comes from `/feeds/posts/default?start-index=1&max-results=500&alt=json`, which is `ceil(posts / 500)` requests for the whole blog and carries the timestamps the pager keys on. Those fetches are real captures and belong in the WARC.
+
+**It would be fabricating archival evidence, and that is the part to get right.** These are records the origin never served. Separate WARC named for what it is, a `warcinfo` declaring the generator, an `X-Cairn-Synthetic` response header on every record, a visible banner in the page body, and a toggle — the full-rebuild indexer makes adding or dropping the layer a file move plus a reindex. The principle is the one this document already applies to the reader view and to orphaned annotations: a reconstruction is offered as a reconstruction, never passed off as a capture.
+
+---
+
 ## Records are not pages
 
 wget writes three `metadata://gnu.org/software/wget/warc/…` records into every WARC — its manifest, its log and its arguments. They are the crawler talking about itself, they are not http(s), and nothing replays them, so they are filtered out of the CDXJ. Left in, a capture whose only real record was a redirect looked like a site with four records, and the replay tab offered an iframe for it.

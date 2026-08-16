@@ -18,6 +18,10 @@ from typing import Any
 from urllib.parse import urlsplit
 
 BLOGGER = "blogger"
+# A variant of BLOGGER rather than a platform of its own: nothing fingerprints
+# to it, and it is only ever reached by being offered alongside the preset that
+# does. See BLOGGER_LEAN_PRESET.
+BLOGGER_LEAN = "blogger-lean"
 WORDPRESS = "wordpress"
 GHOST = "ghost"
 SUBSTACK = "substack"
@@ -35,7 +39,8 @@ class Preset:
     hosts_off: list[str] = field(default_factory=list)
     extensionless_ok: list[str] = field(default_factory=list)
     reject_patterns: list[tuple[str, str]] = field(default_factory=list)
-    # Patterns this preset used to ship and no longer stands behind.
+    # Patterns this preset used to ship and no longer stands behind, *or* that
+    # a sibling variant adds and this one deliberately does not.
     #
     # Applying a preset merges patterns *in*, which is right — it must never
     # discard something added by hand. But it meant a preset could only ever
@@ -43,7 +48,16 @@ class Preset:
     # the wrong rule stayed in every scope that already had it, with no way to
     # tell it from a deliberate choice. Naming the retired ones is what makes
     # a correction propagate.
+    #
+    # The second use falls out of the first and is what makes two variants of
+    # one platform comparable: each retires what the other adds, so switching
+    # between them lands on exactly the scope that preset describes rather than
+    # the union of every preset ever applied. Without it, trying the lean
+    # Blogger preset would be a one-way door.
     retired_patterns: list[str] = field(default_factory=list)
+    # Sibling presets to offer alongside this one when it is detected. Ids
+    # rather than objects, because the pair reference each other.
+    alternatives: tuple[str, ...] = ()
     sitemap_paths: tuple[str, ...] = ()
     feed_paths: tuple[str, ...] = ()
     notes: str = ""
@@ -56,10 +70,64 @@ class Preset:
             "hosts_off": self.hosts_off,
             "extensionless_ok": self.extensionless_ok,
             "reject_patterns": [{"pattern": p, "note": n} for p, n in self.reject_patterns],
+            "alternatives": list(self.alternatives),
             "notes": self.notes,
         }
 
 
+# The two generated-index chains that separate the standard Blogger preset from
+# the lean one. Named here because both reference them — the lean preset adds
+# them, the standard preset retires them — and switching between the two only
+# comes out clean if the strings are byte-identical.
+#
+# `[^#]*` rather than the older `/search\?updated-(max|min)=`, which required
+# the parameter to come first and so missed `?max-results=7&updated-max=…`.
+# Both spellings are retired by the standard preset, so a scope carrying either
+# is corrected.
+BLOGGER_PAGER_REJECT = r"/search\?[^#]*updated-(max|min)="
+# Blogger's month archives paginate the same way and nothing has ever rejected
+# them: one chain per month, so a ten-year blog carries 120 of them. The
+# `/search/label/` chain is already rejected by the standard preset; this is
+# the third member of the same family.
+BLOGGER_ARCHIVE_PAGER_REJECT = r"/[0-9]{4}/[0-9]{2}/\?[^#]*updated-(max|min)="
+
+# What pywb 2.9.1 does with a rejected URL when somebody clicks the link that
+# points at it. Measured in the container against the pinned version rather
+# than reasoned about, because it decides which rejects are free and which
+# leave a dead link — the question that got the Older-posts trail un-rejected
+# in the first place.
+#
+# pywb's catch-all fuzzy rule (`url_prefix: ''`, `match: '()'`) sends every
+# candidate through `match_general_fuzzy_query`, which accepts on one of two
+# grounds: the request path's last segment carries a **file extension** (and is
+# not one of asp/aspx/jsp/php/pl/exe/dll), in which case any query string
+# resolves to that path; or the two URLs differ only by a known cache-buster
+# (`_`, `cb`, `uncache`, `utm_*`, `callback=`).
+#
+# Blogger posts and static pages end in `.html`. `/`, `/search` and
+# `/search/label/X` do not. That single distinction decides every row:
+#
+#     post + ?m=1                       200  replays the post
+#     post + ?showComment=              200  replays the post
+#     post + ?replytocom=               200  replays the post
+#     /p/about.html + ?m=1              200  replays the page
+#     homepage + ?m=1                   404  dead link
+#     label page + ?m=1                 404  dead link
+#     label + updated-max               404  dead link
+#     /search?updated-max=… uncaptured  404  dead link
+#
+# Three of the rejects below are therefore free: `?m=1`, `?showComment=` and
+# `?replytocom=` all still resolve on the URLs that carry them in bulk. What
+# `?m=1` does cost is the footer's "View mobile version" link on the homepage
+# and on label pages, which is a dead link and was not previously recorded.
+#
+# The last row is the one that matters for the lean preset: an un-captured
+# pagination URL 404s **cleanly**, even when bare `/search` is in the
+# collection. It does not silently serve some other page. So a rejected
+# pagination trail fails loudly, which is what makes rebuilding it tractable —
+# and it is also why a rebuilt trail has no safety net, since every synthetic
+# record must be keyed under the exact parameter set of the link pointing at
+# it. `&start=7&by-date=false` is a different key from the same URL without it.
 BLOGGER_PRESET = Preset(
     id=BLOGGER,
     name="Blogger / Blogspot",
@@ -155,16 +223,26 @@ BLOGGER_PRESET = Preset(
             "plain feed is left alone — discovery reads it",
         ),
     ],
-    # Shipped until the Older-posts trail turned out to be a dead link in the
-    # archive rather than an infinite loop. Sites that already have it keep
-    # blocking their own pagination until the preset is applied again.
-    retired_patterns=[r"/search\?updated-(max|min)="],
+    # The first entry shipped until the Older-posts trail turned out to be a
+    # dead link in the archive rather than an infinite loop. The other two are
+    # what the lean variant adds, retired here so switching back is clean.
+    retired_patterns=[
+        r"/search\?updated-(max|min)=",
+        BLOGGER_PAGER_REJECT,
+        BLOGGER_ARCHIVE_PAGER_REJECT,
+    ],
+    alternatives=(BLOGGER_LEAN,),
     sitemap_paths=("/sitemap.xml",),
     feed_paths=("/feeds/posts/default",),
     notes=(
         "Blogger serves every post twice — the desktop URL and a ?m=1 mobile "
         "duplicate that most themes link to in the footer. Rejecting it halves "
-        "the crawl with no content loss.\n\n"
+        "the crawl with no content loss: measured against pywb, a post or page "
+        "requested with ?m=1 replays the copy captured without it, because the "
+        "path ends in .html. The same rescue covers ?showComment= and "
+        "?replytocom=. It does not cover the homepage or label pages, whose "
+        "paths have no extension — so the footer's 'View mobile version' link "
+        "is dead on those two.\n\n"
         "Everything under /search is robots-disallowed, and that is one switch "
         "covering two very different things. Label pages (/search/label/X) are "
         "one per label and each re-lists posts you already have — a 43-post "
@@ -174,7 +252,84 @@ BLOGGER_PRESET = Preset(
         "So: turn off 'obey robots.txt' to get the Older-posts trail. Label "
         "pages come with it — add a reject for /search/label/ in this site's "
         "patterns if you do not want them. Pagination *inside* a label is "
-        "rejected either way, since that is the combination that multiplies."
+        "rejected either way, since that is the combination that multiplies.\n\n"
+        "On a large blog the trail stops being cheap — it is one page per five "
+        "posts, and every one of them re-renders five full posts. The lean "
+        "variant of this preset rejects it; read its notes before switching, "
+        "because it trades a dead Older-posts link for the time saved."
+    ),
+)
+
+# Everything the standard preset rejects, plus the two remaining generated-index
+# chains. Offered beside it rather than replacing it, because which way to trade
+# depends on the size of the blog and on whether the pager is being rebuilt.
+#
+# **It is honest about what it costs today.** The rebuild described in docs/07
+# does not exist yet, so applying this now buys a faster crawl and a dead
+# Older-posts link — measured as a clean 404, not a page that silently loops.
+# Naming it "lean" rather than "rebuilt" is deliberate: the saving is real
+# whether or not the rebuild is ever built, and the notes should not promise a
+# feature by implication.
+#
+# The arithmetic, which is arithmetic and not a measurement: the trail is
+# `posts / page_size` pages, so 3,000 posts at 7 per page is ~430 and 38,000 is
+# ~5,400. Wall-clock saving is larger than the page count suggests, because an
+# index page renders `page_size` full posts and a browser engine runs autoscroll
+# and autofetch over all of it. Time a real blog before believing a number.
+#
+# The larger saving is on *re*-capture and is structural. Blogger keys each
+# pager URL on the last post of the previous page, so one new post shifts every
+# boundary in the chain: the whole trail becomes new URLs and is crawled again,
+# while the previous chain stays in the index forever. That is an O(posts) cost
+# on every scheduled capture, and it compounds — ten captures of a 38,000-post
+# blog carry 54,000 pagination records for content already held.
+BLOGGER_LEAN_PRESET = Preset(
+    id=BLOGGER_LEAN,
+    name="Blogger / Blogspot — lean",
+    assets_on=list(BLOGGER_PRESET.assets_on),
+    hosts_off=list(BLOGGER_PRESET.hosts_off),
+    extensionless_ok=list(BLOGGER_PRESET.extensionless_ok),
+    reject_patterns=[
+        *BLOGGER_PRESET.reject_patterns,
+        (
+            BLOGGER_PAGER_REJECT,
+            "the Older-posts trail — one page per five posts, each re-rendering "
+            "five full posts you already have. This is the whole difference "
+            "between the two Blogger presets, and it makes that link dead",
+        ),
+        (
+            BLOGGER_ARCHIVE_PAGER_REJECT,
+            "the same trail again inside each month archive, one chain per "
+            "month. Rejected by neither preset until now",
+        ),
+    ],
+    # Nothing to retire: this is the standard preset's rejects plus two. Going
+    # the other way is what needs the retirement, and the standard preset has it.
+    retired_patterns=[],
+    alternatives=(BLOGGER,),
+    sitemap_paths=BLOGGER_PRESET.sitemap_paths,
+    feed_paths=BLOGGER_PRESET.feed_paths,
+    notes=(
+        "The standard Blogger preset plus the two remaining pagination chains: "
+        "the Older-posts trail (/search?updated-max=) and the one inside each "
+        "month archive. Label pagination is rejected by both.\n\n"
+        "**What you gain.** The trail is one page per five posts, and each page "
+        "re-renders five full posts — so it is a larger share of the crawl's "
+        "time than of its URL count. It costs more again on every recapture: "
+        "one new post shifts every pagination boundary, so the entire trail is "
+        "re-crawled as new URLs each time, and the old chain stays in the index.\n\n"
+        "**What you lose, today.** The 'Older posts' link at the bottom of every "
+        "archived page. Measured against pywb: it is a clean 404, not a page "
+        "that silently serves the wrong content — so the archive is honest "
+        "about the gap rather than pretending to paginate. Every post is still "
+        "in the archive and still reachable, from the sitemap, from search, and "
+        "from any link inside another post.\n\n"
+        "Posts, static pages, labels and month archives are all untouched. This "
+        "removes redundant *views* of content the crawl already has; it does "
+        "nothing about the posts and images themselves, which are the floor.\n\n"
+        "Switching back to the standard preset restores the trail — each preset "
+        "retires what the other adds, so the two are directly comparable on the "
+        "same site."
     ),
 )
 
@@ -436,6 +591,7 @@ PRESETS: dict[str, Preset] = {
     p.id: p
     for p in (
         BLOGGER_PRESET,
+        BLOGGER_LEAN_PRESET,
         WORDPRESS_PRESET,
         GHOST_PRESET,
         SUBSTACK_PRESET,
@@ -456,12 +612,27 @@ class Fingerprint:
     def preset(self) -> Preset | None:
         return PRESETS.get(self.platform)
 
+    @property
+    def alternatives(self) -> list[Preset]:
+        """Sibling presets worth offering beside the detected one.
+
+        Expanded here rather than in `Preset.to_dict` because the variants
+        reference each other, and a preset that embedded its alternatives
+        whole would not terminate.
+        """
+        preset = self.preset
+        if preset is None:
+            return []
+        found = (PRESETS.get(alt_id) for alt_id in preset.alternatives)
+        return [alt for alt in found if alt is not None]
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "platform": self.platform,
             "confidence": self.confidence,
             "evidence": self.evidence,
             "preset": self.preset.to_dict() if self.preset else None,
+            "alternatives": [alt.to_dict() for alt in self.alternatives],
         }
 
 

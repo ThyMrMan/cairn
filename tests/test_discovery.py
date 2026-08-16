@@ -23,6 +23,10 @@ from cairn.discovery.hosts import (
 )
 from cairn.discovery.platform import (
     BLOGGER,
+    BLOGGER_ARCHIVE_PAGER_REJECT,
+    BLOGGER_LEAN,
+    BLOGGER_LEAN_PRESET,
+    BLOGGER_PAGER_REJECT,
     BLOGGER_PRESET,
     DISCOURSE,
     DISCOURSE_PRESET,
@@ -584,13 +588,17 @@ def test_blogger_com_is_split_rather_than_dropped_wholesale() -> None:
     )
 
 
-def blogger_rejects() -> re.Pattern[str]:
+def rejects_for(preset: Preset) -> re.Pattern[str]:
     scope = Scope(
         seeds=["https://b.blogspot.com/"],
         hosts=[HostRule("b.blogspot.com", crawl_pages=True, fetch_assets=True)],
-        reject_patterns=[p for p, _note in BLOGGER_PRESET.reject_patterns],
+        reject_patterns=[p for p, _note in preset.reject_patterns],
     )
     return re.compile(combine_patterns(build_reject_patterns(scope)))
+
+
+def blogger_rejects() -> re.Pattern[str]:
+    return rejects_for(BLOGGER_PRESET)
 
 
 def test_blogger_furniture_a_browser_fetches_is_rejected() -> None:
@@ -738,3 +746,122 @@ def test_retiring_is_idempotent_and_quiet_when_there_is_nothing_to_retire() -> N
         reject_patterns=[p for p, _ in BLOGGER_PRESET.reject_patterns],
     )
     assert apply_preset_to_scope(scope, BLOGGER_PRESET, ["b.blogspot.com"]) == []
+
+
+# ── the lean Blogger variant ─────────────────────────────────────────────
+
+
+def test_the_lean_preset_differs_from_the_standard_one_only_by_pagination() -> None:
+    """The whole point of a variant is that the difference is legible.
+
+    If the two drift apart on hosts or on unrelated rejects, "try the lean one
+    and compare" stops measuring pagination and starts measuring everything.
+    """
+    standard = {p for p, _ in BLOGGER_PRESET.reject_patterns}
+    lean = {p for p, _ in BLOGGER_LEAN_PRESET.reject_patterns}
+
+    assert standard < lean, "the lean preset must be a strict superset"
+    assert lean - standard == {BLOGGER_PAGER_REJECT, BLOGGER_ARCHIVE_PAGER_REJECT}
+    assert BLOGGER_LEAN_PRESET.assets_on == BLOGGER_PRESET.assets_on
+    assert BLOGGER_LEAN_PRESET.hosts_off == BLOGGER_PRESET.hosts_off
+    assert BLOGGER_LEAN_PRESET.extensionless_ok == BLOGGER_PRESET.extensionless_ok
+
+
+def test_the_lean_preset_rejects_the_trail_the_standard_one_keeps() -> None:
+    standard, lean = blogger_rejects(), rejects_for(BLOGGER_LEAN_PRESET)
+    trail = "https://b.blogspot.com/search?updated-max=2019-12-09T22:33:00%2B01:00&max-results=5"
+
+    assert not standard.search(trail)
+    assert lean.search(trail)
+    # The older pattern required `updated-max` to come first, so this spelling —
+    # which Blogger also emits — slipped through it.
+    assert lean.search(
+        "https://b.blogspot.com/search?max-results=7&updated-max=2019-12-09T22:33:00%2B01:00"
+    )
+
+
+def test_the_lean_preset_rejects_month_archive_pagination() -> None:
+    """The third member of the family, which neither preset caught before.
+
+    One chain per month, so a ten-year blog carries 120 of them.
+    """
+    standard, lean = blogger_rejects(), rejects_for(BLOGGER_LEAN_PRESET)
+    archive = (
+        "https://b.blogspot.com/2019/04/?updated-max=2019-04-09T22:33:00%2B01:00&max-results=7"
+    )
+
+    assert not standard.search(archive)
+    assert lean.search(archive)
+    # The month archive itself is navigation and stays.
+    assert not lean.search("https://b.blogspot.com/2019/04/")
+
+
+def test_the_lean_preset_still_reaches_every_post_and_its_own_feed() -> None:
+    """It removes redundant *views*, never content.
+
+    The pager patterns sit one careless character away from `/search/label/`
+    and from the post URLs themselves, and both would fail silently — by
+    archiving less, with no error anywhere.
+    """
+    lean = rejects_for(BLOGGER_LEAN_PRESET)
+    for url in (
+        "https://b.blogspot.com/2019/05/a-real-post.html",
+        "https://b.blogspot.com/p/about.html",
+        "https://b.blogspot.com/search/label/Recipes",
+        "https://b.blogspot.com/2019/04/",
+        "https://b.blogspot.com/feeds/posts/default",
+        "https://b.blogspot.com/feeds/posts/default?start-index=501&max-results=500&alt=json",
+        "https://b.blogspot.com/sitemap.xml",
+        "https://1.bp.blogspot.com/-abc/s1600/photo.jpg",
+    ):
+        assert not lean.search(url), url
+
+
+def test_switching_between_the_blogger_presets_is_a_round_trip() -> None:
+    """Try the lean preset, capture, switch back — and land where you started.
+
+    This is the whole reason `retired_patterns` does double duty. Applying a
+    preset merges *in*, so without each variant retiring what the other adds,
+    trying the lean one would be a one-way door: the pagination rejects would
+    stay forever, indistinguishable from a deliberate choice, and the
+    comparison the variant exists for could only be run once.
+    """
+    from cairn.services.discovery_service import apply_preset_to_scope
+
+    hand_added = r"^https?://mine\.example/"
+    scope = Scope(
+        seeds=["https://b.blogspot.com/"],
+        hosts=[HostRule("b.blogspot.com", crawl_pages=True, fetch_assets=True)],
+        reject_patterns=[p for p, _ in BLOGGER_PRESET.reject_patterns] + [hand_added],
+    )
+    before = sorted(scope.reject_patterns)
+
+    apply_preset_to_scope(scope, BLOGGER_LEAN_PRESET, ["b.blogspot.com"])
+    assert rejects_for(BLOGGER_LEAN_PRESET).search(
+        "https://b.blogspot.com/search?updated-max=2019-01-01T00:00:00-08:00"
+    )
+    assert BLOGGER_PAGER_REJECT in scope.reject_patterns
+
+    apply_preset_to_scope(scope, BLOGGER_PRESET, ["b.blogspot.com"])
+
+    assert sorted(scope.reject_patterns) == before
+    # And the pattern nobody's preset put there survived both passes.
+    assert hand_added in scope.reject_patterns
+
+
+def test_the_lean_variant_is_offered_beside_the_detected_preset() -> None:
+    """Nothing fingerprints to it, so being offered is the only way in.
+
+    A variant that can only be applied by knowing its id through the API is a
+    variant nobody will ever compare against anything.
+    """
+    detected = fingerprint(url="https://b.blogspot.com/")
+
+    assert detected.preset is BLOGGER_PRESET
+    assert [alt.id for alt in detected.alternatives] == [BLOGGER_LEAN]
+    assert detected.to_dict()["alternatives"][0]["name"] == BLOGGER_LEAN_PRESET.name
+    # Both directions, so the button is there to go back with.
+    assert BLOGGER in BLOGGER_LEAN_PRESET.alternatives
+    # And no platform detects as the variant itself.
+    assert PRESETS[BLOGGER_LEAN] is BLOGGER_LEAN_PRESET
+    assert fingerprint(url="https://b.blogspot.com/").platform == BLOGGER
