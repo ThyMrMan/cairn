@@ -58,12 +58,20 @@ def _cmd_replay_init(_args: argparse.Namespace) -> int:
     settings = get_settings()
     ensure_directories(settings)
     config = replay.write_config(settings)
+    # Written beside the config and from the same setting, so the two can
+    # never disagree: a config naming a template that is not there would make
+    # pywb fail to render any page at all.
+    head_insert = replay.write_templates(settings)
 
     engine = get_engine(settings.db_url)
     with sessionmaker_for(engine)() as session:
         linked, removed = replay.sync_collections(session, settings)
 
     print(f"Wrote {config}")
+    if head_insert:
+        print(f"Wrote {head_insert} (replay uncovers content-warning overlays)")
+    else:
+        print("Replay leaves content-warning overlays in place (replay_uncover_overlays=false)")
     print(f"Collections: {linked} linked, {removed} removed.")
     return 0
 

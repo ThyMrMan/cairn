@@ -73,6 +73,7 @@ framed_replay: true
 enable_cdx_api: true
 enable_memento: true
 enable_content_security_policy: true
+head_insert_html: cairn_head_insert.html   # omitted when uncovering is off
 port: 8081
 ```
 
@@ -89,6 +90,43 @@ This replaced an earlier design that listed `collections:` explicitly, because *
 `archive` points at the *site* directory, so the relative `filename` values in the CDXJ resolve across every capture.
 
 The tree is derived data: `cairn replay-init` rebuilds it and the config from the database, runs at every boot, and is what repairs a tree after a restore, a folder move, or a recreated volume.
+
+---
+
+## Uncovering a page the site drew a warning over
+
+**This is the one place Cairn changes what a replayed page renders**, so it is written down in full.
+
+Some sites answer `200` with the entire page and then draw a content warning on top of it — an iframe pointing at their gate, plus a stylesheet rule hiding everything else. Blogger's looks like this, straight from the archived bytes:
+
+```html
+<body class='loading'><iframe id="injected-iframe"
+   src="https://www.blogger.com/interstitial/blog?u=…"
+   style="position:absolute; z-index:999; visibility:visible"></iframe>
+<style>body { _height: 100%; } body * { visibility: hidden; }</style>
+```
+
+The page is complete underneath. Nothing is missing, nothing failed, and the access profile worked — a whole page had to arrive in order to be drawn over.
+
+**Why this cannot be fixed at capture time.** Measured across three captures of one blog ([06](06-access-profiles.md#it-is-no-longer-a-separate-page--it-is-drawn-over-the-real-one)): the acceptance cookie was present and sent throughout, one 63-character value identical across every capture, and so were the User-Agent and every client hint. The same 70 posts came back **clean at 03:27 and curtained at 13:57 the same day**. Nothing the operator controls decides it. Crawl-scope rejects cannot help either — `--exclude` filters the queue, and `--blockRules` exempts page navigation, which a frame document is.
+
+**Why withholding the gate from the index is not enough.** [Withholding](#what-replay-does-with-a-url-that-was-never-captured) removes the gate's *record*; the `<iframe>` and the hiding rule are in the post's own bytes. Take the record away and the same covering box renders pywb's "could not be found in this collection" instead. That is the overlay working as designed.
+
+So the only layer that can see the problem is the one rendering it.
+
+### How it is bounded
+
+- **Nothing is removed from the archive.** The WARC is untouched and so is every WACZ export. This is a pywb template, not a rewrite of stored bytes — turn it off and the original renders again.
+- **It fires only on the same structural pair `interstitial.overlay_blocked` requires**: a gate-framed iframe *and* a rule hiding the body. A framed gate over a page still visible underneath is a banner, and is left alone. A page with neither is never touched — verified in a browser against a real archived page: all four `<style>` elements intact, no marker, no notice.
+- **The marker list is substituted from `interstitial.URL_MARKERS`** rather than written out again, so the check that reports a curtained capture and the script that uncovers one cannot drift apart. A test asserts every marker reaches the template.
+- **It says so on the page** — a small fixed notice, plus `data-cairn-overlay-removed` on `<html>` for anything reading the DOM. An altered rendering that does not announce itself is the thing worth avoiding.
+- **`CAIRN_REPLAY_UNCOVER_OVERLAYS=false` turns it off.** The template is then deleted and the config key omitted, so pywb falls back to its own default and the path is exactly what it was before this existed.
+
+### Why it includes pywb's template instead of replacing it
+
+`head_insert_html` points at `cairn_head_insert.html`, which is `{% include "head_insert.html" %}` plus the script. The different filename is load-bearing: pywb resolves templates through a `ChoiceLoader` over `templates/` and then its own package, so the include reaches pywb's original rather than recursing.
+
+Overriding `head_insert.html` outright would mean carrying a copy of pywb's, which is version-coupled to wombat's bootstrap. A pywb upgrade would then serve pages with the URL rewriting silently gone — which looks fine until every link reaches the live site. Measured against 2.9.1 (`scripts/probes/head_insert_probe.py`): with the include, pywb's own insert is still present and ours is added; without it, the baseline arm proves the marker is not there already.
 
 ---
 

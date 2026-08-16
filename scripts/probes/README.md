@@ -218,9 +218,46 @@ against a literal search for the two markers; a non-zero `DISAGREE` fails the
 run. The fixtures in `test_postprocess.py` were written from these bytes, so a
 detector checked only against them would be marking its own homework.
 
+## `head_insert_probe.py` — can pywb's head insert be extended, not replaced?
+
+The follow-on from the overlay finding above. If the fix has to live at replay,
+replay needs to inject a script into every archived page — and the obvious way
+to do that is to override pywb's `head_insert.html`, which is the wrong way.
+That template carries wombat's bootstrap and is version-coupled to the pywb in
+the image; a copy would drift on the next upgrade and replay would keep serving
+pages with the URL rewriting quietly gone. That failure looks fine until every
+link on a replayed page reaches the live site.
+
+Under test: point `head_insert_html` at a *differently named* template that
+does `{% include "head_insert.html" %}`. pywb resolves templates through a
+ChoiceLoader over the filesystem directory and then its own package, so the
+include should reach pywb's original rather than recursing.
+
+**Measured on the pywb in `cairn:latest` (2.9.1), 2026-08-16:**
+
+| | wombat bootstrap | gate iframe rewritten | cairn script |
+|---|---|---|---|
+| pywb default | yes | yes | no |
+| cairn template | yes | yes | yes |
+
+**Arm 1 is the control that matters.** "Our marker is present" proves nothing
+on its own — if wombat vanished along with the override, the page would still
+contain our script and replay would still be broken. It also proves the marker
+was not already there, which would mean the arms were never isolated.
+
+It uses the template `replay.py` really generates, not a stand-in, and its page
+is synthetic, so it needs nothing outside the repo. What it does *not* answer
+is whether the script behaves: that happens in the browser after pywb has
+served the page. That half is covered by `test_replay.py` and by an in-browser
+run against a real archived page, recorded in
+[docs/07](../../docs/07-replay.md#uncovering-a-page-the-site-drew-a-warning-over)
+— gate removed, hiding rule removed, post computed `visible`, and an ordinary
+page left with all four of its `<style>` elements intact.
+
 ## Running them
 
-`resume_probe.py`, `resume_probe2.py` and `pagination_probe.py` need Docker;
+`resume_probe.py`, `resume_probe2.py`, `pagination_probe.py` and
+`head_insert_probe.py` need Docker;
 the last re-execs itself into `cairn:latest` (override with `CAIRN_IMAGE`).
 `synthetic_record_probe.py` and `overlay_probe.py` run against the app's own
 venv; the last takes a capture's `warc/` directory and is worth pointing at any
@@ -231,4 +268,5 @@ python scripts/probes/resume_probe.py && python scripts/probes/resume_probe2.py
 python scripts/probes/pagination_probe.py
 python scripts/probes/synthetic_record_probe.py
 python scripts/probes/overlay_probe.py /archives/Unfiled/blog/captures/<capture>/warc
+python scripts/probes/head_insert_probe.py
 ```

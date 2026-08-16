@@ -283,6 +283,103 @@ def test_generated_config_discovers_collections_rather_than_listing_them(
     assert "do not hand-edit" in path.read_text(encoding="utf-8")
 
 
+# ── uncovering a curtained page ──────────────────────────────────────────
+#
+# Some sites answer 200 with the whole page and draw a content warning over
+# it: an iframe at their gate, plus a rule hiding everything else. Blogger
+# does, and it is not fixable at capture time — the acceptance cookie and
+# every client header were byte-identical across two runs ten hours apart
+# while the same 70 posts came back clean and then curtained. So the page is
+# complete in the WARC and the archive still cannot show it, which puts the
+# fix at the only layer that can see the problem.
+
+
+def test_the_head_insert_includes_pywbs_rather_than_replacing_it(settings: Settings) -> None:
+    """Copying pywb's template would couple us to wombat's bootstrap.
+
+    A pywb upgrade would then serve pages with the URL rewriting silently
+    gone — which looks fine until every link reaches the live site.
+    """
+    path = replay.write_templates(settings)
+    assert path is not None
+    body = path.read_text(encoding="utf-8")
+
+    assert '{% include "head_insert.html" %}' in body
+    # A different filename is what makes the include resolve to pywb's copy
+    # instead of recursing into this one.
+    assert path.name != "head_insert.html"
+    assert "do not hand-edit" in body
+
+
+def test_the_uncover_script_and_the_capture_check_share_one_marker_list(
+    settings: Settings,
+) -> None:
+    """Two hand-kept lists would not stay agreed.
+
+    The check that reports a curtained capture and the script that uncovers it
+    have to mean the same thing by "a gate", or a page gets flagged and never
+    uncovered — or worse, uncovered without ever being flagged.
+    """
+    from cairn.services import interstitial
+
+    path = replay.write_templates(settings)
+    assert path is not None
+    body = path.read_text(encoding="utf-8")
+    for marker in interstitial.URL_MARKERS:
+        assert f'"{marker}"' in body, f"{marker} is checked at capture time but not at replay"
+
+
+def test_the_uncover_script_needs_both_halves_like_the_capture_check(
+    settings: Settings,
+) -> None:
+    """A framed gate over a page still visible underneath is a banner.
+
+    Removing it would be editing the site's design rather than recovering
+    content, so the script requires the hiding rule too — the same pair
+    `overlay_blocked` requires.
+    """
+    path = replay.write_templates(settings)
+    assert path is not None
+    body = path.read_text(encoding="utf-8")
+    assert "if (!styles.length) { return; }" in body
+    assert "visibility\\s*:\\s*hidden" in body
+
+
+def test_uncovering_declares_itself_on_the_page(settings: Settings) -> None:
+    """An altered rendering that does not say so is the thing to avoid."""
+    path = replay.write_templates(settings)
+    assert path is not None
+    body = path.read_text(encoding="utf-8")
+    assert "data-cairn-overlay-removed" in body
+    assert "content warning not shown" in body
+
+
+def test_turning_it_off_removes_the_template_and_the_config_key(
+    settings: Settings,
+) -> None:
+    """Off means pywb's own default, not a half-wired override.
+
+    A config naming a template that is not on disk would make pywb fail to
+    render any page at all, so the two are written from one setting and the
+    file is removed rather than left to confuse the next reader.
+    """
+    import yaml
+
+    written = replay.write_templates(settings)
+    assert written is not None and written.exists()
+
+    settings.replay_uncover_overlays = False
+    assert replay.write_templates(settings) is None
+    assert not written.exists()
+
+    config = yaml.safe_load(replay.write_config(settings).read_text(encoding="utf-8"))
+    assert "head_insert_html" not in config
+
+    settings.replay_uncover_overlays = True
+    config = yaml.safe_load(replay.write_config(settings).read_text(encoding="utf-8"))
+    assert config["head_insert_html"] == replay.HEAD_INSERT_FILE
+
+
 # ── records that are not pages ───────────────────────────────────────────
 #
 # From a real run: after capturing a gated blog, replay showed pywb's "could

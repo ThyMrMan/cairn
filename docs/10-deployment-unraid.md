@@ -140,6 +140,12 @@ It must stay a *functional* check. The obvious `wget --version | grep +pcre` is 
   <Config Name="TZ" Target="TZ" Default="America/New_York" Type="Variable" Required="true"/>
   <Config Name="CAIRN_MAX_CONCURRENT_JOBS" Target="CAIRN_MAX_CONCURRENT_JOBS"
           Default="2" Type="Variable" Required="false"/>
+  <Config Name="CAIRN_REPLAY_UNCOVER_OVERLAYS" Target="CAIRN_REPLAY_UNCOVER_OVERLAYS"
+          Default="true" Type="Variable" Required="false">
+    Show pages that a site archived in full and then drew a content warning over.
+    Set false to replay them exactly as stored, warning and all. Either way the
+    WARC is untouched — see docs/07.
+  </Config>
 </Container>
 ```
 

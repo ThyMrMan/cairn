@@ -49,6 +49,13 @@ class Settings(BaseSettings):
     replay_public_port: int = 0
     replay_public_url: str = ""
     app_public_url: str = ""
+    # Whether replay may uncover a page a site drew a content warning over.
+    # On by default because the alternative is an archive that holds a
+    # complete page and refuses to show it — but it is a setting, because it
+    # is the one place Cairn alters what a replayed page renders, and an
+    # operator who wants replay byte-faithful is entitled to that. The WARC is
+    # never touched either way; see docs/07.
+    replay_uncover_overlays: bool = True
 
     # ── secrets ──────────────────────────────────────────────────────────
     secret_key: str = ""
