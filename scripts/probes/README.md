@@ -70,10 +70,96 @@ Command-line options are not persisted in the state file and had to be
 reapplied alongside `--config` — costless here, since `_argv()` rebuilds them
 from the scope on every run anyway.
 
+## `pagination_probe.py` — what does replay serve for a URL the crawl rejected?
+
+Every reject is a bet that the link pointing at that URL does not matter, and
+replay is where the bet settles. pywb has a fuzzy matcher that rescues some
+misses, so "not captured" and "404" are not the same thing — and which is which
+decides whether a reject is free or leaves a dead link on every page. That is
+the question that got Blogger's Older-posts trail un-rejected once already.
+
+Three arms against a fixture collection, the first of which is the control.
+
+**Measured on the pinned pywb 2.9.1 in `cairn:latest`, 2026-08-16:**
+
+| Requested | Result |
+|---|---|
+| captured URL + `?utm_source=` | **200** — rescued |
+| asset + different cache-buster | **200** — rescued |
+| `/search?updated-max=…` never captured | **404** |
+| `/search?updated-max=…&start=7&by-date=false` | **404** |
+| `/2019/04/post.html?m=1` | **200** — replays the post |
+| `/2019/04/post.html?showComment=` / `?replytocom=` | **200** — replays the post |
+| `/p/about.html?m=1` | **200** — replays the page |
+| `/?m=1` | **404** |
+| `/search/label/X?m=1` and `?updated-max=` | **404** |
+
+The rule, read out of `pywb/warcserver/index/fuzzymatcher.py` afterwards to
+explain the table: the catch-all rule (`url_prefix: ''`, `match: '()'`) is not
+custom, so every candidate must pass `match_general_fuzzy_query`, which accepts
+only when the request path's last segment carries a **file extension** — then
+any query resolves to that path — or when the two URLs differ by a known
+cache-buster (`_`, `cb`, `uncache`, `utm_*`, `callback=`). Blogger posts and
+pages end in `.html`; `/`, `/search` and `/search/label/X` do not.
+
+So three of the Blogger preset's rejects are free, `?m=1` costs the footer's
+mobile link on the homepage and label pages only, and a rejected pagination
+trail **404s cleanly** rather than silently serving another page.
+
+**The control is the point.** Arm 2's 404s would look identical if fuzzy
+matching were simply switched off in the fixture, and the whole conclusion
+would be an artefact. Arm 1 is two misses pywb is known to rescue; the probe
+refuses to draw a conclusion if neither is. Arm 2 was also run with bare
+`/search` present in the collection — a real page on every Blogger blog, and
+exactly what a query-stripping fallback would substitute — and it still 404s.
+
+The trap this rules *in*: a rule with a non-empty `url_prefix` sets
+`is_custom`, which skips that check entirely and accepts whatever the prefix
+search returns. `fuzzy_lookup: [updated-max, max-results]` for a blog would
+serve an arbitrary pagination page for any pagination URL — a pager that looks
+like it works and loops. It needs a patched `rules.yaml`; nothing here
+generates one.
+
+## `synthetic_record_probe.py` — could the gap be filled without crawling it?
+
+If a rejected pagination URL 404s, the other way to have a working pager is to
+generate the pages and write them as WARC records. This asks whether that is
+mechanically possible: whether a hand-written record is indistinguishable to
+the index from a crawled one, and how forgiving the key is about the spellings
+Blogger emits.
+
+Local only — no Docker, no pywb.
+
+**Measured on the pinned surt 0.3.1 / warcio 1.8.1 / cdxj-indexer 1.4.6, 2026-08-16:**
+
+One key covers parameter order, `%2B` versus literal `+`, encoded versus plain
+colons, and a trailing `#fragment`:
+
+```
+com,blogspot,example)/search?max-results=7&updated-max=2019-12-09t22:33:00+01:00
+```
+
+`&start=7&by-date=false`, `&m=1` and a different timezone each key separately.
+A hand-written response record indexes byte-identically to a crawled one and
+reads back at the recorded offset with its `X-Cairn-Synthetic` header intact.
+
+**The negative control is the last part of arm 1.** "Everything collides" would
+be the convenient answer and is the wrong one — `&start=` *must* key
+separately, because that is what forces a rebuild to mint each record under the
+exact URL that links to it, and page 1's pager href is the one link a generator
+does not control. A run where nothing distinguishes has a broken canonicaliser.
+
+See [docs/07](../../docs/07-replay.md#rebuilding-a-pager-rather-than-crawling-it)
+for what a rebuild would take, and why the fabrication has to be declared.
+
 ## Running them
 
-Needs Docker and the pinned image:
+`resume_probe.py`, `resume_probe2.py` and `pagination_probe.py` need Docker;
+the last re-execs itself into `cairn:latest` (override with `CAIRN_IMAGE`).
+`synthetic_record_probe.py` runs against the app's own venv.
 
 ```bash
 python scripts/probes/resume_probe.py && python scripts/probes/resume_probe2.py
+python scripts/probes/pagination_probe.py
+python scripts/probes/synthetic_record_probe.py
 ```
