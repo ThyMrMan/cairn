@@ -66,6 +66,11 @@ DEFAULT_PAGE_INTERVAL_MIN = 720
 # merely being rate-limited must not be given up on.
 MAX_BACKOFF_MIN = 24 * 60
 FAILURES_BEFORE_DISABLE = 10
+# First retry after a failed *capture*, doubling from there to MAX_BACKOFF_MIN.
+# Deliberately not the poll interval: a capture that failed because the
+# container restarted mid-job should come back soon, and one failing for a
+# reason that will not fix itself reaches a day after eight attempts.
+CAPTURE_RETRY_MIN = 10
 # ±10%, so twenty feeds added in one sitting do not all fire in the same second
 # for the rest of the installation's life.
 JITTER_FRACTION = 0.10
@@ -715,6 +720,29 @@ def next_due(feed: Feed, *, now: datetime | None = None) -> datetime:
     minutes = max(feed.interval_min, MIN_INTERVAL_MIN)
     if feed.consecutive_failures:
         minutes = min(minutes * (2**feed.consecutive_failures), MAX_BACKOFF_MIN)
+    spread = minutes * JITTER_FRACTION
+    return now + timedelta(minutes=minutes + random.uniform(-spread, spread))  # noqa: S311
+
+
+def next_capture_due(feed: Feed, *, now: datetime | None = None) -> datetime:
+    """When a feed whose capture just failed may try again.
+
+    The poll side's backoff, applied to the other half. Dispatch runs every
+    tick over every feed holding a pending item, and a failed capture returns
+    its items to pending — so the unbacked-off retry cadence is one attempt a
+    minute, at somebody else's server, for as long as the failure lasts.
+
+    Starts at `CAPTURE_RETRY_MIN` rather than the poll interval because these
+    are different questions. A poll is one conditional GET and its interval is
+    about politeness; a capture is a crawl, and the first retry wanting to be
+    soon — a container restarted mid-job, a NAS that was briefly out of disk —
+    is worth more than matching the poll schedule.
+    """
+    now = now or utcnow()
+    minutes = min(
+        CAPTURE_RETRY_MIN * (2 ** max(feed.capture_failures - 1, 0)),
+        MAX_BACKOFF_MIN,
+    )
     spread = minutes * JITTER_FRACTION
     return now + timedelta(minutes=minutes + random.uniform(-spread, spread))  # noqa: S311
 

@@ -154,6 +154,16 @@ function FeedRow({ feed, siteId }: { feed: Feed; siteId: number }) {
             pending
             {feed.counts.gone > 0 && ` · ${feed.counts.gone} gone from the site`}
           </p>
+          {/* Without this, a feed sitting on pending items it is not capturing
+              is indistinguishable from a broken one — which is the question
+              that turned up the runaway dispatch in the first place. */}
+          {feed.capture_failures > 0 && (
+            <p className="mt-0.5 text-xs text-warn">
+              {feed.capture_failures} failed capture
+              {feed.capture_failures === 1 ? "" : "s"} in a row
+              {feed.next_capture_at ? ` — trying again ${relative(feed.next_capture_at)}` : ""}
+            </p>
+          )}
         </div>
         <div className="flex shrink-0 flex-wrap gap-1.5">
           <button className="btn-ghost px-2 text-xs" disabled={poll.isPending}

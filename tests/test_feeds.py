@@ -342,6 +342,149 @@ def test_poll_history_is_bounded(db: Session, site: Site) -> None:
     assert kept == feeds.POLL_HISTORY_LIMIT
 
 
+# ── dispatch: the runaway, and the backoff that keeps it away ────────────
+
+
+def _pending(db: Session, feed: Feed, count: int) -> list[FeedItem]:
+    """Items a capture has been asked for and has not yet succeeded at."""
+    made = []
+    for n in range(count):
+        item = FeedItem(
+            feed_id=feed.id,
+            guid=f"pending-{n}",
+            url=f"https://blog.example/2026/08/{n}.html",
+            canonical_url=f"https://blog.example/2026/08/{n}.html",
+            status="pending",
+        )
+        db.add(item)
+        made.append(item)
+    db.flush()
+    return made
+
+
+def _queued(db: Session, site: Site) -> int:
+    db.expire_all()
+    return int(
+        db.scalar(
+            select(func.count(Job.id)).where(
+                Job.site_id == site.id, Job.status.in_(("queued", "running"))
+            )
+        )
+        or 0
+    )
+
+
+def test_dispatch_queues_one_capture_however_many_times_it_runs(
+    authed: TestClient, db: Session, site: Site
+) -> None:
+    """The reported runaway, as a regression test.
+
+    `_dispatch_pending` runs once a tick — sixty seconds — over every feed
+    holding a pending item, and an item leaves `pending` only when a capture
+    *succeeds*. With no already-queued check that was not an occasional
+    duplicate: it was one job per minute for as long as the capture kept
+    failing. Found on a running instance at 105 queued for one site, climbing
+    at exactly a job a minute.
+
+    Twenty ticks stands in for twenty minutes.
+    """
+    sched = authed.app.state.scheduler  # type: ignore[attr-defined]
+    feed = _feed_for(db, site, auto_capture=True)
+    _pending(db, feed, 3)
+    db.commit()
+
+    for _ in range(20):
+        sched._dispatch_pending(utcnow())
+
+    assert _queued(db, site) == 1
+
+
+def test_a_failed_capture_backs_off_instead_of_retrying_every_tick(
+    authed: TestClient, db: Session, site: Site
+) -> None:
+    """The guard alone would leave a broken feed retrying once a minute.
+
+    Bounded, unlike the queue, but it is still sixty crawl attempts an hour at
+    somebody else's server. So a failed capture widens the gap the same way a
+    failed poll does.
+    """
+    from cairn.services.jobs import _settle_feed_items
+
+    sched = authed.app.state.scheduler  # type: ignore[attr-defined]
+    feed = _feed_for(db, site, auto_capture=True)
+    items = _pending(db, feed, 2)
+    db.commit()
+
+    capture = _capture_row(db, site)
+    gaps = []
+    for _ in range(6):
+        before = utcnow()
+        _settle_feed_items(db, [i.id for i in items], capture, "failed", feed.id)
+        assert feed.next_capture_at is not None
+        gaps.append((feed.next_capture_at - before).total_seconds() / 60)
+        # A failure returns the items to pending, which is what made the loop.
+        assert all(i.status == "pending" for i in items)
+
+    assert gaps[1] > gaps[0], "the gap must widen"
+    assert max(gaps) <= feeds.MAX_BACKOFF_MIN * 1.1, "and stay capped at a day"
+
+    # And while it is backed off, dispatch leaves the feed alone entirely.
+    db.commit()
+    for _ in range(5):
+        sched._dispatch_pending(utcnow())
+    assert _queued(db, site) == 0
+
+
+def test_a_successful_capture_clears_the_capture_backoff(
+    authed: TestClient, db: Session, site: Site
+) -> None:
+    from cairn.services.jobs import _settle_feed_items
+
+    feed = _feed_for(db, site, auto_capture=True)
+    items = _pending(db, feed, 2)
+    capture = _capture_row(db, site)
+    _settle_feed_items(db, [i.id for i in items], capture, "failed", feed.id)
+    assert feed.capture_failures == 1
+
+    _settle_feed_items(db, [i.id for i in items], capture, "ok", feed.id)
+
+    assert feed.capture_failures == 0
+    assert feed.next_capture_at is None
+    assert all(i.status == "captured" for i in items)
+    assert all(i.capture_id == capture.id for i in items)
+
+
+def test_dispatch_resumes_once_the_backoff_expires(
+    authed: TestClient, db: Session, site: Site
+) -> None:
+    """Backoff is a delay, not a give-up. A feed held back must come back."""
+    sched = authed.app.state.scheduler  # type: ignore[attr-defined]
+    feed = _feed_for(db, site, auto_capture=True)
+    _pending(db, feed, 1)
+    feed.capture_failures = 3
+    feed.next_capture_at = utcnow() - timedelta(minutes=1)
+    db.commit()
+
+    sched._dispatch_pending(utcnow())
+    assert _queued(db, site) == 1
+
+
+def _capture_row(db: Session, site: Site) -> object:
+    from cairn.db.models import Capture
+
+    capture = Capture(
+        site_id=site.id,
+        kind="feed",
+        engine_id="wget-warc",
+        dir_name="20260815T090000Z-feed-wget",
+        status="ok",
+        started_at=utcnow(),
+    )
+    db.add(capture)
+    db.flush()
+    return capture
+
+
 # ── scheduling ───────────────────────────────────────────────────────────
 
 

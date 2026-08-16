@@ -457,6 +457,10 @@ class Scheduler:
                     Feed.enabled.is_(True),
                     Feed.auto_capture.is_(True),
                     FeedItem.status == "pending",
+                    # A feed whose captures keep failing waits. Without this
+                    # the retry cadence is this tick — one attempt a minute at
+                    # somebody else's server, forever.
+                    (Feed.next_capture_at.is_(None)) | (Feed.next_capture_at <= now),
                 )
                 .distinct()
             ).all()
@@ -482,6 +486,32 @@ class Scheduler:
 
         site = session.get(Site, feed.site_id)
         if site is None or site.deleted_at is not None:
+            return []
+
+        # Every other path that enqueues checks this first — `_due_recaptures`,
+        # `_due_verification`, `_due_retention` and POST /sites/{id}/capture,
+        # which answers 409. This one did not, and it is the only one called
+        # once a tick over every feed holding a pending item.
+        #
+        # An item leaves `pending` only when a capture *succeeds*; a failed one
+        # returns it. So the missing check was not a duplicate job now and then
+        # — it was one job every sixty seconds for as long as the capture kept
+        # failing. Found on a running instance at 105 queued for one site,
+        # climbing at exactly a job a minute.
+        #
+        # Per site rather than per feed, matching the capture endpoint: two
+        # feeds on one site would serialize behind each other anyway, and the
+        # second is picked up on the next tick after the first finishes.
+        busy = session.scalar(
+            select(Job.id)
+            .where(
+                Job.type == "capture",
+                Job.site_id == site.id,
+                Job.status.in_(("queued", "running")),
+            )
+            .limit(1)
+        )
+        if busy is not None:
             return []
 
         items = feed_service.pending_items(session, feed.id)

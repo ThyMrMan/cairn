@@ -126,6 +126,14 @@ Three properties that make this work well:
 
 **`config.max_depth` is not where depth lives.** The example above shows it under `config`, but the engine's config schema declares `additionalProperties: false` and knows nothing about depth; `max_depth` is a scope field, and the job spec overrides the site's scope for that run.
 
+### Dispatch is guarded, and failures back off
+
+> **Found in production: one queued job per tick, indefinitely.** `_dispatch_pending` runs every tick — sixty seconds — over every feed holding a pending item, and an item leaves `pending` only when a capture *succeeds*; a failed one puts it straight back. `_capture_feed` was the one enqueue path with no already-queued check (`_due_recaptures`, `_due_verification`, `_due_retention` and `POST /sites/{id}/capture` all have one), so a feed whose capture kept failing queued a job every sixty seconds forever. Reported at 105 queued for a single site, still climbing at a job a minute. A regression test ticks dispatch twenty times and asserts the queue depth is 1; without the guard it is 20.
+>
+> The guard alone leaves the retry cadence at once a minute — bounded, but still sixty crawl attempts an hour at somebody else's server. So a failed capture now widens its own gap the way a failed poll always has: `capture_failures` and `next_capture_at` on the feed, first retry at ten minutes, doubling to the same one-day cap. Any success clears both, as does re-enabling the feed. Pressing **Capture pending** skips the backoff — that is a rule about unattended retries, and somebody watching has presumably just fixed the cause — but it does not skip the already-queued check.
+>
+> Both counters are on the feed summary and shown on the feed row, because a feed sitting on pending items it is not capturing is otherwise indistinguishable from a broken one. That was the question — "what logs exist to show why a job got started?" — that turned the bug up.
+
 ### Batching
 
 Ten new posts in one poll should be one capture job with ten seeds, not ten jobs. Batch by feed poll, with a cap (default 50 seeds) that splits into multiple jobs beyond it.

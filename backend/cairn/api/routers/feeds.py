@@ -80,6 +80,8 @@ def _summary(db: Session, feed: Feed) -> FeedSummary:
         last_error=feed.last_error,
         disabled_reason=feed.disabled_reason,
         counts=feed_service.counts_for(db, feed.id),
+        capture_failures=feed.capture_failures,
+        next_capture_at=feed.next_capture_at,
     )
 
 
@@ -191,6 +193,10 @@ def update_feed(
             feed.consecutive_failures = 0
             feed.last_error = None
             feed.next_poll_at = None
+            # Both halves, for the same reason. Whatever was fixed is at least
+            # as likely to have been the capture as the poll.
+            feed.capture_failures = 0
+            feed.next_capture_at = None
     audit.record(db, "feed.update", actor=user.username, target=feed.url, ip=ip)
     return _summary(db, feed)
 
@@ -243,12 +249,22 @@ async def poll_feed(
 def capture_pending(
     feed_id: int, request: Request, db: DbSession, _user: CurrentUser
 ) -> FeedPollResult:
-    """Capture whatever is already pending, without polling first."""
+    """Capture whatever is already pending, without polling first.
+
+    A button press skips the capture backoff — that is a rule about unattended
+    retries, and somebody watching has presumably just fixed whatever broke.
+    It does not skip the already-queued check, so pressing it twice does not
+    make two captures of the same posts.
+    """
     feed = _feed(db, feed_id)
     job_ids = _scheduler(request).capture_pending(db, feed)
     return FeedPollResult(
         status=0,
-        action=f"queued {len(job_ids)} capture job(s)",
+        action=(
+            f"queued {len(job_ids)} capture job(s)"
+            if job_ids
+            else "nothing queued — a capture for this site is already queued or running"
+        ),
         entries_seen=0,
         new_items=0,
         gone_items=0,

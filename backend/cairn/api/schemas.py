@@ -570,6 +570,12 @@ class FeedSummary(BaseModel):
     last_error: str | None
     disabled_reason: str | None
     counts: dict[str, int]
+    # The capture half's backoff. Exposed because a feed with pending items
+    # that is not capturing them looks identical to a broken one otherwise —
+    # which is the question that uncovered the runaway dispatch in the first
+    # place.
+    capture_failures: int = 0
+    next_capture_at: datetime | None = None
 
 
 class FeedPollEntry(BaseModel):

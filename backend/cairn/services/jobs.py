@@ -1531,7 +1531,7 @@ class JobSupervisor:
                 log.exception("post-processing failed", extra={"capture": capture.id})
 
             if prepared.item_ids:
-                _settle_feed_items(session, prepared.item_ids, capture, status)
+                _settle_feed_items(session, prepared.item_ids, capture, status, prepared.feed_id)
 
             sites.write_site_yaml(session, self._settings, site)
             session.commit()
@@ -1838,7 +1838,7 @@ def _credential_warnings(session: Session, profile_id: int) -> list[str]:
 
 
 def _settle_feed_items(
-    session: Session, item_ids: list[int], capture: Capture, status: str
+    session: Session, item_ids: list[int], capture: Capture, status: str, feed_id: int | None
 ) -> None:
     """Mark a feed poll's items with what the capture actually did.
 
@@ -1846,16 +1846,33 @@ def _settle_feed_items(
     the next scheduled pass, which is what should happen — marking it captured
     because a job ran would leave a post permanently missing from the archive
     with nothing recording that it was ever meant to be there.
-    """
-    from cairn.db.models import FeedItem
 
-    if status not in ("ok", "partial"):
-        for item in session.scalars(select(FeedItem).where(FeedItem.id.in_(item_ids))).all():
-            item.status = "pending"
-        return
+    That retry is also why the feed's capture backoff is kept here rather than
+    in the scheduler: this is the one place that knows whether the attempt
+    worked. Returning items to `pending` with nothing else recorded is what
+    turned "retry it later" into "retry it every sixty seconds forever".
+    """
+    from cairn.db.models import Feed, FeedItem
+    from cairn.services import feeds as feed_service
+
+    feed = session.get(Feed, feed_id) if feed_id is not None else None
+    ok = status in ("ok", "partial")
+
     for item in session.scalars(select(FeedItem).where(FeedItem.id.in_(item_ids))).all():
-        item.status = "captured"
-        item.capture_id = capture.id
+        if ok:
+            item.status = "captured"
+            item.capture_id = capture.id
+        else:
+            item.status = "pending"
+
+    if feed is None:
+        return
+    if ok:
+        feed.capture_failures = 0
+        feed.next_capture_at = None
+        return
+    feed.capture_failures += 1
+    feed.next_capture_at = feed_service.next_capture_due(feed)
 
 
 def _scope_was_edited(session: Session, site: Site) -> bool:

@@ -424,6 +424,13 @@ class Feed(Base):
     # Why the tool turned it off, as opposed to the user doing so. Absent when
     # `enabled` is false because somebody unticked it.
     disabled_reason: Mapped[str | None] = mapped_column(Text, default=None)
+    # The capture side's equivalents of `consecutive_failures` and
+    # `next_poll_at`, and they exist for the same reason. Dispatch runs every
+    # tick over every feed holding a pending item, and a failed capture returns
+    # its items to pending — so without a backoff a feed that cannot capture
+    # queues a job a minute forever.
+    capture_failures: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    next_capture_at: Mapped[datetime | None] = mapped_column(UtcDateTime, default=None)
 
     site: Mapped[Site] = relationship(back_populates="feeds")
     items: Mapped[list[FeedItem]] = relationship(
