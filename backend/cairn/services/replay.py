@@ -183,13 +183,36 @@ def withheld_patterns(session: Any, site: Any) -> list[str]:
 
     Used by every caller of `build_index`, so a manual rebuild cannot quietly
     restore what a capture withheld.
+
+    **Minus whatever a companion pass lifts**, and without that the pass is
+    self-defeating: the lean Blogger preset rejects the pagination trail so the
+    expensive crawl skips it, the pass fetches exactly those URLs, and this
+    function then hid all 68 of them behind the same patterns. Measured that
+    way — the pass reported 69 URLs fetched and the index reported 68 more
+    records withheld, which is every one of them but the home page.
+
+    The two rules read alike and are not. "Do not spend crawl time on this" is
+    about cost; "do not serve this" is about what the archive shows. They
+    coincide for a content-warning iframe, which is what this was written for,
+    and they are opposites for a trail somebody deliberately went and fetched.
     """
+    from cairn.services import discovery_service
     from cairn.services import sites as site_service
 
     try:
-        return list(site_service.resolved_scope(session, site).reject_patterns)
+        patterns = list(site_service.resolved_scope(session, site).reject_patterns)
     except Exception:  # pragma: no cover — a site mid-delete
         return []
+
+    companion = discovery_service.companion_pass_for(site)
+    if companion is None:
+        return patterns
+    # Unconditionally, rather than only once the pass has run: a site whose
+    # pass is still pending has no such records to serve, so lifting early
+    # changes nothing, and keying this off capture history would make the
+    # index depend on which order two captures happened in.
+    lifted = set(companion.lifts_rejects)
+    return [p for p in patterns if p not in lifted]
 
 
 def _without(lines: list[str], patterns: list[str]) -> tuple[list[str], int]:

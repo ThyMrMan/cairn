@@ -610,3 +610,89 @@ def test_the_export_is_not_filtered_only_replay_is() -> None:
     source = inspect.getsource(replay_service.cdxj_lines)
     assert "_without" not in source
     assert "withhold" not in source
+
+
+def test_a_companion_pass_lifts_its_rejects_from_the_index_too(db, settings) -> None:
+    """The bug that made the pagination pass useless, stated as a property.
+
+    The lean Blogger preset rejects the pagination trail so the expensive crawl
+    skips it. The companion pass then goes and fetches exactly those URLs. If
+    the index withholds by the same patterns, every record the pass captured is
+    hidden and replay 404s on links that are now in the archive — measured as
+    69 URLs fetched and 68 more records withheld, which is all of them bar the
+    home page.
+
+    "Do not spend crawl time on this" and "do not serve this" read alike and
+    are opposites here.
+    """
+    from cairn.db.models import Site
+    from cairn.discovery.platform import BLOGGER_LEAN_PRESET
+    from cairn.services.replay import withheld_patterns
+
+    companion = BLOGGER_LEAN_PRESET.companion_pass
+    assert companion is not None
+    rejects = [p for p, _ in BLOGGER_LEAN_PRESET.reject_patterns]
+
+    site = Site(
+        slug="lean",
+        title="Lean",
+        seed_url="https://b.blogspot.com/",
+        primary_host="b.blogspot.com",
+        archive_path="Unfiled/lean",
+        folder_id=1,
+        scope_settings={"preset": "blogger-lean", "user_edited": True},
+    )
+    db.add(site)
+    db.flush()
+    from cairn.services import sites as site_service
+    from cairn.services.scope import HostRule, Scope
+
+    site_service.save_scope(
+        db,
+        site,
+        Scope(
+            seeds=["https://b.blogspot.com/"],
+            hosts=[HostRule("b.blogspot.com", crawl_pages=True, fetch_assets=True)],
+            reject_patterns=rejects,
+        ),
+    )
+
+    withheld = withheld_patterns(db, site)
+
+    for lifted in companion.lifts_rejects:
+        assert lifted in rejects, "the preset must still reject it for the crawl"
+        assert lifted not in withheld, "but the index must not hide what the pass fetched"
+    # Everything else the site refuses is still kept out of replay — the
+    # content-warning iframe this mechanism was written for above all.
+    assert r"[?&]m=1" in withheld
+    assert r"^https?://[^/]+\.blogger\.com/interstitial/" in withheld
+
+
+def test_a_site_with_no_companion_pass_withholds_everything_it_rejects(db, settings) -> None:
+    """The behaviour that must not change for every other site."""
+    from cairn.db.models import Site
+    from cairn.services import sites as site_service
+    from cairn.services.replay import withheld_patterns
+    from cairn.services.scope import HostRule, Scope
+
+    site = Site(
+        slug="plain",
+        title="Plain",
+        seed_url="https://b.blogspot.com/",
+        primary_host="b.blogspot.com",
+        archive_path="Unfiled/plain",
+        folder_id=1,
+        scope_settings={"preset": "blogger"},
+    )
+    db.add(site)
+    db.flush()
+    site_service.save_scope(
+        db,
+        site,
+        Scope(
+            seeds=["https://b.blogspot.com/"],
+            hosts=[HostRule("b.blogspot.com", crawl_pages=True, fetch_assets=True)],
+            reject_patterns=[r"[?&]m=1", r"/search\?[^#]*updated-(max|min)="],
+        ),
+    )
+    assert withheld_patterns(db, site) == [r"[?&]m=1", r"/search\?[^#]*updated-(max|min)="]
