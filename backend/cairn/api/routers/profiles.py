@@ -12,7 +12,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, File, Query, UploadFile, status
+from fastapi import APIRouter, File, Query, Request, UploadFile, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
@@ -369,6 +369,76 @@ async def verify_profile(
         detail={"ok": outcome["ok"]},
     )
     return outcome
+
+
+@router.post("/profiles/{profile_id}/verify-browser-profile")
+async def verify_browser_profile(
+    profile_id: int,
+    request: Request,
+    db: DbSession,
+    sealer: AppSealer,
+    settings: AppSettings,
+    user: CurrentUser,
+    ip: ClientIp,
+) -> dict[str, Any]:
+    """Load the verify URL in the crawler's own browser with this profile.
+
+    The counterpart of `/verify` for the material that engine actually reads.
+    `/verify` is plain HTTP because it answers what *wget* will face; this one
+    starts the real crawler, because a browsertrix profile is a Brave
+    user-data-dir that only that browser can decrypt, and any other check
+    would be answering confidently about something else.
+
+    Slow — it starts Chromium — so it is a button, not a schedule. It is still
+    two orders of magnitude cheaper than the alternative, which is reading a
+    finished capture to find out.
+    """
+    import tempfile
+
+    from cairn.services import profilecheck
+
+    profile = _require_profile(db, profile_id)
+    if not profile.verify_url:
+        raise ApiError(
+            "no_verify_url",
+            "Set a verify URL first — it is the page the crawler will be asked to load.",
+            status_code=409,
+        )
+    if not profile_service.has_browser_profile(profile):
+        raise ApiError(
+            "no_browser_profile",
+            "This access profile has no browsertrix browser profile attached.",
+            status_code=409,
+        )
+
+    engine = request.app.state.registry.get("browsertrix")
+    image = str((engine.defaults() or {}).get("image") or "")
+
+    # Unsealed into a directory of its own, which is then handed to the
+    # container. The temp root also holds cookie jars for other jobs and there
+    # is no reason to mount those into a crawler that cannot read one.
+    with tempfile.TemporaryDirectory(dir=settings.tmp_dir, prefix="profilecheck-") as tmp:
+        target = Path(tmp) / profile_service.BROWSER_PROFILE_FILE_NAME
+        profile_service.write_browser_profile(sealer, profile, settings, target)
+        outcome = await profilecheck.check(
+            target,
+            str(profile.verify_url),
+            image=image,
+            user_agent=profile.user_agent or "",
+        )
+
+    profile.last_verified_at = utcnow()
+    profile.last_verify_result = "ok" if outcome.ok else "failed"
+    db.flush()
+    audit.record(
+        db,
+        "profile.verify_browser",
+        actor=user.username,
+        target=profile.name,
+        ip=ip,
+        detail={"verdict": outcome.verdict},
+    )
+    return outcome.to_dict()
 
 
 @router.get("/profiles/{profile_id}/coverage", response_model=CoverageResponse)

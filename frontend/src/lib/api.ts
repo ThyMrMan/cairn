@@ -393,6 +393,21 @@ export type Job = {
  * A browsertrix browser-profile tarball, described but never sent. Size and a
  * truncated digest are enough to answer "is one attached, and did it change?"
  */
+/** What the crawler saw, in the three shapes that need different fixes. */
+export type BrowserCheckResult = {
+  ok: boolean;
+  /** pass | gate | no_profile | error */
+  verdict: string;
+  reason: string;
+  final_url: string;
+  status: number;
+  bytes: number;
+  /** False with a `gate` verdict means the tarball never reached the
+   *  container — a different bug from a session the site rejected. */
+  profile_loaded: boolean;
+  log_tail: string[];
+};
+
 export type BrowserProfileMeta = {
   size: number;
   sha256: string;
@@ -1383,6 +1398,11 @@ export const endpoints = {
   mintProfile: (id: number) =>
     api.post<{ result: MintResult; profile: Profile }>(`/profiles/${id}/mint`),
   verifyProfile: (id: number) => api.post<VerifyResult>(`/profiles/${id}/verify`),
+  /** The browser-profile counterpart: starts the real crawler, because a
+   *  browsertrix profile is a Brave user-data-dir only that browser can
+   *  decrypt. Slow — it boots Chromium — so it is a button, not a poll. */
+  verifyBrowserProfile: (id: number) =>
+    api.post<BrowserCheckResult>(`/profiles/${id}/verify-browser-profile`),
   clearMaterial: (id: number) => api.del<{ ok: boolean }>(`/profiles/${id}/material`),
   uploadBrowserProfile: (id: number, file: File) =>
     api.upload<{ browser_profile: BrowserProfileMeta; profile: Profile }>(

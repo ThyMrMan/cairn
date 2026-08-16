@@ -5,6 +5,7 @@ import { InteractiveBrowser } from "../components/InteractiveBrowser";
 import { Alert, EmptyState, Field, Spinner } from "../components/ui";
 import {
   ApiError,
+  type BrowserCheckResult,
   type CookieReport,
   type InteractiveSession,
   type MintResult,
@@ -464,6 +465,8 @@ function BrowserProfile({ profile }: { profile: Profile }) {
   const fileRef = useRef<HTMLInputElement>(null);
   const [error, setError] = useState<string | null>(null);
   const [showHow, setShowHow] = useState(false);
+  const [check, setCheck] = useState<BrowserCheckResult | null>(null);
+  const hasVerifyUrl = Boolean(profile.verify_url);
 
   const refresh = () => client.invalidateQueries({ queryKey: ["profiles"] });
 
@@ -479,6 +482,22 @@ function BrowserProfile({ profile }: { profile: Profile }) {
   const remove = useMutation({
     mutationFn: () => endpoints.clearBrowserProfile(profile.id),
     onSuccess: refresh,
+  });
+
+  // The counterpart of Test for the material browsertrix actually reads.
+  // Separate from the cookie check because they answer about different
+  // engines: that one is plain HTTP and speaks for wget, this one starts the
+  // real crawler, because the tarball is a browser profile only it can read.
+  const onCheck = useMutation({
+    mutationFn: () => endpoints.verifyBrowserProfile(profile.id),
+    onSuccess: (result) => {
+      setCheck(result);
+      setError(null);
+    },
+    onError: (err) => {
+      setCheck(null);
+      setError((err as ApiError).message);
+    },
   });
 
   return (
@@ -512,12 +531,69 @@ function BrowserProfile({ profile }: { profile: Profile }) {
             {profile.has_browser_profile ? "Replace" : "Upload profile.tar.gz"}
           </button>
           {profile.has_browser_profile && (
-            <button className="btn-ghost" onClick={() => remove.mutate()}>
-              Remove
-            </button>
+            <>
+              {/*
+                The counterpart of Test for the material browsertrix actually
+                reads. Slow on purpose — it boots the real crawler — because a
+                jar-based check would answer confidently about a different
+                browser. The alternative was reading a finished capture.
+              */}
+              <button
+                className="btn-ghost"
+                disabled={onCheck.isPending || !hasVerifyUrl}
+                title={
+                  hasVerifyUrl
+                    ? "Loads the verify URL in the crawler's own browser with this profile"
+                    : "Set a verify URL first — it is the page the crawler will load"
+                }
+                onClick={() => onCheck.mutate()}
+              >
+                {onCheck.isPending && <Spinner />}
+                {onCheck.isPending ? "Asking the site…" : "Test in the crawler"}
+              </button>
+              <button className="btn-ghost" onClick={() => remove.mutate()}>
+                Remove
+              </button>
+            </>
           )}
         </div>
       </div>
+
+      {check && (
+        <div className="mt-3">
+          <Alert
+            kind={check.verdict === "pass" ? "ok" : check.verdict === "gate" ? "warn" : "error"}
+            title={
+              {
+                pass: "The crawler got through",
+                gate: "The crawler hit the gate",
+                no_profile: "The profile was not used",
+                error: "The check could not run",
+              }[check.verdict] ?? "Result"
+            }
+          >
+            <p>{check.reason}</p>
+            {check.final_url && (
+              <p className="mt-1 font-mono text-[11px] break-all">
+                {check.status} · {check.final_url}
+              </p>
+            )}
+            {check.verdict === "gate" && check.profile_loaded && (
+              <p className="mt-2">
+                The tarball loaded, so this is the session rather than the file: the site is
+                no longer accepting it. Rebuild the profile with{" "}
+                <code>create-login-profile</code>, clicking through the warning until a real
+                post is on screen before you close the window.
+              </p>
+            )}
+            {check.log_tail.length > 0 && (
+              <pre className="mt-2 overflow-x-auto whitespace-pre-wrap font-mono text-[10px]">
+                {check.log_tail.join("\n")}
+              </pre>
+            )}
+          </Alert>
+        </div>
+      )}
 
       {error && (
         <div className="mt-3">

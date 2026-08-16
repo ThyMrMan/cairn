@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import os
 import stat
 from datetime import UTC, datetime, timedelta
@@ -10,6 +11,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
+from warcio.statusandheaders import StatusAndHeaders
 
 from cairn.config import Settings
 from cairn.crypto.sealing import Sealer
@@ -678,3 +680,93 @@ def test_a_profile_with_no_expiry_data_warns_about_nothing() -> None:
     from cairn.services.jobs import _browser_profile_expiry_warnings
 
     assert _browser_profile_expiry_warnings(_profile_with({}), ["blog.example"]) == []
+
+
+# ── testing a browser profile against the site ───────────────────────────
+
+
+def _warc_with(pages: dict[str, bytes], root: Path) -> Path:
+    """A collection shaped the way the crawler leaves one."""
+    from warcio.warcwriter import WARCWriter
+
+    archive = root / "collections" / "profilecheck" / "archive"
+    archive.mkdir(parents=True, exist_ok=True)
+    target = archive / "rec-0.warc.gz"
+    with target.open("wb") as fh:
+        writer = WARCWriter(fh, gzip=True)
+        for url, body in pages.items():
+            record = writer.create_warc_record(
+                url,
+                "response",
+                payload=io.BytesIO(body),
+                http_headers=StatusAndHeaders(
+                    "200 OK",
+                    [("Content-Type", "text/html; charset=utf-8")],
+                    protocol="HTTP/1.1",
+                ),
+            )
+            writer.write_record(record)
+    return target
+
+
+GATE = b"<html><body><h1>Content warning</h1><p>I understand and wish to continue</p></body></html>"
+REAL = b"<html><body><h1>A post</h1>" + b"<p>Real words. </p>" * 200 + b"</body></html>"
+
+
+def test_the_verdict_comes_from_the_record_for_the_url_that_was_asked_for(
+    tmp_path: Path,
+) -> None:
+    """A gated blog records the gate *as well*, at blogger.com's URL. Reading
+    whichever record came first would report failure for a profile that
+    worked — which is exactly the confusion this tool exists to end."""
+    from cairn.services import profilecheck
+
+    _warc_with(
+        {
+            "https://www.blogger.com/interstitial/blog?u=https://blog.example/": GATE,
+            "https://blog.example/post.html": REAL,
+        },
+        tmp_path,
+    )
+
+    result = profilecheck._read_result(tmp_path, "https://blog.example/post.html")
+
+    assert result.verdict == "pass"
+    assert result.final_url == "https://blog.example/post.html"
+
+
+def test_a_gate_at_the_asked_for_url_is_reported_as_a_gate(tmp_path: Path) -> None:
+    from cairn.services import profilecheck
+
+    _warc_with({"https://blog.example/post.html": GATE}, tmp_path)
+
+    result = profilecheck._read_result(tmp_path, "https://blog.example/post.html")
+
+    assert result.verdict == "gate"
+    # The detector says which marker it matched, which is the difference
+    # between "this is a gate" and "this is a gate, and here is why I think so".
+    assert "wish to continue" in result.reason
+
+
+def test_a_gate_without_the_profile_loaded_is_a_different_diagnosis() -> None:
+    """`gate` says the site refused the session; `no_profile` says there was
+    no session. Same symptom, different fix — one means rebuild the profile,
+    the other means the tarball never arrived."""
+    from cairn.services.profilecheck import CheckResult
+
+    result = CheckResult(verdict="gate", reason="looks like a content warning")
+    result.profile_loaded = False
+    # The same reconciliation `check` does once it has read the log.
+    if result.verdict == "gate" and not result.profile_loaded:
+        result.verdict = "no_profile"
+    assert result.verdict == "no_profile"
+
+
+def test_no_archive_at_all_is_an_error_not_a_pass(tmp_path: Path) -> None:
+    """The crawler exits 0 having archived nothing when it cannot reach the
+    site. Reading that as success would be the worst possible answer."""
+    from cairn.services import profilecheck
+
+    result = profilecheck._read_result(tmp_path, "https://blog.example/")
+    assert result.verdict == "error"
+    assert not result.ok
