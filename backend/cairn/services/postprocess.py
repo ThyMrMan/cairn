@@ -29,7 +29,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from cairn.config import Settings
-from cairn.db.models import Capture, CaptureUrl, Site
+from cairn.db.models import Capture, CaptureUrl, EngineRecord, Site
 from cairn.db.types import utcnow
 from cairn.logging import get_logger
 from cairn.services import htmlrefs, interstitial, replay, storage
@@ -427,10 +427,7 @@ def step_asset_audit(ctx: Context) -> None:
             "currently set to, not a failure — turn the host on if you want them."
         )
     if lazy_hits:
-        ctx.warnings.append(
-            f"{lazy_hits} lazy-loaded image reference(s) found in {scanned} page(s). "
-            "wget cannot execute JavaScript, so those images are not in this archive."
-        )
+        ctx.warnings.append(_lazy_image_warning(ctx, lazy_hits, scanned))
 
     mangled = _css_escaped_requests(ctx)
     if mangled:
@@ -478,6 +475,51 @@ def step_asset_audit(ctx: Context) -> None:
 # would then offer hosts the other reports as missing.
 _referenced_assets = htmlrefs.referenced_assets
 _unescape_css = htmlrefs.unescape_css
+
+
+def _engine_runs_javascript(ctx: Context) -> bool:
+    """Whether the engine that made this capture executes page scripts.
+
+    Read from the engine's own manifest rather than matched against a name.
+    A warning that names one engine is wrong the moment a second one exists —
+    which is exactly what happened: the lazy-image warning below told a
+    browsertrix capture that wget cannot execute JavaScript, and advised
+    recapturing with a browser engine to somebody who had just used one.
+
+    Unknown engines are treated as not running scripts, because that is the
+    warning that costs least when wrong: it says images may be missing when
+    they are not, rather than saying the archive is fine when it is not.
+    """
+    # Guarded rather than looked up blind: a capture row that has not been
+    # given its engine yet would otherwise reach `get()` with a null key, which
+    # SQLAlchemy warns about and says it may one day refuse.
+    engine_id = ctx.capture.engine_id
+    if not engine_id:
+        return False
+    record = ctx.session.get(EngineRecord, engine_id)
+    capabilities = (record.manifest or {}).get("capabilities") if record else None
+    return bool((capabilities or {}).get("javascript"))
+
+
+def _lazy_image_warning(ctx: Context, lazy_hits: int, scanned: int) -> str:
+    """What lazy-loaded image references mean, which depends on the engine.
+
+    On a non-scripting engine they are images the archive does not have. On a
+    browser engine `autofetch` is meant to have pulled them, so the count is
+    context rather than a problem — and `missing_assets` is what actually
+    answers whether any of them are absent.
+    """
+    found = f"{lazy_hits} lazy-loaded image reference(s) found in {scanned} page(s). "
+    if _engine_runs_javascript(ctx):
+        return found + (
+            "This engine runs page scripts and its autofetch behaviour is meant to "
+            "pull them, so they are most likely archived — the missing-asset count "
+            "above is what says otherwise."
+        )
+    return found + (
+        f"{ctx.capture.engine_id} does not execute JavaScript, so those images are "
+        "not in this archive. A browser engine would capture them."
+    )
 
 
 def _is_success(status: str | None) -> bool:

@@ -13,7 +13,7 @@ from pathlib import Path
 from sqlalchemy.orm import Session
 
 from cairn.config import Settings
-from cairn.db.models import Capture, Site
+from cairn.db.models import Capture, EngineRecord, Site
 from cairn.db.types import utcnow
 from cairn.services import interstitial, sites, storage
 from cairn.services.htmlrefs import parse_page
@@ -254,6 +254,82 @@ def test_a_404_page_does_not_contribute_its_own_assets_or_page_count(
     assert "error-template.png" not in missing
     # One page scanned, not two: the 404 body is not a page of this site.
     assert "in 1 page(s)" in missing
+
+
+def _lazy_audit_ctx(db: Session, settings: Settings, tmp_path: Path, engine_id: str) -> Context:
+    warc_dir = tmp_path / storage.WARC_DIR
+    warc_dir.mkdir(parents=True, exist_ok=True)
+    _write_warc(
+        warc_dir / "part.warc.gz",
+        [("https://blog.example.com/", 200, b'<html><img src="/real.png" data-src="/lazy.png">')],
+    )
+    return Context(
+        session=db,
+        settings=settings,
+        capture=Capture(engine_id=engine_id),
+        site=Site(),
+        output_dir=tmp_path,
+        tool_version=None,
+        stats={},
+        scope={},
+        seeds=[],
+        seed_source={},
+        artifacts=[],
+        warnings=[],
+    )
+
+
+def test_the_lazy_image_warning_names_the_engine_that_ran(
+    db: Session, settings: Settings, tmp_path: Path
+) -> None:
+    """Reported from a real manifest: a browsertrix capture whose warnings said
+    "wget cannot execute JavaScript, so those images are not in this archive".
+
+    Both halves were wrong. It named an engine that had not run, and it told
+    somebody who had just used a browser engine to go and use a browser engine.
+    The capability is read from the engine's own manifest, so a third engine
+    gets the right sentence without this code learning its name.
+    """
+    # The real record, synced from the shipped manifest — so this asserts
+    # against what browsertrix actually declares rather than a fixture that
+    # could drift from it.
+    assert db.get(EngineRecord, "browsertrix").manifest["capabilities"]["javascript"] is True
+
+    ctx = _lazy_audit_ctx(db, settings, tmp_path, "browsertrix")
+    step_asset_audit(ctx)
+    lazy = next(w for w in ctx.warnings if "lazy-loaded" in w)
+
+    assert "wget" not in lazy
+    assert "autofetch" in lazy
+
+
+def test_a_non_scripting_engine_still_says_the_images_are_absent(
+    db: Session, settings: Settings, tmp_path: Path
+) -> None:
+    """The half that was right, and must stay right."""
+    assert db.get(EngineRecord, "wget-warc").manifest["capabilities"]["javascript"] is False
+
+    ctx = _lazy_audit_ctx(db, settings, tmp_path, "wget-warc")
+    step_asset_audit(ctx)
+    lazy = next(w for w in ctx.warnings if "lazy-loaded" in w)
+
+    assert "wget-warc does not execute JavaScript" in lazy
+    assert "not in this archive" in lazy
+
+
+def test_an_unknown_engine_warns_rather_than_reassures(
+    db: Session, settings: Settings, tmp_path: Path
+) -> None:
+    """A capture whose engine has since been removed still has to say something.
+
+    It says the images may be missing. The other way round would tell somebody
+    their archive is complete on the strength of a record that is not there.
+    """
+    ctx = _lazy_audit_ctx(db, settings, tmp_path, "since-uninstalled")
+    step_asset_audit(ctx)
+    lazy = next(w for w in ctx.warnings if "lazy-loaded" in w)
+
+    assert "since-uninstalled does not execute JavaScript" in lazy
 
 
 # ── warnings known before the crawl starts ───────────────────────────────

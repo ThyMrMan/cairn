@@ -220,6 +220,24 @@ Sync archives to a second instance. Real 3-2-1 for archives that matter.
 >
 > **Knowing the copy is good is ours, and nothing else can do it.** rsync reports that it transferred bytes; it cannot say that every capture this instance knows about is present, or that each file still hashes to what was recorded when it was written. That information is in `manifest.json` and the integrity verifier. So: make the copy however you like, mount it read-only, and point Cairn at it — a directory listing for "is it complete" and the full integrity pass, against the same database, for "are the bytes still the bytes".
 
+### Session cookies inside the WARC
+
+🔍 *noted, not scheduled*
+
+A capture made with an access profile stores the request headers as well as the responses, so the profile's `Cookie:` header is written into the WARC for every request that carried it. The post-capture warning already says so, and says to treat the files as credentials.
+
+Seen on a real capture: a Blogger blog archived with a profile carrying a Google `NID` cookie, whose five WARC files therefore contain a live Google session. Nothing was wrong — the tool warned exactly as designed — but the warning is the entire mitigation, and it is one line in a list a person reads once.
+
+What makes it worth revisiting rather than closing: the archive is the artefact you are *most* likely to hand to somebody else. WACZ export exists to make sharing a site one file, offsite backup copies the tree somewhere else, and both move the credential with it. A warning at capture time does not travel with the file.
+
+Options, none costed:
+
+- **Strip on write.** Filter `Cookie` and `Authorization` out of request records. Loses the ability to prove what was sent, which is a real archival property — and D2 says archives are not rewritten in place, so it has to happen at capture time or not at all.
+- **Warn at export.** Cheaper and better targeted: the moment somebody clicks Export or shares a WACZ is when the risk becomes real. The scan is a pass over request records for a `Cookie` header.
+- **Flag the capture.** A property recorded in `manifest.json` at capture time, so it is visible for the life of the archive rather than in one job log — and so export has something to check without re-reading every WARC.
+
+The last two compose, and neither touches the archive. That is probably the shape of it.
+
 ---
 
 ## Ideas taken from each evaluated tool

@@ -270,10 +270,19 @@ async def discover(
             "given the decoded URLs directly so they are archived anyway."
         )
     if counts.lazy_hints:
+        # Named for what actually did the sampling, not for wget — discovery has
+        # never been wget, and a capture may not be either. Same defect as the
+        # post-capture warning this mirrors.
         result.warnings.append(
             f"{counts.lazy_hints} lazy-loaded image reference(s) seen while sampling. "
-            "wget cannot execute JavaScript, so a browser engine will be needed for "
-            "those images."
+            + (
+                "Discovery rendered these pages, so the hosts they load from are in "
+                "the list above — but archiving the images still needs a capture "
+                "engine that runs scripts."
+                if options.use_browser
+                else "This pass reads HTML as served and does not run scripts, so a "
+                "browser engine will be needed for those images."
+            )
         )
     if len(result.hosts) <= 1 and result.pages_fetched > 3 and not options.use_browser:
         result.warnings.append(
