@@ -680,6 +680,136 @@ def test_an_overlay_replay_will_uncover_is_not_a_partial_capture(
     assert "do not count on it" not in message
 
 
+# ── the gate as a document, not as a failure ─────────────────────────────
+#
+# Reported after the uncover shipped: "pages are rendered, capture still says
+# Partial." An overlay frames the gate, so the crawler records the gate once
+# per curtained page — 147 of them beside 147 complete pages. Counted as
+# interstitial pages those read as "the cookies were not accepted", which is
+# the opposite of what happened, and downgraded the capture unconditionally.
+
+
+GATE_DOC = (
+    b"<html><body><h1>Content warning</h1><p>I understand and wish to continue</p></body></html>"
+)
+
+
+def _audit(db: Session, settings: Settings, tmp_path: Path, records: list) -> Context:
+    warc_dir = tmp_path / storage.WARC_DIR
+    warc_dir.mkdir(parents=True, exist_ok=True)
+    _write_warc(warc_dir / "part-00000.warc.gz", records)
+    ctx = Context(
+        session=db,
+        settings=settings,
+        capture=Capture(status="ok", warc_files=[], started_at=utcnow()),
+        site=Site(seed_url="https://example.blogspot.com/", archive_path="Unfiled/blog"),
+        output_dir=tmp_path,
+        tool_version=None,
+        stats={},
+        scope={},
+        seeds=["https://example.blogspot.com/"],
+        seed_source={"manual": 1},
+        artifacts=[],
+        warnings=[],
+    )
+    step_asset_audit(ctx)
+    return ctx
+
+
+def test_the_gate_the_overlay_frames_does_not_fail_the_capture(
+    db: Session, settings: Settings, tmp_path: Path
+) -> None:
+    """The reported bug, as the property that was violated."""
+    ctx = _audit(
+        db,
+        settings,
+        tmp_path,
+        [
+            ("https://example.blogspot.com/p.html", 200, OVERLAY_PAGE),
+            (
+                "https://www.blogger.com/interstitial/blog?u=https://example.blogspot.com/",
+                200,
+                GATE_DOC,
+            ),
+        ],
+    )
+
+    assert ctx.capture.status == "ok"
+    assert ctx.stats["gate_documents"] == 1
+    # Not counted as a page that came back wrong, and not counted as a page
+    # that was covered either. It is neither.
+    assert ctx.stats["interstitial_pages"] == 0
+    assert ctx.stats["overlay_pages"] == 1
+    message = " ".join(ctx.warnings)
+    assert "cookies were not accepted" not in message
+    assert "1 of 1 archived page(s)" in message, "the gate must not inflate the denominator"
+
+
+def test_a_page_of_the_site_that_is_a_warning_still_fails_the_capture(
+    db: Session, settings: Settings, tmp_path: Path
+) -> None:
+    """The protection this check exists for, unchanged.
+
+    The narrowing above must not buy a quiet capture full of warnings. A gate
+    served at *the site's own URL* is still the failure it always was.
+    """
+    ctx = _audit(db, settings, tmp_path, [("https://example.blogspot.com/p.html", 200, GATE_DOC)])
+
+    assert ctx.capture.status == "partial"
+    assert ctx.stats["interstitial_pages"] == 1
+    assert ctx.stats["gate_documents"] == 0
+    assert "cookies were not accepted" in " ".join(ctx.warnings)
+
+
+def test_gates_with_nothing_behind_them_are_reported_but_not_a_downgrade(
+    db: Session, settings: Settings, tmp_path: Path
+) -> None:
+    """Every page came back as a page; the gate is just a document that was
+    fetched. Worth saying, not worth failing."""
+    ctx = _audit(
+        db,
+        settings,
+        tmp_path,
+        [
+            ("https://example.blogspot.com/p.html", 200, b"<html><body>a real post</body></html>"),
+            ("https://www.blogger.com/interstitial/blog?u=x", 200, GATE_DOC),
+        ],
+    )
+
+    assert ctx.capture.status == "ok"
+    assert ctx.stats["gate_documents"] == 1
+    assert "nothing is missing" in " ".join(ctx.warnings)
+
+
+def test_the_gates_own_assets_are_not_reported_as_this_sites_missing_assets(
+    db: Session, settings: Settings, tmp_path: Path
+) -> None:
+    """Google's stylesheet is not an asset of the blog.
+
+    The gate pulls its own sub-resources from hosts no site scope covers, and
+    counting them made the gap report claim assets were missing from a page
+    nobody asked for — 149 times over.
+    """
+    gate = (
+        b'<html><head><link rel="stylesheet" href="https://www.gstatic.com/gate.css">'
+        b'</head><body><img src="https://ssl.gstatic.com/warning.png">'
+        b"<p>I understand and wish to continue</p></body></html>"
+    )
+    ctx = _audit(
+        db,
+        settings,
+        tmp_path,
+        [
+            ("https://example.blogspot.com/p.html", 200, b"<html><body>a real post</body></html>"),
+            ("https://www.blogger.com/interstitial/blog?u=x", 200, gate),
+        ],
+    )
+
+    message = " ".join(ctx.warnings)
+    assert "gstatic" not in message
+    assert ctx.stats["referenced_assets"] == 0
+
+
 # ── revisiting a stored verdict ──────────────────────────────────────────
 #
 # A status rule changed under captures already on disk. The risk here is not
@@ -696,6 +826,7 @@ def _partial_capture(
     *,
     job_error: str | None = None,
     write_manifest: bool = True,
+    records: list | None = None,
 ) -> tuple[Site, Capture]:
     from cairn.db.models import Job
 
@@ -729,6 +860,24 @@ def _partial_capture(
         path = storage.manifest_path(settings, site.archive_path, capture.dir_name)
         path.parent.mkdir(parents=True, exist_ok=True)
         storage.write_json(path, {"status": "partial", "stats": stats})
+    # Real WARCs, because a reason a WARC can answer is answered by reading
+    # one: a stored count goes stale exactly as a stored rule does. The
+    # default is the shape that caused the bug — a complete page with the gate
+    # it frames beside it.
+    if records is None:
+        records = [
+            ("https://example.blogspot.com/p.html", 200, OVERLAY_PAGE),
+            ("https://www.blogger.com/interstitial/blog?u=x", 200, GATE_DOC),
+        ]
+    if records:
+        warc_dir = (
+            storage.site_dir(settings, site.archive_path)
+            / storage.CAPTURES_DIR
+            / capture.dir_name
+            / storage.WARC_DIR
+        )
+        warc_dir.mkdir(parents=True, exist_ok=True)
+        _write_warc(warc_dir / "part-00000.warc.gz", records)
     return site, capture
 
 
@@ -741,24 +890,92 @@ def test_a_recorded_reason_that_no_longer_applies_is_cleared(
     assert len(results) == 1
     assert results[0].after == "ok"
     assert results[0].changed
-    assert "no longer apply" in results[0].reason
+    # It says what it counted, not just that it decided. A verdict this
+    # action can hand back has to be checkable against the archive.
+    assert "recounted from the WARCs" in results[0].reason
+    assert "1 curtained" in results[0].reason
 
 
-def test_a_recorded_reason_that_still_applies_is_kept(
+def test_a_reason_no_warc_can_answer_is_believed_as_recorded(
     db: Session, settings: Settings, tmp_path: Path
 ) -> None:
-    """Two reasons, one retired: the capture is still partial for the other."""
+    """Two reasons, one retired and one outside what a recount can see.
+
+    A gate redirect was decided from a chain of 302s, which the WARC scan does
+    not look at, so it is taken at its word and the capture stays partial.
+    """
     _partial_capture(
         db,
         settings,
         tmp_path,
-        {"partial_reasons": ["overlay-pages", "interstitial-pages"], "urls": 40},
+        {"partial_reasons": ["overlay-pages", "gate-redirect"], "urls": 40},
     )
     results = postprocess.recompute_status(db, settings)
 
     assert results[0].after == "partial"
     assert not results[0].changed
-    assert "interstitial-pages" in results[0].reason
+    assert "gate-redirect" in results[0].reason
+
+
+def test_a_stale_interstitial_count_is_settled_by_reading_the_warcs(
+    db: Session, settings: Settings, tmp_path: Path
+) -> None:
+    """The second half of the reported bug, and the reason recounting exists.
+
+    Captures written before the gate document had a bucket of its own recorded
+    it as an interstitial page — 147 of them beside 147 complete pages. The
+    recorded number is correct for the rules that wrote it and wrong for
+    these, so the bytes are what settle it.
+    """
+    _partial_capture(
+        db,
+        settings,
+        tmp_path,
+        # What the old counting stored: the gate counted as a failed page.
+        {"partial_reasons": ["interstitial-pages"], "interstitial_pages": 1, "urls": 40},
+    )
+    results = postprocess.recompute_status(db, settings)
+
+    assert results[0].after == "ok"
+    assert "recounted from the WARCs" in results[0].reason
+    assert "1 gate document" in results[0].reason
+
+
+def test_a_capture_really_full_of_warnings_survives_the_recount(
+    db: Session, settings: Settings, tmp_path: Path
+) -> None:
+    """The negative control for recounting. Reading the bytes has to be able
+    to say "still partial", or it is just a way of clearing every verdict."""
+    _partial_capture(
+        db,
+        settings,
+        tmp_path,
+        {"partial_reasons": ["interstitial-pages"], "interstitial_pages": 1, "urls": 40},
+        # The gate served at the site's own URL: a page that came back wrong.
+        records=[("https://example.blogspot.com/p.html", 200, GATE_DOC)],
+    )
+    results = postprocess.recompute_status(db, settings)
+
+    assert results[0].after == "partial"
+    assert "came back as a content warning" in results[0].reason
+
+
+def test_a_capture_whose_warcs_are_gone_is_left_alone(
+    db: Session, settings: Settings, tmp_path: Path
+) -> None:
+    """Every reason was recountable and there is nothing to recount from.
+    "I cannot tell" must not read as "nothing was wrong"."""
+    _partial_capture(
+        db,
+        settings,
+        tmp_path,
+        {"partial_reasons": ["overlay-pages"], "urls": 40},
+        records=[],
+    )
+    results = postprocess.recompute_status(db, settings)
+
+    assert results[0].after == "partial"
+    assert "WARCs could not be read" in results[0].reason
 
 
 def test_the_engines_own_error_is_never_overridden(
@@ -782,27 +999,27 @@ def test_the_engines_own_error_is_never_overridden(
 def test_an_older_capture_is_inferred_only_when_nothing_else_is_wrong(
     db: Session, settings: Settings, tmp_path: Path
 ) -> None:
-    """No recorded reasons — the evidence has to come from the rest of it."""
+    """No recorded reasons — the causes are inferred, then recounted."""
     _partial_capture(db, settings, tmp_path, {"overlay_pages": 442, "urls": 591})
     results = postprocess.recompute_status(db, settings)
 
     assert results[0].after == "ok"
-    assert "442" in results[0].reason
+    assert "recounted from the WARCs" in results[0].reason
 
 
 @pytest.mark.parametrize(
     ("stats", "expect"),
     [
-        # Each of the other four downgrade causes, one at a time.
-        ({"overlay_pages": 5, "urls": 20, "interstitial_pages": 3}, "interstitial page"),
-        ({"overlay_pages": 5, "urls": 20, "gate_redirects": 1}, "gate redirect"),
-        ({"overlay_pages": 5, "urls": 0}, "no URLs archived"),
+        # The causes a recount cannot see, inferred from an older manifest.
+        # Each has to survive on its own, even beside a retired overlay.
+        ({"overlay_pages": 5, "urls": 20, "gate_redirects": 1}, "gate-redirect"),
+        ({"overlay_pages": 5, "urls": 0}, "nothing-archived"),
         (
             {"overlay_pages": 5, "urls": 20, "warnings": ["checksum failed: disk full"]},
-            "post-processing step failed",
+            "step-failed",
         ),
-        # And the case that is simply not this one.
-        ({"urls": 20, "missing_assets": 4}, "no curtained pages"),
+        # And the case that is simply not this one: nothing it can account for.
+        ({"urls": 20, "missing_assets": 4}, "names nothing this can account for"),
     ],
 )
 def test_inference_refuses_anything_it_cannot_account_for(

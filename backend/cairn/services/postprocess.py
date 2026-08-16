@@ -380,6 +380,7 @@ def step_asset_audit(ctx: Context) -> None:
     scanned = 0
     blocked = 0
     overlaid = 0
+    gate_docs = 0
     redirects: list[tuple[str, str]] = []
     for warc in warcs:
         try:
@@ -412,13 +413,31 @@ def step_asset_audit(ctx: Context) -> None:
                     if "html" not in ctype.lower():
                         continue
                     body = record.content_stream().read(512 * 1024)
+                    base = record.rec_headers.get_header("WARC-Target-URI") or ""
+                    # The gate served at its *own* URL is not a page of this
+                    # site, and counting it as one gets the diagnosis exactly
+                    # backwards. An overlay frames the gate, so the crawler
+                    # records it once per curtained page — 147 of them on a
+                    # capture where all 147 pages were complete. Counted as
+                    # `blocked` those said "the cookies were not accepted" and
+                    # downgraded the capture, about pages that were fine.
+                    #
+                    # This does not weaken what the check is for. A page of the
+                    # *site* that comes back as a warning is still caught
+                    # below, and a seed that redirects to one is caught by
+                    # `_report_gate_redirects`, which is the shape that
+                    # prompted the check in the first place.
+                    if interstitial.url_looks_blocked(base).blocked:
+                        gate_docs += 1
+                        continue
                     scanned += 1
                     lazy_hits += sum(body.count(attr) for attr in LAZY_ATTRIBUTES)
-                    base = record.rec_headers.get_header("WARC-Target-URI") or ""
+                    # The gate's own sub-resources are not this site's assets
+                    # either, which is why this sits after the `continue`.
                     referenced |= _referenced_assets(body, base)
                     # Counted in the pass that is already reading every page,
                     # rather than a second walk over gigabytes of WARC. The
-                    # two buckets are disjoint and stay that way: they mean
+                    # buckets are disjoint and stay that way: they mean
                     # different things and carry opposite advice.
                     if interstitial.overlay_blocked(body).blocked:
                         overlaid += 1
@@ -487,7 +506,13 @@ def step_asset_audit(ctx: Context) -> None:
             "them. The page underneath is archived in full — this is not missing content, "
             "and the access profile is not the problem, because the content came back. "
             "The site injects an iframe over the page and a stylesheet rule hiding "
-            "everything else. "
+            "everything else"
+            + (
+                f", which is also where the {gate_docs} copies of the warning itself came "
+                "from: one per curtained page, recorded at the gate's own URL. "
+                if gate_docs
+                else ". "
+            )
         )
         if ctx.settings.replay_uncover_overlays:
             # Nothing is wrong with this capture: every page is here and every
@@ -517,8 +542,24 @@ def step_asset_audit(ctx: Context) -> None:
             # and one setting makes them readable.
             _downgrade(ctx, PARTIAL_OVERLAY)
 
+    if gate_docs and not overlaid:
+        # Gates with nothing they were drawn over. Not a downgrade — every page
+        # this capture holds came back as a page — but worth saying, because it
+        # means the crawl spent requests on a document that cannot be read.
+        ctx.warnings.append(
+            f"{gate_docs} copies of a content warning are in this archive, recorded at the "
+            f"warning's own URL rather than any page of this site. The {scanned} page(s) here "
+            "came back as pages, so nothing is missing; the gate is a document the crawl "
+            "reached and stored. Add its path to this site's skip patterns to stop "
+            "re-fetching it."
+        )
+
     ctx.stats["interstitial_pages"] = blocked
     ctx.stats["overlay_pages"] = overlaid
+    # The gate as a document in its own right, counted apart from both. It is
+    # neither a page that failed nor a page that was covered — treating it as
+    # either is what made a capture of 147 complete pages report itself broken.
+    ctx.stats["gate_documents"] = gate_docs
     ctx.stats["referenced_assets"] = len(referenced)
     # `missing_assets` counts only what the scope permitted and the crawl
     # still did not get. That is the number worth acting on; the deliberate
@@ -648,12 +689,71 @@ class Recomputed:
         }
 
 
-#: Reasons a currently-running Cairn would no longer downgrade for. Keyed on
-#: the setting that decides it, so this table is the whole policy.
-def _still_applies(reason: str, settings: Settings) -> bool:
-    if reason == PARTIAL_OVERLAY:
-        return not settings.replay_uncover_overlays
-    return True
+#: Reasons whose truth can be re-established by reading the capture's own
+#: WARCs. The rest were decided from things a WARC does not contain — a step
+#: that raised, a redirect chain, an empty crawl — so a recount says nothing
+#: about them and they are believed as recorded.
+RECOUNTABLE = frozenset({PARTIAL_INTERSTITIAL, PARTIAL_OVERLAY})
+
+
+def _recount(settings: Settings, site: Site, capture: Capture) -> dict[str, int] | None:
+    """Re-classify a capture's HTML records with today's rules.
+
+    Needed because a *count* can go stale as well as a rule. The gate a site
+    frames over a page had no bucket of its own until it turned out to be 147
+    of the 147 "interstitial pages" on a capture whose every page was
+    complete — so manifests written before that record a number which is
+    correct for the rules that wrote it and wrong for these.
+
+    Reading the bytes settles it. The cost is bounded by only calling this for
+    captures whose recorded reasons are recountable at all.
+
+    Returns None when the WARCs cannot be read, which the caller must treat as
+    "cannot tell" rather than "nothing was wrong".
+    """
+    warc_dir = (
+        storage.site_dir(settings, site.archive_path)
+        / storage.CAPTURES_DIR
+        / capture.dir_name
+        / storage.WARC_DIR
+    )
+    if not warc_dir.is_dir():
+        return None
+
+    from warcio.archiveiterator import ArchiveIterator
+
+    counts = {"scanned": 0, "overlay_pages": 0, "interstitial_pages": 0, "gate_documents": 0}
+    seen_any = False
+    for warc in sorted(warc_dir.glob("*.warc.gz")):
+        try:
+            with open(warc, "rb") as fh:
+                for record in ArchiveIterator(fh):
+                    if record.rec_type != "response" or not record.http_headers:
+                        continue
+                    if not _is_success(record.http_headers.get_statuscode()):
+                        continue
+                    ctype = record.http_headers.get_header("Content-Type", "") or ""
+                    if "html" not in ctype.lower():
+                        continue
+                    seen_any = True
+                    url = record.rec_headers.get_header("WARC-Target-URI") or ""
+                    body = record.content_stream().read(512 * 1024)
+                    # The same order `step_asset_audit` uses, and it has to
+                    # stay the same order or the two disagree about one WARC.
+                    if interstitial.url_looks_blocked(url).blocked:
+                        counts["gate_documents"] += 1
+                        continue
+                    counts["scanned"] += 1
+                    if interstitial.overlay_blocked(body).blocked:
+                        counts["overlay_pages"] += 1
+                    elif interstitial.looks_blocked(body, url).blocked:
+                        counts["interstitial_pages"] += 1
+        except Exception as exc:
+            log.warning(
+                "could not recount a capture", extra={"capture": capture.id, "err": str(exc)}
+            )
+            return None
+    return counts if seen_any else None
 
 
 def recompute_status(session: Session, settings: Settings) -> list[Recomputed]:
@@ -737,16 +837,49 @@ def _recompute_one(
 
     recorded = stats.get("partial_reasons")
     if isinstance(recorded, list) and recorded:
-        remaining = [r for r in recorded if _still_applies(str(r), settings)]
-        if remaining:
-            return verdict("partial", f"still partial: {', '.join(str(r) for r in remaining)}")
-        return verdict("ok", f"recorded reason(s) no longer apply: {', '.join(map(str, recorded))}")
+        reasons = [str(r) for r in recorded]
+    else:
+        inferred = _infer_reasons(stats)
+        if inferred is None:
+            return verdict("partial", "its manifest names nothing this can account for")
+        reasons = inferred
 
-    return _infer(stats, settings, verdict)
+    # Anything a WARC cannot answer is believed exactly as recorded.
+    standing = [r for r in reasons if r not in RECOUNTABLE]
+    if standing:
+        return verdict("partial", f"still partial: {', '.join(standing)}")
+
+    fresh = _recount(settings, site, capture)
+    if fresh is None:
+        return verdict("partial", "its WARCs could not be read, so the counts cannot be checked")
+
+    # The counts as this version would produce them, judged by this version's
+    # rules. A stored count can be stale in the same way a stored rule can:
+    # the gate a site frames over a page had no bucket of its own, so a
+    # manifest may record 147 "interstitial pages" for 147 complete ones.
+    blockers = []
+    if fresh["interstitial_pages"]:
+        blockers.append(f"{fresh['interstitial_pages']} page(s) came back as a content warning")
+    if fresh["overlay_pages"] and not settings.replay_uncover_overlays:
+        blockers.append(f"{fresh['overlay_pages']} curtained page(s) and replay is not uncovering")
+    if blockers:
+        return verdict("partial", "; ".join(blockers))
+
+    return verdict(
+        "ok",
+        f"recounted from the WARCs: {fresh['scanned']} page(s), "
+        f"{fresh['overlay_pages']} curtained, {fresh['gate_documents']} gate document(s), "
+        "and no cause that still stands",
+    )
 
 
-def _infer(stats: dict[str, Any], settings: Settings, verdict: Verdict) -> Recomputed:
-    """The timid path, for captures written before reasons were recorded."""
+def _infer_reasons(stats: dict[str, Any]) -> list[str] | None:
+    """What a capture written before `partial_reasons` was probably downgraded for.
+
+    Returns None when the manifest shows nothing this action deals with, which
+    is different from an empty list — that would read as "downgraded for no
+    reason at all" and promote it.
+    """
 
     def count(key: str) -> int:
         try:
@@ -754,31 +887,22 @@ def _infer(stats: dict[str, Any], settings: Settings, verdict: Verdict) -> Recom
         except (TypeError, ValueError):
             return 0
 
-    if not settings.replay_uncover_overlays:
-        return verdict("partial", "replay is not uncovering overlays, so nothing has changed")
-    if not count("overlay_pages"):
-        return verdict("partial", "it records no curtained pages, so this is not that case")
-
-    # Every other cause, each of which would still downgrade it today.
-    blockers = []
+    reasons: list[str] = []
     if count("interstitial_pages"):
-        blockers.append(f"{count('interstitial_pages')} interstitial page(s)")
+        reasons.append(PARTIAL_INTERSTITIAL)
+    if count("overlay_pages"):
+        reasons.append(PARTIAL_OVERLAY)
     if count("gate_redirects"):
-        blockers.append(f"{count('gate_redirects')} gate redirect(s)")
+        reasons.append(PARTIAL_GATE_REDIRECT)
     if not count("urls"):
-        blockers.append("no URLs archived")
+        reasons.append(PARTIAL_NOTHING_ARCHIVED)
     for warning in stats.get("warnings") or []:
         # The shape `run_chain` writes when a required step raises. It is the
         # one cause with no counter, so it has to be read off the text.
         if re.search(r"^\S+ failed: ", str(warning)):
-            blockers.append(f"a post-processing step failed ({str(warning)[:60]})")
-    if blockers:
-        return verdict("partial", f"other reason(s) remain: {'; '.join(blockers)}")
-
-    return verdict(
-        "ok",
-        f"{count('overlay_pages')} curtained page(s) and no other cause; replay uncovers them",
-    )
+            reasons.append(PARTIAL_STEP_FAILED)
+            break
+    return reasons or None
 
 
 def _restamp_manifest(settings: Settings, site: Site, capture: Capture) -> None:
