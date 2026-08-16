@@ -308,6 +308,83 @@ def _rejects(preset: Preset, url: str) -> bool:
     return any(re.search(pattern, url) for pattern, _note in preset.reject_patterns)
 
 
+# ── the content warning, rejected by default ─────────────────────────────
+#
+# Blogger sends the whole post and frames a gate over it. The reject cannot
+# stop the frame document — that is a page navigation, which block rules
+# exempt — but it starves the gate of sub-resources (~500 KB down to ~80 KB
+# each) and keeps it out of replay's index, which is what `withheld_patterns`
+# reads. Measured on one capture: 144 of these from www.blogger.com and 5 more
+# from draft.blogger.com, for the same gate.
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://www.blogger.com/interstitial/blog?u=https://example.blogspot.com/",
+        "https://www.blogger.com/interstitial/blog?u=https://example.blogspot.com/p.html",
+        # The subdomain that also served it, and the reason the host is not
+        # spelled out as `www`.
+        "https://draft.blogger.com/interstitial/blog?u=https://example.blogspot.com/",
+        "http://www.blogger.com/interstitial/blog",
+    ],
+)
+def test_the_blogger_preset_rejects_the_content_warning_by_default(url: str) -> None:
+    assert _rejects(BLOGGER_PRESET, url)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        # A post whose slug happens to contain the word. Anchoring to the
+        # blogger.com host is what keeps the blog's own content out of it.
+        "https://example.blogspot.com/2026/08/the-interstitial-problem.html",
+        "https://example.blogspot.com/interstitial/",
+        # Not the gate: the widget script the preset deliberately keeps.
+        "https://www.blogger.com/static/v1/widgets/123-widgets.js",
+    ],
+)
+def test_the_content_warning_reject_does_not_reach_the_blog_itself(url: str) -> None:
+    assert not _rejects(BLOGGER_PRESET, url)
+
+
+def test_the_lean_variant_inherits_the_content_warning_reject() -> None:
+    """It composes from the standard preset, and this pins that it still does."""
+    assert _rejects(BLOGGER_LEAN_PRESET, "https://www.blogger.com/interstitial/blog?u=x")
+
+
+def test_the_reject_reaches_replays_withholding_not_just_the_crawl() -> None:
+    """The pattern's second job, and the one that survives a page navigation.
+
+    `withheld_patterns` matches a CDXJ record's `url` field, so a pattern that
+    only ever made sense against a crawl queue would leave the gate replayable
+    while looking like it had been dealt with.
+    """
+    import re
+
+    from cairn.services.replay import _without
+
+    line = (
+        "com,blogger,www)/interstitial/blog?u=https://example.blogspot.com/ 20260816135725 "
+        '{"url": "https://www.blogger.com/interstitial/blog?u=https://example.blogspot.com/", '
+        '"mime": "text/html", "status": "200"}'
+    )
+    post = (
+        "com,blogspot,example)/2026/08/post.html 20260816135725 "
+        '{"url": "https://example.blogspot.com/2026/08/post.html", '
+        '"mime": "text/html", "status": "200"}'
+    )
+    patterns = [p for p, _note in BLOGGER_PRESET.reject_patterns if "interstitial" in p]
+    assert patterns, "the preset no longer carries an interstitial reject"
+
+    kept, withheld = _without([line, post], patterns)
+    assert withheld == 1
+    assert kept == [post]
+    # And the SURT key is host-reversed, so a pattern matched against the key
+    # rather than the url would never have fired.
+    assert not re.search(patterns[0], "com,blogger,www)/interstitial/blog")
+
+
 @pytest.mark.parametrize(
     "url",
     [

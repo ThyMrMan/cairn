@@ -217,6 +217,16 @@ BLOGGER_PRESET = Preset(
             "the comment iframe itself, which posts to a live endpoint. The "
             "comments already in the page are part of the page and are kept",
         ),
+        # Any subdomain: measured on one capture, www.blogger.com served 144 of
+        # these and draft.blogger.com another 5, for the same gate.
+        (
+            r"^https?://[^/]+\.blogger\.com/interstitial/",
+            "the content warning Blogger frames over a post it has already sent "
+            "in full. This does not stop it being fetched — a frame document is "
+            "a page navigation, which block rules exempt — but it starves the "
+            "gate of its own sub-resources, measured at roughly 500 KB down to "
+            "80 KB each, and keeps it out of replay's index",
+        ),
         (
             r"/feeds/posts/default\?[^#]*callback=",
             "the JSONP form of the feed, called once per page by widgets. The "
@@ -256,7 +266,17 @@ BLOGGER_PRESET = Preset(
         "On a large blog the trail stops being cheap — it is one page per five "
         "posts, and every one of them re-renders five full posts. The lean "
         "variant of this preset rejects it; read its notes before switching, "
-        "because it trades a dead Older-posts link for the time saved."
+        "because it trades a dead Older-posts link for the time saved.\n\n"
+        "On a blog flagged as adult, Blogger sends the whole post and then "
+        "frames a content warning over it, with a stylesheet rule hiding "
+        "everything else. Nothing is missing when that happens and the access "
+        "profile is not at fault — a complete page had to arrive in order to be "
+        "drawn over. The reject for /interstitial/ shrinks the gate but cannot "
+        "stop it: a frame document is a page navigation, which block rules "
+        "exempt. Replay is where it is dealt with, and it is dealt with by "
+        "default; nor is re-accepting the warning a fix, measured across two "
+        "runs where the same cookie and user agent were honoured and then "
+        "refused. See docs/06 and docs/07."
     ),
 )
 
