@@ -500,7 +500,14 @@ function RejectPatterns({
   const [value, setValue] = useState("");
   return (
     <div className="card p-4">
-      <h3 className="text-sm font-medium">Skip URLs matching</h3>
+      <h3 className="text-sm font-medium">
+        Skip URLs matching
+        {/* The list is scrollable and a preset contributes a dozen or more, so
+            "how many are on this site?" is not answerable by looking. */}
+        {patterns.length > 0 && (
+          <span className="ml-2 font-normal text-muted">{patterns.length}</span>
+        )}
+      </h3>
       <p className="hint mt-0.5">
         Regular expressions. Blogger's <code>[?&amp;]m=1</code> is the important one — it serves
         every post twice and rejecting the duplicate halves the crawl with no content loss.
