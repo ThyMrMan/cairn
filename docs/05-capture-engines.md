@@ -212,6 +212,24 @@ One JSON object per line, flushed immediately. Anything the engine writes to **s
 - `SIGTERM` means finish the current record, close and flush WARCs, emit `result` with `status: "partial"`, exit. Core waits `grace_period_s` (default 60) then sends `SIGKILL`.
 - Engines must be safe to re-run against the same site — never "resume mid-stream," always "re-crawl and dedup."
 
+### Cancelling is a standing request, not a signal
+
+Reported as *"the cancel button doesn't always work, will sometimes get stuck and not do anything at all"*, and it was a class of gap rather than one bug. Cancelling used to **deliver** SIGTERM to whatever existed at that instant, so any stage with nothing to signal swallowed the click silently and the job ran to completion:
+
+| Stage | Why the signal went nowhere |
+|---|---|
+| Preparation | Seconds to minutes resolving scope, re-minting a stale profile, materializing a credential — `running.process` is still `None` |
+| Image pull | About a gigabyte for browsertrix, and `running.container` is `None` until `create` returns |
+| Spawn | The process exists a moment before it is recorded |
+| Claim | `_claim` commits `running` on a worker thread; until the dispatcher resumes, the job is neither `queued` in the database nor present in `_running` |
+| Discovery, maintenance | In-process — there is no subprocess to signal at all, ever |
+
+So a cancel is now **recorded** and every stage checks it at its own boundaries. `_stop` stays best-effort on top of that rather than being the whole mechanism, a request that arrives before a job can hold one is kept until the dispatcher applies it, and the two in-process job types check through the progress callback they already call — the only cancellation point a job without a subprocess has.
+
+The API answers honestly either way: `cancel` returns false for a job it cannot touch, rather than reporting success and changing nothing, which is the complaint in miniature.
+
+> Each test for this has a negative control, and the first draft of one of them **passed for the wrong reason** — it cancelled before `_run` started, so the first boundary check caught it and the callback under test was never consulted. It now cancels mid-crawl through the real entry point, and reverting the fix makes it fail.
+
 ### Pausing a crawl
 
 A long crawl sometimes needs to stop for reasons that have nothing to do with the archive — the NAS is needed for something else, the site is being hammered, somebody wants the bandwidth back. Cancelling costs the whole crawl. **Pause** stops it the same way and keeps the engine's place.

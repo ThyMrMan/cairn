@@ -320,3 +320,139 @@ def test_resuming_without_a_state_file_is_refused_rather_than_silently_recrawlin
     assert res.status_code == 409
     assert res.json()["error"]["code"] == "no_resume_state"
     assert "start from the beginning" in res.json()["error"]["message"]
+
+
+# ── cancelling at every stage ────────────────────────────────────────────
+#
+# Reported as "the cancel button sometimes doesn't work, will sometimes get
+# stuck and not do anything at all". It was a class of gap, not one bug:
+# cancelling *delivered* a signal to whatever existed at that instant, so
+# every stage with nothing to signal swallowed it and the job carried on.
+# Each test below is one of those stages.
+
+
+def _supervisor(client: TestClient):
+    return client.app.state.supervisor  # type: ignore[attr-defined]
+
+
+async def _cancel(client: TestClient, job_id: int) -> bool:
+    return await _supervisor(client).cancel(job_id)
+
+
+def test_cancelling_a_queued_job_still_works(authed: TestClient, db: Session) -> None:
+    """The path that always worked, pinned so the rest cannot break it."""
+    import asyncio
+
+    job_id = make_job(db, "queued")
+    assert asyncio.run(_cancel(authed, job_id)) is True
+
+    db.expire_all()
+    assert db.get(Job, job_id).status == "cancelled"
+
+
+def test_a_job_claimed_but_not_yet_registered_records_the_cancel(
+    authed: TestClient, db: Session
+) -> None:
+    """The claim window. `_claim` commits `running` on a worker thread, and
+    until the dispatcher resumes the job is neither queued in the database nor
+    present in `_running` — so the click had nowhere to land at all."""
+    import asyncio
+
+    from cairn.services.jobs import RunningJob
+
+    supervisor = _supervisor(authed)
+    job_id = make_job(db, "running")
+    assert job_id not in supervisor._running
+
+    assert asyncio.run(_cancel(authed, job_id)) is True
+    assert job_id in supervisor._cancel_requests
+
+    # And the dispatcher applies it the moment the job appears.
+    running = RunningJob(job_id=job_id)
+    assert supervisor._cancel_pending(running) is True
+    assert running.cancelled is True
+    # Consumed, not left to fire again at some later job.
+    assert job_id not in supervisor._cancel_requests
+
+
+def test_cancelling_before_anything_launched_is_not_silently_dropped(
+    authed: TestClient, db: Session
+) -> None:
+    """The stage that caused the report: minutes of preparation — resolving
+    scope, re-minting a profile, materializing a credential — during which
+    `_stop` signals a process that is still None."""
+    import asyncio
+
+    from cairn.services.jobs import RunningJob
+
+    supervisor = _supervisor(authed)
+    job_id = make_job(db, "running")
+    running = RunningJob(job_id=job_id)
+    supervisor._running[job_id] = running
+    try:
+        assert running.process is None and running.container is None
+        assert asyncio.run(_cancel(authed, job_id)) is True
+        # Nothing to signal, so the flag is the whole record — and every
+        # stage boundary reads it.
+        assert running.cancelled is True
+        assert supervisor._cancel_pending(running) is True
+    finally:
+        supervisor._running.pop(job_id, None)
+
+
+def test_a_finished_job_reports_that_it_was_not_cancelled(authed: TestClient, db: Session) -> None:
+    """The negative control. Returning True for a job it cannot touch is how
+    a button reports success and changes nothing, which is the complaint."""
+    import asyncio
+
+    job_id = make_job(db, "ok")
+    assert asyncio.run(_cancel(authed, job_id)) is False
+    assert asyncio.run(_cancel(authed, 999999)) is False
+
+
+def test_an_in_process_job_notices_through_its_progress_callback(
+    authed: TestClient, db: Session, monkeypatch
+) -> None:
+    """Discovery and the maintenance jobs have no subprocess, so a signal has
+    nowhere to go — the callback they already call is the only way in.
+
+    Driven through the real `_run_discovery`, and the cancel lands *during*
+    the crawl. Cancelling before `_run` would be caught by its first boundary
+    check and this would pass without the callback ever being consulted —
+    which is what the first draft of it did.
+    """
+    import asyncio
+
+    from cairn.services.jobs import RunningJob
+
+    supervisor = _supervisor(authed)
+    site = _site(db, engine_id="wget-warc", slug="discoverme")
+    job_id = make_job(db, "running", kind="discovery", site_id=site.id)
+    running = RunningJob(job_id=job_id)
+    supervisor._running[job_id] = running
+
+    kept_going = False
+
+    async def fake_discover(seed_url, options, progress):
+        nonlocal kept_going
+        progress("sampling", {"pages": 1})
+        # The click, mid-crawl, through the real entry point.
+        await supervisor.cancel(job_id)
+        progress("sampling", {"pages": 2})
+        kept_going = True
+        return None
+
+    monkeypatch.setattr("cairn.discovery.runner.discover", fake_discover)
+
+    try:
+        asyncio.run(supervisor._run(running))
+    finally:
+        supervisor._running.pop(job_id, None)
+
+    assert not kept_going, "the crawl continued past a cancel"
+    db.expire_all()
+    job = db.get(Job, job_id)
+    # Cancelled, not failed: the difference between "you stopped it" and
+    # "something went wrong".
+    assert job.status == "cancelled"
+    assert job.error == "cancelled"

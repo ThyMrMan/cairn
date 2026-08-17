@@ -95,6 +95,16 @@ class JobError(RuntimeError):
     """A job could not be prepared or started."""
 
 
+class _CancelledJobError(Exception):
+    """A job with no subprocess noticed it was cancelled and stopped.
+
+    Discovery and the maintenance jobs run in-process, so there is nothing to
+    signal — their only cancellation point is the progress callback they
+    already call. Raising through it unwinds whatever they were doing, and
+    `_run` turns it into a clean `cancelled` rather than a failure.
+    """
+
+
 @dataclass(slots=True)
 class RunningJob:
     job_id: int
@@ -128,6 +138,11 @@ class JobSupervisor:
         self._registry = registry
         self._sealer = sealer
         self._running: dict[int, RunningJob] = {}
+        # Cancels for jobs claimed out of the queue but not yet registered
+        # above. Drained by `_cancel_pending` the moment the job appears, so
+        # the window between the claim's commit and registration cannot
+        # swallow a click. See `cancel`.
+        self._cancel_requests: set[int] = set()
         self._wake = asyncio.Event()
         self._dispatcher: asyncio.Task[None] | None = None
         self._stopping = False
@@ -230,13 +245,58 @@ class JobSupervisor:
             self._wake.set()
 
     async def cancel(self, job_id: int) -> bool:
+        """Ask a job to stop, whatever stage it is at.
+
+        Reported as "the cancel button sometimes does nothing", and it was a
+        whole class of gap rather than one bug. Cancelling used to *deliver* a
+        signal to whatever existed at that instant, so any stage with nothing
+        to signal swallowed it silently and the job carried on:
+
+        - the seconds-to-minutes of preparation before a process exists at all
+          — resolving scope, re-minting a stale profile, materializing a
+          credential — where `_stop` signals a `process` that is still None
+        - a container image pull, which for browsertrix is about a gigabyte
+          and where `running.container` is None throughout
+        - the instant between spawning a process and recording it
+        - a job claimed out of the queue but not yet registered as running,
+          which is neither `queued` in the database nor present in `_running`
+
+        So a cancel is now a **standing request** rather than a signal. It is
+        recorded, and every stage checks it at its own boundaries; `_stop`
+        stays best-effort on top of that rather than being the whole mechanism.
+        """
         running = self._running.get(job_id)
-        if running is None:
-            # Queued but not started: mark it cancelled so it never runs.
-            return await asyncio.to_thread(self._cancel_queued, job_id)
-        running.cancelled = True
-        await self._stop(running)
-        return True
+        if running is not None:
+            running.cancelled = True
+            await self._stop(running)
+            return True
+        # Queued but not started: mark it cancelled so it never runs.
+        if await asyncio.to_thread(self._cancel_queued, job_id):
+            return True
+        # Claimed but not yet registered — `_claim` commits `running` in a
+        # worker thread, and until `_dispatch_once` resumes there is nothing
+        # here to hold the flag. Recording it means the dispatcher applies it
+        # the moment the job appears, instead of the click being lost.
+        if await asyncio.to_thread(self._is_live, job_id):
+            self._cancel_requests.add(job_id)
+            return True
+        return False
+
+    def _is_live(self, job_id: int) -> bool:
+        with self._sessions() as session:
+            job = session.get(Job, job_id)
+            return job is not None and job.status == "running"
+
+    def _cancel_pending(self, running: RunningJob) -> bool:
+        """Fold in any request that arrived before this job could hold one.
+
+        Called at every stage boundary. Cheap, and the alternative is the
+        behaviour that was reported: a flag set somewhere nothing reads.
+        """
+        if running.job_id in self._cancel_requests:
+            self._cancel_requests.discard(running.job_id)
+            running.cancelled = True
+        return running.cancelled
 
     async def pause(self, job_id: int) -> bool:
         """Stop a running capture in a way that can be continued.
@@ -305,6 +365,10 @@ class JobSupervisor:
         for job_id in claimed:
             running = RunningJob(job_id=job_id)
             self._running[job_id] = running
+            # A cancel that arrived while `_claim` was committing is held here
+            # and applied now, before the job does anything. `_run` sees it at
+            # its first boundary and stops.
+            self._cancel_pending(running)
             running.task = asyncio.create_task(self._run(running), name=f"cairn-job-{job_id}")
 
     def _claim(self, capacity: int) -> list[int]:
@@ -347,7 +411,17 @@ class JobSupervisor:
     async def _run(self, running: RunningJob) -> None:
         job_id = running.job_id
         temp_dir = self._settings.tmp_dir / f"job-{job_id}"
+
+        async def stop_here() -> bool:
+            """Whether to give up at this boundary, having recorded why."""
+            if not self._cancel_pending(running):
+                return False
+            await asyncio.to_thread(self._fail, job_id, running.capture_id, "cancelled")
+            return True
+
         try:
+            if await stop_here():
+                return
             job_type = await asyncio.to_thread(self._job_type, job_id)
             if job_type == "discovery":
                 # Discovery writes no WARC and needs database access to record
@@ -363,10 +437,23 @@ class JobSupervisor:
                 await self._run_maintenance(running, job_type)
                 return
             # Before the capture, never during it: see _refresh_stale_profile.
+            # It can drive a headless browser, so it is one of the stages a
+            # cancel used to fall into and vanish.
             await self._refresh_stale_profile(job_id)
+            if await stop_here():
+                return
             prepared = await asyncio.to_thread(self._prepare, job_id, temp_dir)
             running.capture_id = prepared.capture_id
+            # The longest of the silent stages: `_prepare` resolves scope,
+            # gathers seeds and materializes the credential, which for a
+            # browser profile now means decrypting a 41 MB tarball.
+            if await stop_here():
+                return
             await self._execute(running, prepared)
+        except _CancelledJobError:
+            # Raised out of an in-process job's progress callback, which is the
+            # only cancellation point a job with no subprocess has.
+            await asyncio.to_thread(self._fail, job_id, running.capture_id, "cancelled")
         except asyncio.CancelledError:
             await asyncio.to_thread(self._fail, job_id, running.capture_id, "cancelled")
             raise
@@ -397,6 +484,11 @@ class JobSupervisor:
         self._bus.publish(job_id, EV_STATUS, {"status": "running"})
 
         def progress(stage: str, fields: dict[str, Any]) -> None:
+            # Discovery runs in-process, so there is no signal to send and this
+            # callback is the only place it can notice. Raising unwinds the
+            # crawl; `_run` turns it into a clean cancelled.
+            if self._cancel_pending(running):
+                raise _CancelledJobError
             message = fields.pop("message", None)
             detail = ", ".join(f"{k}={v}" for k, v in fields.items())
             self._bus.publish(
@@ -752,10 +844,17 @@ class JobSupervisor:
         job_id = running.job_id
         self._bus.publish(job_id, EV_STATUS, {"status": "running"})
 
+        # These two run on a worker thread inside the maintenance job, and are
+        # its only cancellation points for the same reason discovery's is: a
+        # verify over a terabyte has no process to signal.
         def say(message: str) -> None:
+            if self._cancel_pending(running):
+                raise _CancelledJobError
             self._bus.publish(job_id, EV_LOG, {"level": "info", "msg": message})
 
         def step(done: int, total: int, label: str) -> None:
+            if self._cancel_pending(running):
+                raise _CancelledJobError
             self._bus.publish(job_id, EV_PROGRESS, {"done": done, "total": total, "url": label})
 
         runner = {
@@ -1356,6 +1455,12 @@ class JobSupervisor:
             start_new_session=True,
         )
         running.process = proc
+        # Between the spawn above and this line there was nothing to signal, so
+        # a cancel landing in that gap would have been dropped and the crawl
+        # would have run to completion. Re-checked here rather than trusted to
+        # timing.
+        if running.cancelled:
+            self._signal(running, signal.SIGTERM)
         await asyncio.to_thread(self._record_pid, job_id, proc.pid)
 
         collector = _Collector(
@@ -1462,8 +1567,32 @@ class JobSupervisor:
                     self._bus.publish(job_id, EV_LOG, {"level": "info", "msg": f"pulling {image}"})
                     async for status in containers.pull(http, image):
                         self._bus.publish(job_id, EV_LOG, {"level": "debug", "msg": status})
+                        # The longest stage in the whole system with nothing to
+                        # signal: browsertrix is about a gigabyte, and until
+                        # `create` returns there is no container. Cancelling
+                        # during a pull did nothing at all and the pull carried
+                        # on to completion.
+                        if self._cancel_pending(running):
+                            self._bus.publish(
+                                job_id,
+                                EV_LOG,
+                                {"level": "info", "msg": "cancelled while pulling the image"},
+                            )
+                            await asyncio.to_thread(
+                                self._fail, job_id, prepared.capture_id, "cancelled"
+                            )
+                            return
 
+                if self._cancel_pending(running):
+                    await asyncio.to_thread(self._fail, job_id, prepared.capture_id, "cancelled")
+                    return
                 running.container = await containers.create(http, run)
+                # Same race as the subprocess spawn: `create` returns before
+                # the name is recorded, so a cancel in between had nothing to
+                # stop and the container would then be started anyway.
+                if running.cancelled:
+                    await asyncio.to_thread(self._fail, job_id, prepared.capture_id, "cancelled")
+                    return
                 await containers.start(http, running.container)
                 stderr = await self._pump_container(http, running, collector)
                 returncode = await containers.wait(http, running.container)
