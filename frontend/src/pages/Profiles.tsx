@@ -15,6 +15,22 @@ import {
 } from "../lib/api";
 import { dateTime, daysUntil, relative } from "../lib/format";
 
+/** A URL's hostname, or the string itself when it will not parse.
+ *
+ * `new URL()` throws on anything that is not a URL, and a throw during render
+ * unmounts the whole app — which is exactly what a non-URL typed into a verify
+ * URL field did, on every reload, with no way back through the UI. The field
+ * is validated on the way in now; this is the belt to that's braces, because a
+ * label is never worth the page.
+ */
+function hostOf(raw: string): string {
+  try {
+    return new URL(raw).hostname || raw;
+  } catch {
+    return raw;
+  }
+}
+
 export default function Profiles() {
   const [adding, setAdding] = useState(false);
   const profiles = useQuery({ queryKey: ["profiles"], queryFn: endpoints.profiles });
@@ -397,7 +413,7 @@ function ProfileCard({ profile }: { profile: Profile }) {
         {profile.has_cookies && profile.verify_url && (
           <button className="btn-ghost" onClick={() => verify.mutate()} disabled={verify.isPending}>
             {verify.isPending && <Spinner />}
-            Test against {new URL(profile.verify_url).hostname}
+            Test against {hostOf(profile.verify_url)}
           </button>
         )}
         {!session && (

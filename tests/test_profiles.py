@@ -1042,3 +1042,74 @@ def test_a_derived_jar_is_not_world_readable_either(
     if os.name != "nt":
         mode = stat.S_IMODE(material.cookies_file.stat().st_mode)
         assert mode == 0o600, f"derived jar is {mode:o}"
+
+
+# ── a verify URL that is not a URL ───────────────────────────────────────
+#
+# Reported as "entered a non-blog URL and it broke the webpage. Just displays
+# a blank page that stays the same across reloads." The field took any string
+# up to 2048 characters; the profiles page then called `new URL()` on it while
+# rendering, that throws, and a throw during render unmounts the whole app.
+# Because the value was stored it came back on every load, and the page that
+# could have fixed the field was the page that would not render.
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "not a url at all",
+        "just-a-word",
+        "ftp://example.com/",
+        "://missing-scheme",
+        "http://",
+    ],
+)
+def test_a_verify_url_that_is_not_a_url_is_refused(authed: TestClient, bad: str) -> None:
+    res = authed.post(
+        "/api/profiles", json={"name": f"bad-{abs(hash(bad))}", "verify_url": bad}, headers=XHR
+    )
+
+    assert res.status_code == 422, res.text
+    body = res.json()["error"]
+    assert body["code"] == "invalid_verify_url"
+    # It says which field and why, rather than "422".
+    assert "Verify URL" in body["message"]
+
+
+def test_a_bare_hostname_is_accepted_and_normalised(authed: TestClient) -> None:
+    """The forgiving half. People type `google.com`, and the docs now tell
+    them to — refusing that would trade one bad experience for another."""
+    profile = authed.post(
+        "/api/profiles", json={"name": "bare", "verify_url": "google.com"}, headers=XHR
+    ).json()
+
+    assert profile["verify_url"] == "https://google.com/"
+
+
+def test_an_already_broken_profile_can_still_be_repaired(authed: TestClient) -> None:
+    """The property that actually matters, and the one the report is about.
+
+    Validation stops new bad values; it must not strand the ones already
+    stored. A profile holding garbage has to be editable back to something
+    valid — and to empty, which is how somebody clears a field they no longer
+    want rather than being made to invent a URL.
+    """
+    profile = authed.post("/api/profiles", json={"name": "stranded"}, headers=XHR).json()
+
+    # Reach past the API to plant what the old, unvalidated one allowed.
+    res = authed.patch(
+        f"/api/profiles/{profile['id']}", json={"verify_url": "not a url"}, headers=XHR
+    )
+    assert res.status_code == 422, "the patch route must validate too"
+
+    fixed = authed.patch(
+        f"/api/profiles/{profile['id']}",
+        json={"verify_url": "https://example.blogspot.com/"},
+        headers=XHR,
+    )
+    assert fixed.status_code == 200
+    assert fixed.json()["verify_url"] == "https://example.blogspot.com/"
+
+    cleared = authed.patch(f"/api/profiles/{profile['id']}", json={"verify_url": ""}, headers=XHR)
+    assert cleared.status_code == 200
+    assert not cleared.json()["verify_url"]

@@ -49,6 +49,31 @@ def list_profiles(db: DbSession, _user: CurrentUser) -> list[dict[str, Any]]:
     return [profile_service.summary(p) for p in rows]
 
 
+def _clean_verify_url(raw: str | None) -> str | None:
+    """A verify URL that is actually a URL, or a readable refusal.
+
+    Reported as "entered a non-blog URL and it broke the webpage": the field
+    took any string up to 2048 characters, and the profiles page then called
+    `new URL()` on it while rendering. That throws, a throw during render
+    unmounts the whole app, and because the value was stored it came back
+    blank on every reload with no way through the UI to undo it.
+
+    The page no longer throws either, but validating here is what stops the
+    bad value existing — and it costs nothing, because the same normaliser
+    already accepts what people actually type: a bare `google.com` becomes
+    `https://google.com/`.
+    """
+    if raw is None:
+        return None
+    if not raw.strip():
+        # Clearing the field is a real edit, not a malformed URL.
+        return ""
+    try:
+        return site_service.normalize_seed_url(raw)
+    except site_service.SiteError as exc:
+        raise ApiError("invalid_verify_url", f"Verify URL: {exc}", status_code=422) from exc
+
+
 @router.post("/profiles", status_code=status.HTTP_201_CREATED)
 def create_profile(
     body: ProfileCreate, db: DbSession, user: CurrentUser, ip: ClientIp
@@ -58,7 +83,7 @@ def create_profile(
         mode=body.mode,
         user_agent=body.user_agent,
         hosts=body.hosts,
-        verify_url=body.verify_url,
+        verify_url=_clean_verify_url(body.verify_url),
         notes=body.notes,
         created_at=utcnow(),
         updated_at=utcnow(),
@@ -87,8 +112,11 @@ def update_profile(
     profile = _require_profile(db, profile_id)
     for field in ("name", "user_agent", "hosts", "verify_url", "notes"):
         value = getattr(body, field)
-        if value is not None:
-            setattr(profile, field, value)
+        if value is None:
+            continue
+        if field == "verify_url":
+            value = _clean_verify_url(value)
+        setattr(profile, field, value)
     profile.updated_at = utcnow()
     try:
         db.flush()
