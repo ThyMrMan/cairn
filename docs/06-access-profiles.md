@@ -371,8 +371,15 @@ first. Measured at **41 MB** for one Google login.
 docker run --rm -p 9223:9223 -p 6080:6080 --shm-size=2g -e VNC_PASS=changeme \
   -v /mnt/user/appdata/cairn/btrix:/crawls \
   webrecorder/browsertrix-crawler:1.14.1 \
-  create-login-profile --url "https://example.blogspot.com/" --cookieDays 30
+  create-login-profile --url "https://accounts.google.com/" --cookieDays 30
 ```
+
+**Start at the sign-in, not at the blog.** `--url` is only where the browser
+opens, and opening on the blog lands on whatever gate it serves rather than on
+somewhere you can log in. Sign in at Google first, then navigate to the blog in
+that same window before committing — the blog sets its own cookie on that
+visit, and a profile that never went there has the Google session and nothing
+from the blog.
 
 `--cookieDays` rewrites session cookies to a fixed duration on save, which is
 the first of the two silent export failures at the top of this document —
@@ -399,10 +406,9 @@ the origins it has collected, and it grows as you navigate. Measured —
 `["https://example.com","https://example.org"]` after a `POST /navigate` to
 the second, in one session and one tarball.
 
-Practically: start `create-login-profile` on the first blog, sign in or click
-through, use the VNC window (or `POST /navigate`) to visit each other blog and
-clear its gate too, check `/ping` lists them all, then `POST /createProfile`
-once. Upload that single tarball and point every one of those sites at it.
+Practically: start `create-login-profile` at the Google sign-in, sign in, then
+use the VNC window (or `POST /navigate`) to visit each blog in turn and clear
+its gate, check `/ping` lists them all, then `POST /createProfile` once. Upload that single tarball and point every one of those sites at it.
 
 ### Adding a site to a profile that already exists
 

@@ -701,12 +701,21 @@ function BrowserProfile({ profile }: { profile: Profile }) {
   --shm-size=2g -e VNC_PASS=changeme \\
   -v /mnt/user/appdata/cairn/btrix:/crawls \\
   webrecorder/browsertrix-crawler:1.14.1 \\
-  create-login-profile --url "${profile.verify_url || "https://example.com/"}" --cookieDays 30`}
+  create-login-profile --url "https://accounts.google.com/" --cookieDays 30`}
           </pre>
           <p>
             Open <code className="font-mono">http://NAS-IP:9223/vnc/?host=NAS-IP&amp;port=6080&amp;password=changeme</code>{" "}
-            and sign in. Then commit it — nothing in that window does this for you, and closing
-            the container without it loses the login:
+            and sign in. <strong>Then browse to the site itself</strong>
+            {profile.verify_url ? (
+              <>
+                {" "}
+                — <code className="font-mono">{profile.verify_url}</code>
+              </>
+            ) : null}{" "}
+            in that same window: <code className="font-mono">--url</code> only says where the
+            browser opens, and a profile that never visited the site has the Google session and
+            nothing the site itself set. Then commit it — nothing in that window does this for
+            you, and closing the container without it loses the login:
           </p>
           <pre className="overflow-x-auto rounded bg-raised p-2 font-mono text-[11px]">
             {`curl -X POST -H "Content-Type: application/json" -d '{}' \\
