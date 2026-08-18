@@ -226,6 +226,7 @@ def _detail(db: DbSession, settings: Settings, site: Site) -> SiteDetail:
         companion_pass=(
             pass_.to_dict() if (pass_ := discovery_service.companion_pass_for(site)) else None
         ),
+        preset=discovery_service.applied_preset(site),
     )
 
 

@@ -332,6 +332,9 @@ export type SiteDetail = Site & {
   /** The second, cheap capture this site's preset offers — null for most sites.
    *  Absent on responses from before companion passes existed. */
   companion_pass?: CompanionPass | null;
+  /** The preset this site's scope was built from, or null for one assembled
+   *  by hand. Absent on responses from before the pre-capture summary. */
+  preset?: { id: string; name: string } | null;
 };
 
 /** Which links in the archived pages replay cannot answer. Only links to

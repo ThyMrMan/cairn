@@ -390,6 +390,12 @@ class SiteDetail(SiteSummary):
     # offer it without knowing which presets have one — a site whose scope was
     # built by hand simply has no pass and no button.
     companion_pass: dict[str, Any] | None = None
+    # Which preset this site's scope was built from, `{id, name}`, or None for
+    # a scope somebody assembled by hand. Shown on the pre-capture summary so
+    # the two settings that decide what a multi-hour crawl costs — the engine
+    # and the rules — are visible at the moment of starting it rather than
+    # two tabs away.
+    preset: dict[str, str] | None = None
 
 
 # ── captures ─────────────────────────────────────────────────────────────

@@ -10,7 +10,12 @@ import { LiveLog } from "../components/LiveLog";
 import { Media } from "../components/Media";
 import { Replay } from "../components/Replay";
 import { Alert, EmptyState, Spinner } from "../components/ui";
-import { ApiError, endpoints, type Capture } from "../lib/api";
+import {
+  ApiError,
+  endpoints,
+  type Capture,
+  type SiteDetail as SiteDetailType,
+} from "../lib/api";
 import { bytes, dateTime, ranFromTo, relative } from "../lib/format";
 import { StatusPill } from "./Sites";
 
@@ -20,6 +25,10 @@ export default function SiteDetail() {
   const client = useQueryClient();
   const navigate = useNavigate();
   const [watching, setWatching] = useState<number | null>(null);
+  // Which capture the confirmation panel is armed for, or null. A capture can
+  // run for hours and its cost is decided by two settings that live on other
+  // tabs, so the button asks first and shows them.
+  const [confirming, setConfirming] = useState<"full" | null>(null);
   // Set by a search result linking to the page it matched.
   const [params] = useSearchParams();
   const replayUrl = params.get("replay") ?? undefined;
@@ -107,7 +116,7 @@ export default function SiteDetail() {
           <button
             className="btn-primary"
             disabled={start.isPending || watching !== null}
-            onClick={() => start.mutate("full")}
+            onClick={() => setConfirming("full")}
           >
             {start.isPending && <Spinner />}
             {watching !== null ? "Capture running" : "Capture now"}
@@ -130,6 +139,18 @@ export default function SiteDetail() {
           )}
         </div>
       </header>
+
+      {confirming && (
+        <BeforeCapture
+          site={data}
+          pending={start.isPending}
+          onCancel={() => setConfirming(null)}
+          onConfirm={() => {
+            setConfirming(null);
+            start.mutate(confirming);
+          }}
+        />
+      )}
 
       {start.error && <Alert kind="error">{(start.error as ApiError).message}</Alert>}
       {startCompanion.error && (
@@ -954,6 +975,99 @@ function Metric({ label, value }: { label: string; value: string }) {
     </div>
   );
 }
+
+/**
+ * What this capture is about to do, before it does it.
+ *
+ * A capture runs for hours and its whole character is decided by two settings
+ * that live on other tabs: which engine crawls, and which preset's rules
+ * shape the scope. Starting one used to be a single click with neither in
+ * view, so a site captured with the wrong engine — or with a scope somebody
+ * had edited by hand weeks earlier — looked exactly like a site captured
+ * correctly until the result came back hours later.
+ *
+ * It reads rather than decides. Nothing here can change a setting; it says
+ * where each one lives, so "that is wrong" costs a tab rather than a
+ * cancelled crawl.
+ */
+function BeforeCapture({
+  site,
+  pending,
+  onCancel,
+  onConfirm,
+}: {
+  site: SiteDetailType;
+  pending: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  // Only for the engine's display name and whether it can actually run. The
+  // id is on the site already, but "browsertrix" is not what the picker calls
+  // it, and an id nobody recognises is not a confirmation.
+  const engines = useQuery({ queryKey: ["engines"], queryFn: endpoints.engines });
+  const engine = engines.data?.find((e) => e.id === site.engine_id) ?? null;
+
+  const rejects = site.scope.reject_patterns.length;
+  const crawled = site.scope.hosts.filter((h) => h.crawl_pages).length;
+  const assets = site.scope.hosts.filter((h) => h.fetch_assets && !h.crawl_pages).length;
+
+  return (
+    <div className="card p-4">
+      <h2 className="text-sm font-medium">Start a full capture of {site.title}?</h2>
+
+      <dl className="mt-3 text-sm">
+        <Row
+          label="Capture engine"
+          value={
+            engines.isPending
+              ? site.engine_id
+              : (engine?.name ?? `${site.engine_id} — not installed`)
+          }
+        />
+        <Row
+          label="Filtering preset"
+          // "None" is a real answer rather than a missing one: a scope built
+          // by hand has no preset, and saying so is the point of the row.
+          value={site.preset?.name ?? "None — this scope was built by hand"}
+        />
+        <Row label="Skip URL patterns" value={String(rejects)} />
+        <Row
+          label="Hosts"
+          value={`${crawled} crawled${assets ? `, ${assets} assets only` : ""}`}
+        />
+        <Row
+          label="Stop after"
+          value={
+            site.scope.max_pages ? `${site.scope.max_pages.toLocaleString()} URLs` : "no limit"
+          }
+        />
+      </dl>
+
+      {engine && !engine.available && (
+        <div className="mt-3">
+          <Alert kind="warn">
+            {engine.name} is not available: {engine.unavailable_reason ?? "no reason given"}.
+            Starting this now will fail.
+          </Alert>
+        </div>
+      )}
+
+      <div className="mt-3 flex items-center gap-2">
+        <button className="btn-primary" disabled={pending} onClick={onConfirm}>
+          {pending && <Spinner />}
+          Start capture
+        </button>
+        <button className="btn-ghost" onClick={onCancel}>
+          Cancel
+        </button>
+        <span className="hint ml-auto">
+          Change these on the Scope and Engine tabs.
+        </span>
+      </div>
+    </div>
+  );
+}
+
 
 function Row({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
   return (

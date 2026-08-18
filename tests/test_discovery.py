@@ -1046,3 +1046,28 @@ def test_a_site_without_an_applied_preset_is_offered_no_pass() -> None:
     assert companion_pass_for(Site(scope_settings={"preset": "blogger"})) is None
     offered = companion_pass_for(Site(scope_settings={"preset": "blogger-lean"}))
     assert offered is not None and offered.id == "pagination"
+
+
+# ── what the pre-capture summary reads ───────────────────────────────────
+
+
+def test_the_applied_preset_is_reported_by_name_or_not_at_all() -> None:
+    """The summary shown before a capture starts, which exists because the two
+    settings that decide what a multi-hour crawl costs live on other tabs.
+
+    Same source as the companion pass and for the same reason: what was
+    *applied*, not what the site fingerprints as. A scope built by hand
+    reports None, and the UI says so rather than filling the row with a guess.
+    """
+    from cairn.db.models import Site
+    from cairn.services.discovery_service import applied_preset
+
+    assert applied_preset(Site(scope_settings=None)) is None
+    assert applied_preset(Site(scope_settings={})) is None
+    assert applied_preset(Site(scope_settings={"preset": "not-a-preset"})) is None
+
+    applied = applied_preset(Site(scope_settings={"preset": "blogger"}))
+    assert applied == {"id": "blogger", "name": BLOGGER_PRESET.name}
+    # The name, not the id: "blogger-lean" is not what the picker calls it.
+    lean = applied_preset(Site(scope_settings={"preset": "blogger-lean"}))
+    assert lean is not None and lean["name"] == BLOGGER_LEAN_PRESET.name

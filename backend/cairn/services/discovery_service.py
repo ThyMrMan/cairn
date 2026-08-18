@@ -353,3 +353,17 @@ def stat_from_row(row: DiscoveredHost, scope: Scope) -> dict[str, Any]:
         "fetch_assets": bool(rule and rule.fetch_assets),
         "allow_extensionless": bool(rule and rule.allow_extensionless),
     }
+
+
+def applied_preset(site: Site) -> dict[str, str] | None:
+    """The preset whose rules this site's scope was built from, if any.
+
+    Same source as `companion_pass_for` and for the same reason: what was
+    *applied*, not what the site fingerprints as. A scope somebody built by
+    hand reports None, and "no preset" is a real answer worth showing rather
+    than a gap to fill with a guess.
+    """
+    preset = PRESETS.get(str((site.scope_settings or {}).get("preset") or ""))
+    if preset is None:
+        return None
+    return {"id": preset.id, "name": preset.name}

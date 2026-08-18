@@ -456,3 +456,35 @@ def test_an_in_process_job_notices_through_its_progress_callback(
     # "something went wrong".
     assert job.status == "cancelled"
     assert job.error == "cancelled"
+
+
+# ── what the pre-capture summary is built from ───────────────────────────
+
+
+def test_site_detail_reports_the_engine_and_the_applied_preset(
+    authed: TestClient, db: Session
+) -> None:
+    """The two fields the confirmation panel shows before a capture starts.
+
+    Worth an HTTP test rather than only a unit one: the lookup can be right
+    and the field still never reach the response, and a summary whose preset
+    row is always "None" is worse than no summary — it would read as "this
+    scope was built by hand" for every site on the instance.
+    """
+    site = _site(db, engine_id="browsertrix", slug="summarised")
+    site.scope_settings = {"preset": "blogger"}
+    db.commit()
+
+    body = authed.get(f"/api/sites/{site.id}").json()
+
+    assert body["engine_id"] == "browsertrix"
+    assert body["preset"] == {"id": "blogger", "name": "Blogger / Blogspot"}
+
+
+def test_a_hand_built_scope_reports_no_preset(authed: TestClient, db: Session) -> None:
+    """Null is the honest answer and the UI renders it as one."""
+    site = _site(db, engine_id="wget-warc", slug="byhand")
+    site.scope_settings = {}
+    db.commit()
+
+    assert authed.get(f"/api/sites/{site.id}").json()["preset"] is None
