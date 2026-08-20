@@ -37,6 +37,12 @@ DEFAULT_SETTINGS: dict[str, object] = {
     "crawl.default_rate_limit": "2m",
     "crawl.obey_robots": True,
     "crawl.user_agent": "Mozilla/5.0 (compatible; Cairn/1.0; +https://github.com/ThyMrMan/cairn)",
+    # Skip patterns that apply to every site. Empty, because a rule nobody
+    # asked for that silently omits pages is the one default an archiver
+    # cannot take back — every pattern here is one somebody typed. See
+    # services/skiplist.py for why it is merged at capture time rather than
+    # copied into sites.
+    "crawl.global_reject_patterns": [],
     "storage.trash_retention_days": 30,
     # How old a minted jar may be before a capture re-mints it first. Only
     # userscript profiles can be re-minted unattended — they are the only mode

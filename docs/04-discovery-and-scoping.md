@@ -251,6 +251,7 @@ Selections become a **resolved scope object** — engine-independent, stored on 
   "path_prefix": null,
   "accept_patterns": [],
   "reject_patterns": ["[?&]m=1", "[?&]replytocom="],
+  "global_reject_patterns": ["[?&]utm_[a-z]+="],
   "max_depth": null,
   "max_pages": null,
   "max_bytes": 21474836480,
@@ -258,6 +259,25 @@ Selections become a **resolved scope object** — engine-independent, stored on 
   "politeness": {"wait_s": 1.0, "random_wait": true, "rate_limit": "2m", "concurrency": 1}
 }
 ```
+
+### The skip list that applies to every site
+
+`reject_patterns` is this site's own — typed here, or contributed by its preset. `global_reject_patterns` is the instance-wide list from **Settings → Skip these URLs everywhere**, and it is a different thing in one specific way: it is **merged as the scope is resolved rather than stored on the site**.
+
+That is the whole design, and the alternative is what makes it worth stating. If the list were copied into each site when the site was created:
+
+- adding a pattern would reach only sites created afterwards, so the rule would arrive by the calendar;
+- removing one would mean "stop giving it to new sites", leaving it behind in every site that already had it, indistinguishable from a pattern somebody typed there on purpose.
+
+Merging at resolve time gives the opposite of both: one list, retroactive in both directions, and a site's own patterns still readable as a site's own. The two never mix — `GET /sites/{id}/scope` returns them in separate fields precisely because the domain picker posts back what it was given, and returning them merged would copy the global list into the site on the first save.
+
+Both lists mean the same thing wherever a reject pattern is read, so a global pattern also decides what replay serves (`replay.withheld_patterns`) and what the scope preview counts. Nothing is deleted from disk: a pattern added today stops the next capture fetching those URLs and hides already-archived ones from the index; removing it brings them back on the next rebuild.
+
+**A site can excuse itself from an individual pattern** — `global_reject_exceptions`, edited in that site's own domain picker, stored in `scope_settings`. Without it the list would be a one-way door: a rule that is right for the web in general and wrong for one blog could only be dealt with by deleting it for everybody. It is the same trap `retired_patterns` was added to presets to get out of.
+
+Exceptions are matched by the pattern's text, so editing a global pattern retires the exceptions granted to its predecessor and every site starts obeying the new rule. They are *not* dropped when the pattern is removed from the list — otherwise turning a global rule off and on again would silently re-apply it to the sites that had opted out.
+
+Invalid regexes are refused at write time rather than at capture time. A bad pattern in one site's list breaks that site; a bad pattern here breaks every capture on the instance at once, so it is caught while somebody can still see what they typed.
 
 ### Translation to wget
 
@@ -270,7 +290,7 @@ Selections become a **resolved scope object** — engine-independent, stored on 
 | `fetch_assets` | `--page-requisites` |
 | `path_prefix` | `--no-parent` + seed at that path, or `--include-directories` |
 | `accept_patterns` | `--accept-regex` |
-| `reject_patterns` | `--reject-regex` |
+| `reject_patterns` + `global_reject_patterns` | `--reject-regex` |
 | `max_depth` (null) | `--level=inf` |
 | `max_bytes` | `--quota=` |
 | `obey_robots: false` | `-e robots=off` |

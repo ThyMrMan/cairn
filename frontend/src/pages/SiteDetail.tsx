@@ -1007,7 +1007,12 @@ function BeforeCapture({
   const engines = useQuery({ queryKey: ["engines"], queryFn: endpoints.engines });
   const engine = engines.data?.find((e) => e.id === site.engine_id) ?? null;
 
-  const rejects = site.scope.reject_patterns.length;
+  // What will actually be enforced: this site's patterns plus the
+  // instance-wide ones it has not excused itself from. A confirmation that
+  // counted only half of them would be worse than one that counted none.
+  const excepted = new Set(site.scope.global_reject_exceptions);
+  const inherited = site.scope.global_reject_patterns.filter((p) => !excepted.has(p)).length;
+  const rejects = site.scope.reject_patterns.length + inherited;
   const crawled = site.scope.hosts.filter((h) => h.crawl_pages).length;
   const assets = site.scope.hosts.filter((h) => h.fetch_assets && !h.crawl_pages).length;
 
@@ -1030,7 +1035,10 @@ function BeforeCapture({
           // by hand has no preset, and saying so is the point of the row.
           value={site.preset?.name ?? "None — this scope was built by hand"}
         />
-        <Row label="Skip URL patterns" value={String(rejects)} />
+        <Row
+          label="Skip URL patterns"
+          value={inherited ? `${rejects} — ${inherited} from Settings` : String(rejects)}
+        />
         <Row
           label="Hosts"
           value={`${crawled} crawled${assets ? `, ${assets} assets only` : ""}`}

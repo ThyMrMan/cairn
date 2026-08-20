@@ -287,7 +287,12 @@ export type Scope = {
   hosts: HostRule[];
   exclude_hosts: string[];
   accept_patterns: string[];
+  /** This site's own. Never the instance-wide list — see `global_reject_patterns`. */
   reject_patterns: string[];
+  /** The whole instance-wide skip list, whether or not this site obeys each entry. */
+  global_reject_patterns: string[];
+  /** Entries of `global_reject_patterns` switched off for this site. */
+  global_reject_exceptions: string[];
   path_prefix: string | null;
   max_depth: number | null;
   max_pages: number | null;
@@ -1277,6 +1282,9 @@ export const endpoints = {
   integrity: () => api.get<IntegrityHealth>("/maintenance/integrity"),
   rebuildThumbnails: (params: { site_id?: number; force?: boolean } = {}) =>
     api.post<JobAccepted>(`/maintenance/thumbnails${query(params as never)}`),
+  skipPatterns: () => api.get<{ patterns: string[] }>("/crawl/skip-patterns"),
+  putSkipPatterns: (patterns: string[]) =>
+    api.put<{ patterns: string[] }>("/crawl/skip-patterns", { patterns }),
   thumbnailSettings: () => api.get<{ enabled: boolean }>("/thumbnails/settings"),
   putThumbnailSettings: (body: { enabled: boolean }) =>
     api.put<{ enabled: boolean }>("/thumbnails/settings", body),

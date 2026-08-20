@@ -173,7 +173,11 @@ def build_index(
 
 
 def withheld_patterns(session: Any, site: Any) -> list[str]:
-    """What this site keeps out of replay: its own reject patterns.
+    """What this site keeps out of replay: the reject patterns that apply to it.
+
+    Its own and the instance-wide skip list's, which mean the same thing and
+    so are read the same way — a rule typed once in Settings would be a
+    strange thing to have decide the crawl and not the index.
 
     The scope's explicit list only — what a person or a preset actually asked
     to skip. Not `build_reject_patterns`, whose generated asset fences are
@@ -200,7 +204,7 @@ def withheld_patterns(session: Any, site: Any) -> list[str]:
     from cairn.services import sites as site_service
 
     try:
-        patterns = list(site_service.resolved_scope(session, site).reject_patterns)
+        patterns = list(site_service.resolved_scope(session, site).all_reject_patterns)
     except Exception:  # pragma: no cover — a site mid-delete
         return []
 

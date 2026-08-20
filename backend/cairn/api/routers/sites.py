@@ -34,7 +34,16 @@ from cairn.config import Settings
 from cairn.db.models import Capture, Folder, Job, Site
 from cairn.db.types import utcnow
 from cairn.engines.registry import EngineConfigError, EngineError
-from cairn.services import audit, discovery_service, media, moves, symlinks, thumbnail, trash
+from cairn.services import (
+    audit,
+    discovery_service,
+    media,
+    moves,
+    skiplist,
+    symlinks,
+    thumbnail,
+    trash,
+)
 from cairn.services import folders as folder_service
 from cairn.services import profiles as profile_service
 from cairn.services import sites as site_service
@@ -81,7 +90,12 @@ def _scope_response(db: DbSession, site: Site) -> ScopeResponse:
         hosts=[HostRuleModel(**h.to_dict()) for h in scope.hosts],
         exclude_hosts=scope.exclude_hosts,
         accept_patterns=scope.accept_patterns,
+        # This site's own, never the merged list: the picker posts back what
+        # it was given, so returning the global patterns here would copy them
+        # into the site on the first save and outlive their removal.
         reject_patterns=scope.reject_patterns,
+        global_reject_patterns=skiplist.load(db),
+        global_reject_exceptions=site_service.global_reject_exceptions(site),
         path_prefix=scope.path_prefix,
         max_depth=scope.max_depth,
         max_pages=scope.max_pages,
@@ -533,6 +547,7 @@ def put_scope(
         site_service.save_scope(db, site, scope)
     except ScopeError as exc:
         raise ApiError("scope_invalid", str(exc), status_code=422) from exc
+    site_service.set_global_reject_exceptions(db, site, body.global_reject_exceptions)
 
     # Remember that a person chose this, so re-running discovery reports what
     # changed instead of overwriting the selection.

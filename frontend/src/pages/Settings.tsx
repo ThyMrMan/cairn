@@ -20,6 +20,7 @@ export default function Settings() {
       <NotificationsSection />
       <IntegritySection />
       <ThumbnailSection />
+      <SkipPatternsSection />
       <MediaDefaultsSection />
       <StorageSection />
       <MirrorSection />
@@ -502,6 +503,95 @@ function ThumbnailSection() {
       {queued && <p className="mt-2 text-xs text-muted">{queued}</p>}
       {run.error && <p className="mt-2 text-xs text-danger">{(run.error as ApiError).message}</p>}
       {save.error && <p className="mt-2 text-xs text-danger">{(save.error as ApiError).message}</p>}
+    </Section>
+  );
+}
+
+/**
+ * Reject patterns that apply to every site.
+ *
+ * Not a default new sites inherit — it is merged into each scope as the scope
+ * is resolved, so this list stays the only copy. Adding a pattern changes what
+ * every site's next capture fetches without visiting any of them, and removing
+ * one removes it everywhere rather than leaving it behind in whichever sites
+ * happened to exist when it was added.
+ *
+ * A site can turn an individual entry off for itself from its own domain
+ * picker. That escape hatch is why a list like this is safe to have at all: a
+ * rule that is right for the web in general and wrong for one blog would
+ * otherwise mean deleting it for everybody.
+ */
+function SkipPatternsSection() {
+  const client = useQueryClient();
+  const list = useQuery({ queryKey: ["skip-patterns"], queryFn: endpoints.skipPatterns });
+  const save = useMutation({
+    mutationFn: (patterns: string[]) => endpoints.putSkipPatterns(patterns),
+    onSuccess: (data) => {
+      client.setQueryData(["skip-patterns"], data);
+      // Every site's scope panel and pre-capture summary counts these.
+      void client.invalidateQueries({ queryKey: ["scope"] });
+      void client.invalidateQueries({ queryKey: ["site"] });
+    },
+  });
+  const [value, setValue] = useState("");
+  const patterns = list.data?.patterns ?? [];
+
+  function add(event: FormEvent) {
+    event.preventDefault();
+    const trimmed = value.trim();
+    if (!trimmed) return;
+    // The API de-duplicates too, but doing it here keeps the field from
+    // clearing as though something happened when nothing did.
+    if (patterns.includes(trimmed)) return;
+    save.mutate([...patterns, trimmed]);
+    setValue("");
+  }
+
+  return (
+    <Section
+      title="Skip these URLs everywhere"
+      description="Regular expressions matched against every URL, on every site. A pattern here applies to captures that have not run yet and to what replay serves — it is the same rule as a site's own skip list, written once."
+    >
+      {list.isPending && <Spinner className="h-4 w-4 text-muted" />}
+      <ul className="space-y-1">
+        {patterns.map((pattern) => (
+          <li key={pattern} className="flex items-center justify-between gap-3">
+            <code className="truncate text-xs">{pattern}</code>
+            <button
+              className="shrink-0 text-xs text-muted hover:text-danger"
+              disabled={save.isPending}
+              onClick={() => save.mutate(patterns.filter((p) => p !== pattern))}
+            >
+              remove
+            </button>
+          </li>
+        ))}
+        {!list.isPending && patterns.length === 0 && (
+          <li className="text-xs text-muted">
+            Nothing yet. Tracking parameters are the usual candidates —{" "}
+            <code>[?&amp;]utm_[a-z]+=</code> or <code>[?&amp;]fbclid=</code> — because they change
+            the URL without changing the page, so each one archives the same content again.
+          </li>
+        )}
+      </ul>
+      <form className="mt-3 flex gap-2" onSubmit={add}>
+        <input
+          className="field text-xs"
+          placeholder="[?&amp;]utm_[a-z]+="
+          value={value}
+          onChange={(event) => setValue(event.target.value)}
+        />
+        <button className="btn-ghost text-xs" disabled={save.isPending}>
+          {save.isPending && <Spinner />}
+          Add
+        </button>
+      </form>
+      {save.error && <p className="mt-2 text-xs text-danger">{(save.error as ApiError).message}</p>}
+      <p className="mt-3 text-xs text-muted">
+        Already-captured pages are not deleted. A pattern added now stops the next capture fetching
+        those URLs and hides the ones already archived from replay; removing it brings them back.
+        Any site can turn an individual pattern off for itself in its own <em>Scope</em> panel.
+      </p>
     </Section>
   );
 }

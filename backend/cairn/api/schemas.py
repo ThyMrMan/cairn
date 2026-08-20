@@ -156,6 +156,11 @@ class ScopeModel(BaseModel):
     exclude_hosts: list[str] = Field(default_factory=list, max_length=500)
     accept_patterns: list[str] = Field(default_factory=list, max_length=200)
     reject_patterns: list[str] = Field(default_factory=list, max_length=200)
+    # Instance-wide patterns this site is excused from. Submitted with the
+    # scope because it is edited in the same panel; it is not part of the
+    # scope object the engine receives, which carries the resolved list
+    # instead (`ScopeResponse.global_reject_patterns`).
+    global_reject_exceptions: list[str] = Field(default_factory=list, max_length=200)
     path_prefix: str | None = None
     max_depth: int | None = Field(default=None, ge=0, le=100)
     max_pages: int | None = Field(default=None, ge=1)
@@ -168,6 +173,17 @@ class ScopeResponse(ScopeModel):
     seeds: list[str] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
     wget_preview: list[str] = Field(default_factory=list)
+    # The whole instance-wide skip list, including the entries this site has
+    # excepted itself from — the picker needs to show a rule in order to
+    # offer turning it back on. `global_reject_exceptions` says which of these
+    # are currently off here.
+    global_reject_patterns: list[str] = Field(default_factory=list)
+
+
+class SkipPatterns(BaseModel):
+    """The instance-wide skip list."""
+
+    patterns: list[str] = Field(default_factory=list, max_length=200)
 
 
 # ── folders & tags ───────────────────────────────────────────────────────

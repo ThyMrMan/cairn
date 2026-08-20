@@ -331,10 +331,54 @@ def remove_seed(session: Session, settings: Settings, site: Site, url: str) -> N
     write_site_yaml(session, settings, site)
 
 
+# Patterns from the instance-wide skip list this site is excused from. Kept
+# in `scope_settings` rather than as `scope_patterns` rows because it is not a
+# pattern the site has — it is a pattern the site does *not* have, and storing
+# it alongside the ones it does have is how the two get confused.
+EXCEPTIONS_KEY = "global_reject_exceptions"
+
+
+def global_reject_exceptions(site: Site) -> list[str]:
+    stored = (site.scope_settings or {}).get(EXCEPTIONS_KEY) or []
+    return [str(p) for p in stored]
+
+
+def set_global_reject_exceptions(session: Session, site: Site, patterns: list[str]) -> list[str]:
+    """Excuse this site from some of the instance-wide skip patterns.
+
+    Matched by the pattern's text, so editing a global pattern retires the
+    exception with it and the site starts obeying the new rule. That is the
+    intended reading: an edited pattern is a different rule, and inheriting an
+    exception granted to its predecessor would be the quieter of the two
+    wrong answers.
+
+    Patterns not currently on the global list are kept rather than dropped. A
+    pattern removed from the list and put back should find its exceptions
+    where it left them — otherwise turning a global rule off and on again
+    would silently re-apply it to the sites that had opted out.
+    """
+    wanted = [p.strip() for p in patterns if p and p.strip()]
+    site.scope_settings = {
+        **(site.scope_settings or {}),
+        EXCEPTIONS_KEY: list(dict.fromkeys(wanted)),
+    }
+    session.flush()
+    return list(dict.fromkeys(wanted))
+
+
 def resolved_scope(session: Session, site: Site) -> Scope:
-    """Scope as the engine will see it."""
+    """Scope as the engine will see it.
+
+    The instance-wide skip list is merged here rather than stored on the site,
+    so it stays one list: change it and every site's next capture changes with
+    it. See `services/skiplist.py`.
+    """
+    from cairn.services import skiplist
+
     scope = load_scope(session, site)
     scope.seeds = all_seeds(site)
+    excepted = set(global_reject_exceptions(site))
+    scope.global_reject_patterns = [p for p in skiplist.load(session) if p not in excepted]
     return scope
 
 

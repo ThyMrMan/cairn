@@ -128,6 +128,23 @@ Anything a filter can express must survive a round trip through both serializati
 | `POST` | `/api/sites/{id}/scope/preview` | Dry-run estimate — no fetching |
 | `GET` | `/api/presets` | Platform presets (blogger, wordpress, …) |
 | `POST` | `/api/sites/{id}/scope/apply-preset` | `{preset: "blogger"}` |
+| `GET` | `/api/crawl/skip-patterns` | `{patterns}` — the skip list every site inherits |
+| `PUT` | `/api/crawl/skip-patterns` | `{patterns}`, whole list. `422 invalid_pattern` if one will not compile |
+
+The scope response keeps three pattern lists apart and they are not
+interchangeable. `reject_patterns` is the site's own.
+`global_reject_patterns` is the entire instance-wide list, including entries
+this site has switched off — the picker has to show a rule in order to offer
+turning it back on. `global_reject_exceptions` names the ones currently off
+here, and is the only one of the three the `PUT` accepts alongside the site's
+own.
+
+The `PUT` on the global list replaces it wholesale rather than offering
+add/remove: every pattern has to be recompiled anyway to know the result is
+runnable, and a partial update lets two clients each succeed and leave a list
+neither asked for. Removing a pattern removes it from every site at once —
+see [04](04-discovery-and-scoping.md#the-skip-list-that-applies-to-every-site)
+for why it is merged at resolve time rather than copied into sites.
 
 ---
 

@@ -291,7 +291,7 @@ def compiled_rejects(scope: Scope) -> list[Any]:
     import re
 
     compiled = []
-    for pattern in scope.reject_patterns:
+    for pattern in scope.all_reject_patterns:
         try:
             compiled.append(re.compile(pattern))
         except re.error:  # pragma: no cover — validated on save

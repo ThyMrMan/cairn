@@ -19,10 +19,19 @@ import { Alert, EmptyState, Spinner } from "./ui";
  * starts off, so a crawl can never wander onto a blog that merely appeared in
  * a sidebar.
  */
+/** Two pattern lists holding the same patterns, order included. */
+function same(a: string[], b: string[]) {
+  return a.length === b.length && a.every((value, i) => value === b[i]);
+}
+
 export function DomainPicker({ siteId, onChanged }: { siteId: number; onChanged?: () => void }) {
   const client = useQueryClient();
   const [draft, setDraft] = useState<Record<string, HostRule> | null>(null);
   const [rejects, setRejects] = useState<string[] | null>(null);
+  // Instance-wide patterns this site is excused from. Null while unloaded, so
+  // an un-edited picker cannot post an empty list and silently re-apply a
+  // rule somebody had turned off here.
+  const [excepted, setExcepted] = useState<string[] | null>(null);
   const [cap, setCap] = useState<number | null | undefined>(undefined);
   // undefined = untouched, so the saved value shows through until somebody
   // actually changes it. A plain `useState(true)` would quietly turn robots
@@ -52,6 +61,7 @@ export function DomainPicker({ siteId, onChanged }: { siteId: number; onChanged?
     }
     setDraft(initial);
     setRejects(scope.data.reject_patterns);
+    setExcepted(scope.data.global_reject_exceptions);
     setCap(scope.data.max_pages);
   }, [discovery.data, scope.data, draft]);
 
@@ -60,6 +70,7 @@ export function DomainPicker({ siteId, onChanged }: { siteId: number; onChanged?
       endpoints.putScope(siteId, {
         hosts: Object.values(draft ?? {}),
         reject_patterns: rejects ?? [],
+        global_reject_exceptions: excepted ?? scope.data?.global_reject_exceptions ?? [],
         obey_robots: robots ?? scope.data?.obey_robots ?? true,
         max_pages: cap === undefined ? (scope.data?.max_pages ?? null) : cap,
         max_bytes: scope.data?.max_bytes ?? null,
@@ -96,14 +107,18 @@ export function DomainPicker({ siteId, onChanged }: { siteId: number; onChanged?
   const dirty = useMemo(() => {
     if (!draft || !discovery.data) return false;
     // The robots toggle counts too, or flipping it alone leaves the page
-    // looking unchanged while holding an unsaved change.
+    // looking unchanged while holding an unsaved change. Same for both
+    // pattern lists: adding a skip pattern, or switching an inherited one off
+    // for this site, is a change somebody can lose by navigating away.
     if (robots !== undefined && robots !== (scope.data?.obey_robots ?? true)) return true;
+    if (rejects && !same(rejects, scope.data?.reject_patterns ?? [])) return true;
+    if (excepted && !same(excepted, scope.data?.global_reject_exceptions ?? [])) return true;
     return discovery.data.hosts.some(
       (h) =>
         draft[h.host]?.crawl_pages !== h.crawl_pages ||
         draft[h.host]?.fetch_assets !== h.fetch_assets,
     );
-  }, [draft, discovery.data, robots, scope.data]);
+  }, [draft, discovery.data, robots, rejects, excepted, scope.data]);
 
   if (discovery.isLoading) return <Spinner className="h-5 w-5 text-muted" />;
 
@@ -243,9 +258,15 @@ export function DomainPicker({ siteId, onChanged }: { siteId: number; onChanged?
 
       <RejectPatterns
         patterns={rejects ?? []}
+        global={scope.data?.global_reject_patterns ?? []}
+        excepted={excepted ?? scope.data?.global_reject_exceptions ?? []}
         onChange={(next) => {
           setSaved(false);
           setRejects(next);
+        }}
+        onExcept={(next) => {
+          setSaved(false);
+          setExcepted(next);
         }}
       />
 
@@ -490,41 +511,101 @@ function CrawlCap({
   );
 }
 
+/**
+ * The two skip lists, in one panel because they answer one question.
+ *
+ * The instance-wide list is shown but not edited here — editing it here would
+ * mean editing it for every site, which is not what somebody looking at one
+ * site's scope is asking to do. What this panel *can* do is switch an entry
+ * off for this site, because a rule that is right for the web in general and
+ * wrong for one blog is otherwise a reason not to have the list at all.
+ */
 function RejectPatterns({
   patterns,
+  global: globals,
+  excepted,
   onChange,
+  onExcept,
 }: {
   patterns: string[];
+  global: string[];
+  excepted: string[];
   onChange: (next: string[]) => void;
+  onExcept: (next: string[]) => void;
 }) {
   const [value, setValue] = useState("");
+  const off = new Set(excepted);
+  const active = globals.filter((p) => !off.has(p)).length + patterns.length;
   return (
     <div className="card p-4">
       <h3 className="text-sm font-medium">
         Skip URLs matching
         {/* The list is scrollable and a preset contributes a dozen or more, so
-            "how many are on this site?" is not answerable by looking. */}
-        {patterns.length > 0 && (
-          <span className="ml-2 font-normal text-muted">{patterns.length}</span>
-        )}
+            "how many are on this site?" is not answerable by looking. Counts
+            what is in force, which is why a switched-off global rule lowers
+            it. */}
+        {active > 0 && <span className="ml-2 font-normal text-muted">{active}</span>}
       </h3>
       <p className="hint mt-0.5">
         Regular expressions. Blogger's <code>[?&amp;]m=1</code> is the important one — it serves
         every post twice and rejecting the duplicate halves the crawl with no content loss.
       </p>
+
+      {globals.length > 0 && (
+        <div className="mt-3">
+          <p className="text-xs font-medium text-muted">
+            From Settings, on every site
+            <span className="ml-2 font-normal">{globals.length}</span>
+          </p>
+          <ul className="mt-1 space-y-1">
+            {globals.map((pattern) => {
+              const disabled = off.has(pattern);
+              return (
+                <li key={pattern} className="flex items-center justify-between gap-3">
+                  <code className={`truncate text-xs ${disabled ? "text-muted line-through" : ""}`}>
+                    {pattern}
+                  </code>
+                  <button
+                    className="shrink-0 text-xs text-muted hover:text-fg"
+                    onClick={() =>
+                      onExcept(
+                        disabled
+                          ? excepted.filter((p) => p !== pattern)
+                          : [...excepted, pattern],
+                      )
+                    }
+                  >
+                    {disabled ? "use here" : "skip here"}
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+          <p className="hint mt-1">
+            Edit these under Settings → Skip these URLs everywhere. Turning one off applies to this
+            site only.
+          </p>
+        </div>
+      )}
+
       <ul className="mt-3 space-y-1">
+        {globals.length > 0 && patterns.length > 0 && (
+          <li className="text-xs font-medium text-muted">This site only</li>
+        )}
         {patterns.map((pattern) => (
           <li key={pattern} className="flex items-center justify-between gap-3">
             <code className="truncate text-xs">{pattern}</code>
             <button
-              className="text-xs text-muted hover:text-danger"
+              className="shrink-0 text-xs text-muted hover:text-danger"
               onClick={() => onChange(patterns.filter((p) => p !== pattern))}
             >
               remove
             </button>
           </li>
         ))}
-        {patterns.length === 0 && <li className="text-xs text-muted">No patterns.</li>}
+        {patterns.length === 0 && globals.length === 0 && (
+          <li className="text-xs text-muted">No patterns.</li>
+        )}
       </ul>
       <form
         className="mt-3 flex gap-2"

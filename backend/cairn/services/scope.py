@@ -109,6 +109,15 @@ class Scope:
     exclude_hosts: list[str] = field(default_factory=list)
     accept_patterns: list[str] = field(default_factory=list)
     reject_patterns: list[str] = field(default_factory=list)
+    # The instance-wide skip list, resolved for this site — the global list
+    # minus anything this site excepts itself from. Separate from
+    # `reject_patterns` all the way to the engine so that reading a scope and
+    # writing it back cannot copy the global list into the site's own, which
+    # would make removing a pattern globally stop removing it anywhere
+    # (services/skiplist.py). Populated by `sites.resolved_scope`; empty on a
+    # scope built by hand, which is what makes this module still testable
+    # without a database.
+    global_reject_patterns: list[str] = field(default_factory=list)
     seed_urls_from: dict[str, bool] = field(
         default_factory=lambda: {"sitemap": True, "feeds": True}
     )
@@ -131,6 +140,7 @@ class Scope:
             "path_prefix": self.path_prefix,
             "accept_patterns": list(self.accept_patterns),
             "reject_patterns": list(self.reject_patterns),
+            "global_reject_patterns": list(self.global_reject_patterns),
             "max_depth": self.max_depth,
             "max_pages": self.max_pages,
             "max_bytes": self.max_bytes,
@@ -148,6 +158,7 @@ class Scope:
             exclude_hosts=[str(h).lower() for h in raw.get("exclude_hosts") or []],
             accept_patterns=[str(p) for p in raw.get("accept_patterns") or []],
             reject_patterns=[str(p) for p in raw.get("reject_patterns") or []],
+            global_reject_patterns=[str(p) for p in raw.get("global_reject_patterns") or []],
             seed_urls_from=dict(raw.get("seed_urls_from") or {"sitemap": True, "feeds": True}),
             path_prefix=raw.get("path_prefix") or None,
             max_depth=raw.get("max_depth"),
@@ -166,6 +177,23 @@ class Scope:
     @property
     def asset_only_hosts(self) -> list[HostRule]:
         return [h for h in self.hosts if h.fetch_assets and not h.crawl_pages]
+
+    @property
+    def all_reject_patterns(self) -> list[str]:
+        """Every reject somebody typed — this site's and the instance's.
+
+        Not the same list as `build_reject_patterns`, and the difference
+        matters. That one adds the generated fences for asset-only hosts,
+        which exist to stop wget *crawling* a CDN and would hide that CDN's
+        images if they were read as "do not serve this". This one is only the
+        rules a person wrote about URL shapes, which is what replay withholds
+        on and what the discovery preview counts against.
+
+        Global first: it is the older rule of the two, so when the wget
+        preview is read left to right the site-specific additions are the
+        tail.
+        """
+        return [*self.global_reject_patterns, *self.reject_patterns]
 
     @property
     def allowed_hosts(self) -> list[str]:
@@ -194,7 +222,7 @@ class Scope:
         overlap = seen & set(self.exclude_hosts)
         if overlap:
             raise ScopeError(f"host is both included and excluded: {', '.join(sorted(overlap))}")
-        for pattern in (*self.accept_patterns, *self.reject_patterns):
+        for pattern in (*self.accept_patterns, *self.all_reject_patterns):
             try:
                 re.compile(pattern)
             except re.error as exc:
@@ -272,7 +300,7 @@ CSS_ESCAPE_REJECT = r"\\|%5[Cc]"
 
 def build_reject_patterns(scope: Scope) -> list[str]:
     """Every reject pattern the engine should enforce, user's plus generated."""
-    patterns = list(scope.reject_patterns)
+    patterns = list(scope.all_reject_patterns)
     patterns.extend(asset_only_reject_pattern(rule) for rule in scope.asset_only_hosts)
     patterns.append(CSS_ESCAPE_REJECT)
     return patterns

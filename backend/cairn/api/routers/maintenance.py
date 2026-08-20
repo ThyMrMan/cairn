@@ -14,7 +14,14 @@ from fastapi import APIRouter, Depends, Query, Request, status
 
 from cairn.api.deps import AppSettings, ClientIp, Csrf, CurrentUser, DbSession
 from cairn.api.errors import ApiError
-from cairn.api.schemas import JobAccepted, MediaPolicy, Ok, ThumbnailSettings, TrashEntry
+from cairn.api.schemas import (
+    JobAccepted,
+    MediaPolicy,
+    Ok,
+    SkipPatterns,
+    ThumbnailSettings,
+    TrashEntry,
+)
 from cairn.db.models import Folder
 from cairn.services import audit, postprocess, replay, symlinks, trash
 
@@ -220,6 +227,51 @@ def put_media_settings(
         "unavailable_reason": reason,
         "hosts": list(media.EMBED_HOSTS),
     }
+
+
+# ── the instance-wide skip list ──────────────────────────────────────────
+#
+# Reject patterns that apply to every site instead of one. Unlike the media
+# default above, this is not "what a new site inherits" — it is merged into
+# every scope as it is resolved, so removing a pattern here removes it from
+# every site at once. A site can excuse itself from an individual pattern in
+# its own domain picker; nothing else overrides the list.
+
+
+@router.get("/crawl/skip-patterns", response_model=SkipPatterns)
+def crawl_skip_patterns(db: DbSession, _user: CurrentUser) -> SkipPatterns:
+    from cairn.services import skiplist
+
+    return SkipPatterns(patterns=skiplist.load(db))
+
+
+@router.put("/crawl/skip-patterns", response_model=SkipPatterns)
+def put_crawl_skip_patterns(
+    body: SkipPatterns, db: DbSession, user: CurrentUser, ip: ClientIp
+) -> SkipPatterns:
+    """Replace the list.
+
+    Whole-list rather than add/remove endpoints: the editor holds all of it,
+    every pattern has to be recompiled anyway to know the result is runnable,
+    and a partial update means two clients can each succeed and leave a list
+    neither of them asked for.
+    """
+    from cairn.services import skiplist
+
+    try:
+        patterns = skiplist.save(db, body.patterns)
+    except skiplist.SkipListError as exc:
+        raise ApiError("invalid_pattern", str(exc), status_code=422) from exc
+    audit.record(
+        db,
+        "crawl.skip_patterns",
+        actor=user.username,
+        target="instance",
+        ip=ip,
+        detail={"count": len(patterns)},
+    )
+    db.commit()
+    return SkipPatterns(patterns=patterns)
 
 
 @router.post(
