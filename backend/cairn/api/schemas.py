@@ -186,6 +186,31 @@ class SkipPatterns(BaseModel):
     patterns: list[str] = Field(default_factory=list, max_length=200)
 
 
+class AddSkipPattern(BaseModel):
+    """Add one reject pattern, to this site or to every site.
+
+    Exists so the "what it fetched" report can act on a row. Appending through
+    a read-modify-write of the whole scope would drop one of two patterns added
+    in quick succession, which is exactly how that report gets used — you look
+    at the top three rows and skip two of them.
+    """
+
+    pattern: str = Field(min_length=1, max_length=1024)
+    everywhere: bool = False
+
+
+class PatternCheck(BaseModel):
+    """Ask what a set of patterns would have matched.
+
+    `site_id` narrows the sample to one site's captures. Omitted, it reaches
+    across the most recent captures on the instance — which is the right
+    reading for the global list and the wrong one for a site's own.
+    """
+
+    patterns: list[str] = Field(default_factory=list, max_length=200)
+    site_id: int | None = None
+
+
 # ── folders & tags ───────────────────────────────────────────────────────
 
 

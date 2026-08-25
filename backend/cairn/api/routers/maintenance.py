@@ -18,6 +18,7 @@ from cairn.api.schemas import (
     JobAccepted,
     MediaPolicy,
     Ok,
+    PatternCheck,
     SkipPatterns,
     ThumbnailSettings,
     TrashEntry,
@@ -272,6 +273,19 @@ def put_crawl_skip_patterns(
     )
     db.commit()
     return SkipPatterns(patterns=patterns)
+
+
+@router.post("/crawl/skip-patterns/check")
+def check_skip_patterns(body: PatternCheck, db: DbSession, _user: CurrentUser) -> dict[str, Any]:
+    """How many recently-fetched URLs each pattern matches.
+
+    A POST because the patterns are regular expressions and a query string is
+    the wrong place for one — but it reads nothing and writes nothing, and is
+    safe to call whenever a list is on screen.
+    """
+    from cairn.services import patterncheck
+
+    return patterncheck.check(db, body.patterns, site_id=body.site_id)
 
 
 @router.post(

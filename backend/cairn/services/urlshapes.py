@@ -31,6 +31,7 @@ would otherwise disagree with each other.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import parse_qsl, urlsplit
@@ -83,6 +84,7 @@ class Shape:
             "count": self.count,
             "bytes": self.bytes,
             "example": self.example,
+            "pattern": pattern_for(self.shape, self.example),
         }
 
 
@@ -226,3 +228,77 @@ def summarize(session: Session, capture_id: int, *, limit: int = 30) -> dict[str
         "shapes": [s.to_dict() for s in ranked[:limit]],
         "truncated": len(ranked) > limit,
     }
+
+
+# ── turning a row of the report into a skip pattern ──────────────────────
+#
+# The report says what a crawl is spending itself on; the domain picker takes
+# a *regular expression*. Those are two different languages sitting two panels
+# apart, and pasting a shape into the pattern box produces something that
+# compiles, saves, and matches nothing — `#` is a literal there, and a `#`
+# never survives into a fetched URL because fragments are stripped before the
+# request. It looked like a filter that had been applied. It was a no-op.
+#
+# So the translation belongs here, next to the notation it inverts, and the
+# button that uses it is on the row itself.
+
+# Escaped by hand rather than with `re.escape`, which escapes `-`, `&`, `#`
+# and `~` as identity escapes. Those are legal in PCRE and in JavaScript
+# without the `u` flag, so they would work — but a generated pattern is read
+# by people and pasted between the two lists, and `/feeds/` beats `/feeds/`
+# spelled with backslashes. Only what is special in *both* engines is escaped.
+_RE_SPECIAL = frozenset(r"\^$.|?*+()[]{}")
+
+
+def _escape(text: str) -> str:
+    return "".join("\\" + c if c in _RE_SPECIAL else c for c in text)
+
+
+def _segment_pattern(segment: str) -> str:
+    if segment == "#":
+        return "[0-9]+"
+    if segment == "*":
+        return "[^/?]+"
+    if segment.startswith("*."):
+        # `*.html` is one varying segment with its extension kept, not a
+        # wildcard followed by a literal dot.
+        return r"[^/?]+\." + _escape(segment[2:])
+    return _escape(segment)
+
+
+def pattern_for(shape: str, example: str = "") -> str | None:
+    """A reject regex matching the URLs this row stands for.
+
+    Returns None when the result would not match the row's own example, which
+    is the check that matters: a generated pattern that misses is the exact
+    failure this exists to prevent, and it would be indistinguishable from a
+    working one until somebody counted a crawl an hour later. The caller hides
+    the button rather than offering a pattern that does nothing.
+
+    Host-agnostic, because shapes are built from paths and merge across hosts.
+    Anchored at the path root and closed at the end, so `/feeds/#/comments` can
+    never match halfway through a longer path.
+
+    Query keys become lookaheads rather than a literal `?a&b`: the shape sorts
+    them and a URL does not, so a literal would match only the one ordering the
+    server happened to use.
+    """
+    path, _, query = shape.partition("?")
+    keys = [k for k in query.split("&") if k]
+
+    body = "".join("/" + _segment_pattern(seg) for seg in path.split("/") if seg)
+    # An optional trailing slash: `/2019/05` and `/2019/05/` are one shape, so
+    # a pattern that stood for only one of them would leave the other behind.
+    tail = "/?" + (r"\?" if keys else r"(?:$|\?)")
+    # `[?&]` in front means the key is being read out of a query string rather
+    # than matched inside a path segment that happens to contain the word.
+    lookaheads = "".join(f"(?=.*[?&]{_escape(k)}(?:=|&|$))" for k in keys)
+
+    pattern = f"^{lookaheads}https?://[^/]+{body}{tail}"
+    if example:
+        try:
+            if not re.search(pattern, example):
+                return None
+        except re.error:  # pragma: no cover — generated, so always compilable
+            return None
+    return pattern

@@ -128,8 +128,10 @@ Anything a filter can express must survive a round trip through both serializati
 | `POST` | `/api/sites/{id}/scope/preview` | Dry-run estimate — no fetching |
 | `GET` | `/api/presets` | Platform presets (blogger, wordpress, …) |
 | `POST` | `/api/sites/{id}/scope/apply-preset` | `{preset: "blogger"}` |
+| `POST` | `/api/sites/{id}/scope/skip` | `{pattern, everywhere?}` — append one reject pattern to this site, or to the instance list. Idempotent |
 | `GET` | `/api/crawl/skip-patterns` | `{patterns}` — the skip list every site inherits |
 | `PUT` | `/api/crawl/skip-patterns` | `{patterns}`, whole list. `422 invalid_pattern` if one will not compile |
+| `POST` | `/api/crawl/skip-patterns/check` | `{patterns, site_id?}` → what each matches among recently-fetched URLs |
 
 The scope response keeps three pattern lists apart and they are not
 interchangeable. `reject_patterns` is the site's own.
@@ -138,6 +140,21 @@ this site has switched off — the picker has to show a rule in order to offer
 turning it back on. `global_reject_exceptions` names the ones currently off
 here, and is the only one of the three the `PUT` accepts alongside the site's
 own.
+
+`/scope/skip` exists so the `url-shapes` report can act on a row without a
+read-modify-write of the whole scope, which would drop one of two patterns
+added in quick succession — exactly how that report gets used. Each shape row
+carries a `pattern` field: the regex meaning what the row means, or `null` when
+the generated one would not match the row's own example. See
+[04](04-discovery-and-scoping.md#a-shape-is-not-a-pattern) for why the
+notation and the pattern box being different languages was worth closing.
+
+`/check` reads nothing and writes nothing — a POST only because a regular
+expression does not belong in a query string. It answers against **what was
+fetched**, over a bounded sample (20,000 URLs, 12 most recent captures);
+`truncated` says the counts are a floor. `site_id` narrows it to one site,
+which is the right reading for a site's own patterns and the wrong one for the
+instance list.
 
 The `PUT` on the global list replaces it wholesale rather than offering
 add/remove: every pattern has to be recompiled anyway to know the result is
@@ -158,7 +175,7 @@ for why it is merged at resolve time rather than copied into sites.
 | `DELETE` | `/api/captures/{id}` | `409` if it's the only capture unless `?force=true`; triggers reindex |
 | `GET` | `/api/captures/{id}/log` | Plain text; `?tail=500` |
 | `GET` | `/api/captures/{id}/urls` | With `?errors_only=true`, `?host=`, `?q=` |
-| `GET` | `/api/captures/{id}/url-shapes` | What the capture is fetching, grouped by URL shape, biggest first. Works mid-crawl |
+| `GET` | `/api/captures/{id}/url-shapes` | What the capture is fetching, grouped by URL shape, biggest first. Works mid-crawl. Each row carries a `pattern` — the reject regex meaning what that row means, or `null` |
 | `POST` | `/api/captures/{id}/retry-failed` | New capture seeded from this one's failures |
 | `POST` | `/api/captures/{id}/reindex` | Rebuild the site index |
 | `POST` | `/api/captures/{id}/export/wacz` | `202 {job_id}` — this capture alone |

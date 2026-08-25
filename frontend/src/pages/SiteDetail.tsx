@@ -15,6 +15,7 @@ import {
   endpoints,
   type Capture,
   type SiteDetail as SiteDetailType,
+  type UrlShape,
 } from "../lib/api";
 import { bytes, dateTime, ranFromTo, relative } from "../lib/format";
 import { StatusPill } from "./Sites";
@@ -742,7 +743,7 @@ function CaptureRow({ summary }: { summary: Capture }) {
             </ul>
           </div>
 
-          <UrlShapes captureId={summary.id} />
+          <UrlShapes captureId={summary.id} siteId={summary.site_id} />
           <CaptureUrls captureId={summary.id} errorCount={summary.error_count} />
           <CaptureLog captureId={summary.id} />
         </div>
@@ -831,8 +832,17 @@ function relativeSeconds(seconds: number): string {
  * question when the number is larger than the index said it would be. Closed by
  * default because it reads the capture's URLs twice — cheap on a normal capture,
  * a few seconds on the runaway one that makes somebody open it.
+ *
+ * Each row can be turned into a skip pattern, and that is the point of the
+ * report rather than a convenience. Without it the shape gets copied into the
+ * pattern box by hand — where `#` is a literal that no fetched URL contains,
+ * because fragments are stripped before the request. It compiles, it saves,
+ * and it matches nothing, which is indistinguishable from working until the
+ * next crawl is counted. The regex is generated from the notation that
+ * produced the row, and checked against the row's own example before it is
+ * offered.
  */
-function UrlShapes({ captureId }: { captureId: number }) {
+function UrlShapes({ captureId, siteId }: { captureId: number; siteId: number }) {
   const [open, setOpen] = useState(false);
   const shapes = useQuery({
     queryKey: ["url-shapes", captureId],
@@ -861,35 +871,123 @@ function UrlShapes({ captureId }: { captureId: number }) {
             <table className="w-full text-[11px]">
               <tbody>
                 {data.shapes.map((row) => (
-                  <tr key={row.shape} className="border-b border-border last:border-0">
-                    <td className="w-16 px-2 py-1 text-right tabular-nums">
-                      {row.count.toLocaleString()}
-                    </td>
-                    <td className="w-12 px-1 py-1 text-right text-muted tabular-nums">
-                      {data.total ? `${Math.round((row.count / data.total) * 100)}%` : ""}
-                    </td>
-                    <td className="truncate px-2 py-1 font-mono" title={row.example}>
-                      {row.shape}
-                    </td>
-                    <td className="w-20 px-2 py-1 text-right text-muted tabular-nums">
-                      {bytes(row.bytes)}
-                    </td>
-                  </tr>
+                  <ShapeRow key={row.shape} row={row} siteId={siteId} total={data.total} />
                 ))}
               </tbody>
             </table>
           </div>
           <p className="hint mt-1.5">
             {/* `#` and `*` are the report's own notation, and nobody can be
-                expected to guess what they mean from the table alone. */}
+                expected to guess what they mean from the table alone. Said
+                plainly here because reading them as a pattern is exactly the
+                mistake Skip exists to stop. */}
             <code>#</code> is a number, <code>*</code> is a varying segment, and a{" "}
-            <code>?</code> lists the query keys rather than their values. Hover a row for a
-            real example.
+            <code>?</code> lists the query keys rather than their values. That is this
+            report's shorthand, <strong>not</strong> a regular expression — use{" "}
+            <em>Skip</em> to turn a row into one. Hover a row for a real example.
             {data.truncated && " Only the largest shapes are shown."}
           </p>
         </>
       )}
     </div>
+  );
+}
+
+/** One row, and the skip it can be turned into. */
+function ShapeRow({ row, siteId, total }: { row: UrlShape; siteId: number; total: number }) {
+  const client = useQueryClient();
+  const [asking, setAsking] = useState(false);
+  const [added, setAdded] = useState<string | null>(null);
+  const add = useMutation({
+    mutationFn: (everywhere: boolean) =>
+      endpoints.addSkipPattern(siteId, row.pattern ?? "", everywhere),
+    onSuccess: async (_data, everywhere) => {
+      setAsking(false);
+      setAdded(everywhere ? "every site" : "this site");
+      await Promise.all([
+        client.invalidateQueries({ queryKey: ["scope", siteId] }),
+        client.invalidateQueries({ queryKey: ["site", siteId] }),
+        client.invalidateQueries({ queryKey: ["skip-patterns"] }),
+        client.invalidateQueries({ queryKey: ["pattern-check"] }),
+      ]);
+    },
+  });
+
+  return (
+    <>
+      <tr className="border-b border-border last:border-0">
+        <td className="w-16 px-2 py-1 text-right tabular-nums">{row.count.toLocaleString()}</td>
+        <td className="w-12 px-1 py-1 text-right text-muted tabular-nums">
+          {total ? `${Math.round((row.count / total) * 100)}%` : ""}
+        </td>
+        <td className="truncate px-2 py-1 font-mono" title={row.example}>
+          {row.shape}
+        </td>
+        <td className="w-20 px-2 py-1 text-right text-muted tabular-nums">{bytes(row.bytes)}</td>
+        <td className="w-14 px-2 py-1 text-right">
+          {added ? (
+            <span className="text-ok">added</span>
+          ) : (
+            // Withheld when the generated pattern would not match the row's own
+            // example. A button that produces an inert pattern is the bug, not
+            // a smaller version of it.
+            row.pattern && (
+              <button
+                className="text-muted hover:text-fg"
+                onClick={() => setAsking((v) => !v)}
+                title="Stop future captures fetching these"
+              >
+                Skip
+              </button>
+            )
+          )}
+        </td>
+      </tr>
+      {(asking || added) && (
+        <tr className="border-b border-border bg-raised last:border-0">
+          <td colSpan={5} className="px-2 py-2">
+            {added ? (
+              <p className="text-muted">
+                Added to <strong>{added}</strong>. It applies to the next capture — a crawl that
+                is already running was given its rules when it started.
+              </p>
+            ) : (
+              <div className="space-y-1.5">
+                <p className="text-muted">
+                  Skip <span className="tabular-nums">{row.count.toLocaleString()}</span> URLs
+                  matching:
+                </p>
+                <code className="block break-all rounded bg-surface px-1.5 py-1">{row.pattern}</code>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    className="btn-ghost text-[11px]"
+                    disabled={add.isPending}
+                    onClick={() => add.mutate(false)}
+                  >
+                    {add.isPending && <Spinner />}
+                    This site
+                  </button>
+                  <button
+                    className="btn-ghost text-[11px]"
+                    disabled={add.isPending}
+                    onClick={() => add.mutate(true)}
+                    title="Adds it to Settings → Skip these URLs everywhere"
+                  >
+                    Every site
+                  </button>
+                  <button className="text-[11px] text-muted" onClick={() => setAsking(false)}>
+                    Cancel
+                  </button>
+                </div>
+                {add.error && (
+                  <p className="text-danger">{(add.error as ApiError).message}</p>
+                )}
+              </div>
+            )}
+          </td>
+        </tr>
+      )}
+    </>
   );
 }
 

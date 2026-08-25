@@ -11,6 +11,7 @@ from sqlalchemy import func, select
 from cairn.api.deps import AppSettings, ClientIp, Csrf, CurrentUser, DbSession
 from cairn.api.errors import ApiError
 from cairn.api.schemas import (
+    AddSkipPattern,
     BulkSiteRequest,
     BulkSiteResponse,
     CaptureRequest,
@@ -554,6 +555,60 @@ def put_scope(
     site.scope_settings = {**(site.scope_settings or {}), "user_edited": True}
     site_service.write_site_yaml(db, settings, site)
     audit.record(db, "site.scope", actor=user.username, target=site.slug, ip=ip)
+    return _scope_response(db, site)
+
+
+@router.post("/sites/{site_id}/scope/skip", response_model=ScopeResponse)
+def add_skip_pattern(
+    site_id: int,
+    body: AddSkipPattern,
+    db: DbSession,
+    settings: AppSettings,
+    user: CurrentUser,
+    ip: ClientIp,
+) -> ScopeResponse:
+    """Append one reject pattern without rewriting the whole scope.
+
+    What the "what it fetched" report needs in order to be actionable. That
+    report names the shapes a crawl is spending itself on and the picker takes
+    a regex, and until now nothing connected the two — so the shape got pasted
+    into the pattern box, where `#` is a literal that no fetched URL contains.
+    It compiled, it saved, and it matched nothing.
+
+    Adding is idempotent, because the report is read top-down and the same row
+    can be clicked twice before the list redraws.
+    """
+    site = _require_site(db, site_id)
+    pattern = body.pattern.strip()
+    if not pattern:
+        raise ApiError("invalid_pattern", "A skip pattern cannot be empty.", status_code=422)
+
+    if body.everywhere:
+        try:
+            skiplist.add(db, pattern)
+        except skiplist.SkipListError as exc:
+            raise ApiError("invalid_pattern", str(exc), status_code=422) from exc
+    else:
+        scope = site_service.resolved_scope(db, site)
+        if pattern not in scope.reject_patterns:
+            scope.reject_patterns.append(pattern)
+        try:
+            site_service.save_scope(db, site, scope)
+        except ScopeError as exc:
+            raise ApiError("invalid_pattern", str(exc), status_code=422) from exc
+        # Same mark the picker sets: re-running discovery must now report what
+        # changed rather than overwrite a choice somebody made.
+        site.scope_settings = {**(site.scope_settings or {}), "user_edited": True}
+        site_service.write_site_yaml(db, settings, site)
+
+    audit.record(
+        db,
+        "site.scope",
+        actor=user.username,
+        target=site.slug,
+        ip=ip,
+        detail={"skip": pattern, "everywhere": body.everywhere},
+    )
     return _scope_response(db, site)
 
 

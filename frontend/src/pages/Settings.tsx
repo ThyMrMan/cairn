@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState, type FormEvent } from "react";
 
 import { MediaPolicyFields } from "../components/Media";
+import { Matches, MatchesFootnote, usePatternMatches } from "../components/PatternMatches";
 import { Alert, Field, Spinner } from "../components/ui";
 import { ApiError, endpoints } from "../lib/api";
 import { useAuth } from "../lib/auth";
@@ -535,6 +536,7 @@ function SkipPatternsSection() {
   });
   const [value, setValue] = useState("");
   const patterns = list.data?.patterns ?? [];
+  const check = usePatternMatches(patterns);
 
   function add(event: FormEvent) {
     event.preventDefault();
@@ -555,8 +557,9 @@ function SkipPatternsSection() {
       {list.isPending && <Spinner className="h-4 w-4 text-muted" />}
       <ul className="space-y-1">
         {patterns.map((pattern) => (
-          <li key={pattern} className="flex items-center justify-between gap-3">
-            <code className="truncate text-xs">{pattern}</code>
+          <li key={pattern} className="flex items-center gap-3">
+            <code className="min-w-0 flex-1 truncate text-xs">{pattern}</code>
+            <Matches check={check.data} pattern={pattern} />
             <button
               className="shrink-0 text-xs text-muted hover:text-danger"
               disabled={save.isPending}
@@ -587,6 +590,7 @@ function SkipPatternsSection() {
         </button>
       </form>
       {save.error && <p className="mt-2 text-xs text-danger">{(save.error as ApiError).message}</p>}
+      <MatchesFootnote check={check.data} />
       <p className="mt-3 text-xs text-muted">
         Already-captured pages are not deleted. A pattern added now stops the next capture fetching
         those URLs and hides the ones already archived from replay; removing it brings them back.

@@ -383,6 +383,26 @@ Label archives paginate through `updated-max`, and every label page links every 
 
 **`What it fetched`**, on each capture, is the report that answers this without guessing. It groups the capture's URLs by shape — varying path segments replaced, the query reduced to its key names — so a hundred thousand label URLs become one row with a count. It works while the crawl is still running, which is when it matters. Grouping is by cardinality *within a prefix*: nothing about `/search/label/Travel` in isolation says the last segment is a value, and only the four hundred siblings say so.
 
+#### A shape is not a pattern
+
+This report writes `#` for a numeric segment, `*` for a varying one and `?a&b` for the query keys. That is **its own shorthand, not a regular expression**, and the two sit two panels apart with the same URLs in them — so the shape gets copied into the skip box, where `#` is a literal that no fetched URL contains, because fragments are stripped before the request.
+
+Nothing catches it. The pattern compiles, saves, and matches zero URLs; the list shows it as applied. It was found by counting a crawl an hour later and seeing `/feeds/#/comments/default` still at 35% of all fetches, with the rule that was supposed to stop it sitting in the settings above.
+
+Two things follow from that, and both are about closing the gap rather than documenting it.
+
+**Each row can be turned into a pattern.** `Skip` on the row generates the regex from the notation that produced it — `#` → `[0-9]+`, `*` → `[^/?]+` with any extension kept, literals escaped, query keys as order-independent lookaheads because a shape sorts them and a URL does not. It is anchored at the path root and closed at the end, so `/feeds/#/comments` cannot match halfway through a longer path. Only characters special in *both* PCRE and JavaScript are escaped: `re.escape` emits `\-` and `\&`, which JavaScript rejects under the `u` flag, and both engines have to compile the same reject set ([05](05-capture-engines.md)).
+
+**The generated pattern is checked against the row's own example before it is offered**, and withheld if it misses. A generated pattern that does not match the URL it was generated from is the same silent no-op, and offering one would be the bug with a button on it.
+
+#### What a pattern matches
+
+Every skip pattern, however it was written, is counted against the URLs recent captures actually fetched — `capture_urls` already holds them. A pattern matching nothing says **matches nothing** beside it instead of looking identical to one doing all the work.
+
+The count is against **what was fetched, not what will be**. A pattern that fires stops those URLs being discovered at all, so the next capture's list is smaller than the count predicts. It is a floor and a sanity check, which is what *did I write this right?* needs; simulating the next crawl is a different and far more expensive question, and pretending otherwise would put a precise-looking number on a guess.
+
+The sample is bounded — 20,000 URLs from the 12 most recent captures — because it runs while somebody waits for a panel to draw. A truncated count is shown as `8,259+` rather than silently as a total.
+
 **The stop switch is `max_pages`, and it counts URLs rather than pages** despite the name — the supervisor counts every `url` event, assets included. Set it as though it meant pages and the crawl stops at roughly a quarter of the site. The scope editor labels it in URLs for that reason.
 
 ---

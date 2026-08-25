@@ -9,6 +9,7 @@ import {
   endpoints,
 } from "../lib/api";
 import { bytes } from "../lib/format";
+import { Matches, MatchesFootnote, usePatternMatches } from "./PatternMatches";
 import { Alert, EmptyState, Spinner } from "./ui";
 
 /**
@@ -257,6 +258,7 @@ export function DomainPicker({ siteId, onChanged }: { siteId: number; onChanged?
       </div>
 
       <RejectPatterns
+        siteId={siteId}
         patterns={rejects ?? []}
         global={scope.data?.global_reject_patterns ?? []}
         excepted={excepted ?? scope.data?.global_reject_exceptions ?? []}
@@ -521,12 +523,14 @@ function CrawlCap({
  * wrong for one blog is otherwise a reason not to have the list at all.
  */
 function RejectPatterns({
+  siteId,
   patterns,
   global: globals,
   excepted,
   onChange,
   onExcept,
 }: {
+  siteId: number;
   patterns: string[];
   global: string[];
   excepted: string[];
@@ -536,6 +540,9 @@ function RejectPatterns({
   const [value, setValue] = useState("");
   const off = new Set(excepted);
   const active = globals.filter((p) => !off.has(p)).length + patterns.length;
+  // Against this site's own URLs. The same pattern can be doing all the work
+  // on one blog and nothing on another, and a global count would hide that.
+  const check = usePatternMatches([...globals, ...patterns], siteId);
   return (
     <div className="card p-4">
       <h3 className="text-sm font-medium">
@@ -561,10 +568,15 @@ function RejectPatterns({
             {globals.map((pattern) => {
               const disabled = off.has(pattern);
               return (
-                <li key={pattern} className="flex items-center justify-between gap-3">
-                  <code className={`truncate text-xs ${disabled ? "text-muted line-through" : ""}`}>
+                <li key={pattern} className="flex items-center gap-3">
+                  <code
+                    className={`min-w-0 flex-1 truncate text-xs ${
+                      disabled ? "text-muted line-through" : ""
+                    }`}
+                  >
                     {pattern}
                   </code>
+                  {!disabled && <Matches check={check.data} pattern={pattern} />}
                   <button
                     className="shrink-0 text-xs text-muted hover:text-fg"
                     onClick={() =>
@@ -593,8 +605,9 @@ function RejectPatterns({
           <li className="text-xs font-medium text-muted">This site only</li>
         )}
         {patterns.map((pattern) => (
-          <li key={pattern} className="flex items-center justify-between gap-3">
-            <code className="truncate text-xs">{pattern}</code>
+          <li key={pattern} className="flex items-center gap-3">
+            <code className="min-w-0 flex-1 truncate text-xs">{pattern}</code>
+            <Matches check={check.data} pattern={pattern} />
             <button
               className="shrink-0 text-xs text-muted hover:text-danger"
               onClick={() => onChange(patterns.filter((p) => p !== pattern))}
@@ -624,6 +637,7 @@ function RejectPatterns({
         />
         <button className="btn-ghost text-xs">Add</button>
       </form>
+      <MatchesFootnote check={check.data} />
     </div>
   );
 }

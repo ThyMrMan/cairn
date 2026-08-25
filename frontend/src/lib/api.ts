@@ -1132,6 +1132,29 @@ export type UrlShape = {
   count: number;
   bytes: number;
   example: string;
+  /**
+   * A reject regex meaning what this row means. Null when the generated
+   * pattern would not match `example` — the shape notation is not a regex,
+   * and offering one that silently matches nothing is the bug this exists to
+   * fix, not a smaller version of it.
+   */
+  pattern: string | null;
+};
+
+/** What a set of patterns matches among recently-fetched URLs. */
+export type PatternCheck = {
+  /** How many URLs were examined. */
+  checked: number;
+  /** How many captures they came from. */
+  captures: number;
+  /** True when the sample hit its ceiling, so counts are a floor. */
+  truncated: boolean;
+  results: {
+    pattern: string;
+    count: number;
+    examples: string[];
+    error: string | null;
+  }[];
 };
 
 export type UrlShapes = {
@@ -1409,6 +1432,10 @@ export const endpoints = {
   captureUrls: (id: number, params: Record<string, string | number | undefined> = {}) =>
     api.get<Page<CaptureUrl>>(`/captures/${id}/urls${query(params)}`),
   /** What a capture is fetching, grouped by URL shape. Works mid-crawl. */
+  checkSkipPatterns: (patterns: string[], site_id?: number) =>
+    api.post<PatternCheck>("/crawl/skip-patterns/check", { patterns, site_id }),
+  addSkipPattern: (siteId: number, pattern: string, everywhere = false) =>
+    api.post<Scope>(`/sites/${siteId}/scope/skip`, { pattern, everywhere }),
   captureUrlShapes: (id: number, limit = 30) =>
     api.get<UrlShapes>(`/captures/${id}/url-shapes${query({ limit })}`),
   deleteCapture: (id: number, force = false) =>
