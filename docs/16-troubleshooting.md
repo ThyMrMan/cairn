@@ -195,6 +195,55 @@ restart:
 docker exec cairn cairn replay-init
 ```
 
+## A skip pattern is saved but nothing was skipped
+
+Look at the count beside it. **matches nothing** means it is inert.
+
+The usual cause is that it was copied out of the *what it fetched* report. That
+report writes `#` for a numeric segment and `*` for a varying one — its own
+shorthand, not a regular expression. As a regex `#` is a literal `#`, which no
+fetched URL contains, because fragments are stripped before a request is made.
+So `/feeds/#/comments/default` compiles, saves, appears in the list, and matches
+nothing.
+
+Use **Skip** on the report row instead of copying it: that generates the pattern
+the row means — `/feeds/[0-9]+/comments/default` — and checks it against that
+row's own example before offering it.
+
+**A pattern added mid-crawl does not affect the crawl that is running.** The
+engine is given its rules on the command line when it starts. Cancel and start
+again if the saving matters now.
+
+## A capture is marked partial and looks complete
+
+**Settings → Storage → recompute capture status.** It re-decides every partial
+from what that capture recorded about itself, and can only ever clear one,
+never create one.
+
+The reason it exists is that the rules for "incomplete" have been corrected
+more than once — a content warning drawn over a complete page used to count
+against the capture that held it, and 147 gate documents beside 147 complete
+pages read as 147 failures. A capture that was fine all along should not carry
+the mark forever.
+
+If it comes back partial, the capture's `partial_reasons` says why:
+`interstitial-pages` (the cookies really were not accepted), `overlay-pages`
+(a content warning drawn over a page, and only a fault when replay is not
+lifting it), `gate-redirect`, `nothing-archived`, or `step-failed`. Gate
+documents are counted separately and never downgrade a capture on their own —
+they are the frame, not the page.
+
+## Replay says a URL you never visited is not in this collection
+
+Something like *the url https://www.blogger.com/interstitial/blog?u=… could not
+be found in this collection*.
+
+That URL is a content warning the site drew **over** a page it had already sent
+in full. The page is in the archive; the frame on top of it is not, because the
+crawl was told to skip it. Replay lifts the covering rather than fetching the
+gate — if you are seeing pywb's 404 instead, `CAIRN_REPLAY_UNCOVER_OVERLAYS` is
+off, or the index predates it. Rebuild the index for that site and reload.
+
 ## Reclaiming space from deleted sites
 
 Deleted sites keep their archive until they are purged, and the sweep runs at

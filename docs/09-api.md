@@ -27,6 +27,9 @@ Conventions:
 | `DELETE` | `/api/auth/totp` | `{password, code}` — requires reauth |
 | `GET` | `/api/auth/sessions` | Active sessions with UA/IP/last-seen |
 | `DELETE` | `/api/auth/sessions/{id}` | Revoke one |
+| `DELETE` | `/api/auth/sessions` | Revoke every session but this one |
+| `GET` | `/api/setup` | Unauthenticated. `{setup_complete, password_min_length}` — what decides between the setup screen and the sign-in screen |
+| `POST` | `/api/setup` | `{username, password}` → creates *the* account. `409 Conflict` forever afterwards, which is what makes this single-user by construction rather than by policy |
 
 Login failures return one generic message regardless of cause. Never distinguish "no such user" from "wrong password" from "locked".
 
@@ -41,8 +44,13 @@ Login failures return one generic message regardless of cause. Never distinguish
 | `PATCH` | `/api/folders/{id}` | Rename, reparent (`{parent_id, reparent: true}`) or reorder → `MoveOutcome` |
 | `DELETE` | `/api/folders/{id}` | `409` if it holds anything, unless `?reassign_to=<id>` |
 | `GET` | `/api/tags` | With usage counts |
-| `POST` `PATCH` `DELETE` | `/api/tags[/{id}]` | Name, colour, description |
-| `GET` `POST` `PATCH` `DELETE` | `/api/views[/{id}]` | Saved smart views |
+| `POST` | `/api/tags` | `{name, color?, description?}` |
+| `PATCH` | `/api/tags/{id}` | Rename or recolour. A rename moves its directory under `/data/by-tag` |
+| `DELETE` | `/api/tags/{id}` | Untags every site that had it |
+| `GET` | `/api/views` | Saved smart views |
+| `POST` | `/api/views` | `{name, query}` — `query` is a filter string, see [Filtering](#filtering) |
+| `PATCH` | `/api/views/{id}` | Rename, or replace the query |
+| `DELETE` | `/api/views/{id}` | |
 
 ### `MoveOutcome`, and why moves are not always `202`
 
@@ -67,7 +75,7 @@ Reparenting needs `reparent: true` alongside `parent_id`, because JSON cannot ot
 | Method | Path | Notes |
 |---|---|---|
 | `GET` | `/api/sites` | Filter/sort — see below |
-| `POST` | `/api/sites` | `{seed_url, title?, folder_id, tags?, profile_id?}` → creates and optionally auto-runs discovery |
+| `POST` | `/api/sites` | `{seed_url, title?, folder_id?, tags?, profile_id?, engine_id?, keep_mirror?, notes?}` → creates and optionally auto-runs discovery |
 | `GET` | `/api/sites/{id}` | Full detail with scope, feeds, latest captures, stats |
 | `PATCH` | `/api/sites/{id}` | Title, notes, folder, tags, engine, engine config, profile, `keep_mirror` |
 | `DELETE` | `/api/sites/{id}` | Soft delete → `trash/`; `?purge=true` for immediate |
@@ -75,7 +83,7 @@ Reparenting needs `reparent: true` alongside `parent_id`, because JSON cannot ot
 | `POST` | `/api/sites/{id}/move` | `{folder_id}` → `MoveOutcome` |
 | `POST` | `/api/sites/bulk` | `{site_ids, add_tags?, remove_tags?, folder_id?}` |
 | ~~`GET`~~ | ~~`/api/sites/{id}/urls`~~ | **Never existed.** Captured URLs are per capture — see `/api/captures/{id}/urls` |
-| `GET` | `/api/sites/{id}/stats` | Sizes, counts, capture history, growth over time |
+| ~~`GET`~~ | ~~`/api/sites/{id}/stats`~~ | **Never built.** `GET /api/sites/{id}` already carries the counts and sizes, and growth over time is what `/api/sites/{id}/captures` is |
 
 ### Filtering
 
@@ -110,19 +118,10 @@ Anything a filter can express must survive a round trip through both serializati
 | Method | Path | Notes |
 |---|---|---|
 | `POST` | `/api/sites/{id}/discover` | `?max_pages=&max_depth=&use_browser=` → `202 {job_id}` |
-| `GET` | `/api/sites/{id}/discoveries` | History |
-| `GET` | `/api/discoveries/{id}` | Full result: hosts, feeds, sitemaps, platform fingerprint |
-| `GET` | `/api/discoveries/{id}/diff?against={id}` | New/removed hosts and URLs |
+| `GET` | `/api/sites/{id}/discovery` | The picker's whole state: hosts found with counts and roles, feeds, sitemaps, the platform fingerprint, and which of them the scope currently selects |
 | `GET` | `/api/sites/{id}/seeds` | Every address this site starts from, primary first |
 | `POST` | `/api/sites/{id}/seeds` | `{url}` → adds a seed and makes its host crawlable |
 | `DELETE` | `/api/sites/{id}/seeds?url=` | Removes one; the first seed cannot go |
-| `GET` | `/api/sites/{id}/reader?url=&capture=` | One archived page as clean text |
-| `GET` | `/api/sites/{id}/reader/versions?url=` | Captures whose text holds that URL |
-| `GET` | `/api/sites/{id}/reader/index` | Every readable page of a site |
-| `GET` | `/api/sites/{id}/annotations?url=` | Notes on one page, or all of a site's |
-| `POST` | `/api/sites/{id}/annotations` | `{url, quote, note?, prefix?, suffix?, block_index?}` |
-| `PATCH` | `/api/annotations/{id}` | Edit the note or its colour |
-| `DELETE` | `/api/annotations/{id}` | Remove one |
 | `GET` | `/api/sites/{id}/scope` | Current resolved scope |
 | `PUT` | `/api/sites/{id}/scope` | Host selections, patterns, limits, politeness |
 | `POST` | `/api/sites/{id}/scope/preview` | Dry-run estimate — no fetching |
@@ -132,6 +131,15 @@ Anything a filter can express must survive a round trip through both serializati
 | `GET` | `/api/crawl/skip-patterns` | `{patterns}` — the skip list every site inherits |
 | `PUT` | `/api/crawl/skip-patterns` | `{patterns}`, whole list. `422 invalid_pattern` if one will not compile |
 | `POST` | `/api/crawl/skip-patterns/check` | `{patterns, site_id?}` → what each matches among recently-fetched URLs |
+
+**There is one discovery endpoint, not three.** This document listed a history
+list and a pair of `/api/discoveries/{id}` detail and diff routes. What exists
+is `GET /api/sites/{id}/discovery`, returning the latest run merged with the
+current selection — because that is what the picker draws, and a history of
+runs answers a question nobody asked. Re-running discovery diffs against the
+previous run internally and reports the changes in its own response
+([04](04-discovery-and-scoping.md#re-running-discovery)); the older runs are
+kept as rows but are not addressable.
 
 The scope response keeps three pattern lists apart and they are not
 interchangeable. `reject_patterns` is the site's own.
@@ -169,16 +177,28 @@ for why it is merged at resolve time rather than copied into sites.
 
 | Method | Path | Notes |
 |---|---|---|
-| `POST` | `/api/sites/{id}/capture` | `{kind: full\|incremental, seeds?, engine_id?, config_override?}` → `202 {job_id}` |
+| `POST` | `/api/sites/{id}/capture` | `{kind: full\|incremental, extra_seeds?}` → `202 {job_id}`. The engine and its config come from the site, not from here — see below |
 | `GET` | `/api/sites/{id}/captures` | List |
 | `GET` | `/api/captures/{id}` | Manifest, WARC files, stats |
 | `DELETE` | `/api/captures/{id}` | `409` if it's the only capture unless `?force=true`; triggers reindex |
 | `GET` | `/api/captures/{id}/log` | Plain text; `?tail=500` |
 | `GET` | `/api/captures/{id}/urls` | With `?errors_only=true`, `?host=`, `?q=` |
 | `GET` | `/api/captures/{id}/url-shapes` | What the capture is fetching, grouped by URL shape, biggest first. Works mid-crawl. Each row carries a `pattern` — the reject regex meaning what that row means, or `null` |
-| `POST` | `/api/captures/{id}/retry-failed` | New capture seeded from this one's failures |
-| `POST` | `/api/captures/{id}/reindex` | Rebuild the site index |
+| `POST` | `/api/captures/{id}/resume` | Continue a `paused` capture into the same directory. `409` unless it is paused *and* its engine's resume state is on disk |
 | `POST` | `/api/captures/{id}/export/wacz` | `202 {job_id}` — this capture alone |
+| `POST` | `/api/sites/{id}/capture/companion` | Run the cheap second pass this site's preset offers, if it has one ([04](04-discovery-and-scoping.md)) |
+
+**Reindexing is per site, not per capture** — `POST /api/sites/{id}/reindex`, in [Replay](#replay-endpoints). One index spans every capture a site has ([D2](00-decisions.md)), so there is no such thing as reindexing one of them.
+
+**A capture takes no engine or config override.** This document listed
+`engine_id` and `config_override` on the request; neither exists. Both live on
+the site (`PATCH /api/sites/{id}`), and that is deliberate — a capture whose
+engine differed from the site's would produce an archive nobody could explain
+later, because the manifest records the scope but the *reason* for a one-off
+engine choice lives only in whoever pressed the button. `extra_seeds` is the
+one thing a single capture may add.
+
+**There is no `retry-failed`.** This document listed one. What exists instead is `GET /api/captures/{id}/urls?errors_only=true` to see the failures and an ordinary capture to go back for them — a new capture seeded from a list is what `POST /api/sites/{id}/capture` with `extra_seeds` already is.
 
 ### Embedded media
 
@@ -210,6 +230,28 @@ of attacker-influenced string that must not be allowed to pick its own type.
 
 ---
 
+## Reading & annotations
+
+Filed here rather than under discovery, where this table used to sit — reading
+an archived page has nothing to do with deciding what to capture, and the rows
+were only next to each other because they were added on the same day.
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/api/sites/{id}/reader?url=&capture=` | One archived page as clean text, boilerplate stripped |
+| `GET` | `/api/sites/{id}/reader/versions?url=` | Which captures hold readable text for that URL, oldest first |
+| `GET` | `/api/sites/{id}/reader/index` | Every readable page of a site |
+| `GET` | `/api/sites/{id}/annotations?url=` | Notes on one page, or all of a site's when `url` is omitted |
+| `POST` | `/api/sites/{id}/annotations` | `{url, quote, note?, prefix?, suffix?, block_index?}` |
+| `PATCH` | `/api/annotations/{id}` | Edit the note or its colour |
+| `DELETE` | `/api/annotations/{id}` | Remove one |
+
+An annotation is anchored by its quoted text plus the words either side of it,
+not by an offset — a re-extraction that shifts every offset by one character
+would otherwise silently move every note in the archive.
+
+---
+
 ## Jobs & events
 
 | Method | Path | Notes |
@@ -220,11 +262,15 @@ of attacker-influenced string that must not be allowed to pick its own type.
 | `POST` | `/api/jobs/{id}/cancel` | SIGTERM → grace → SIGKILL |
 | `DELETE` | `/api/jobs/{id}` | Remove a finished job from the list. `409 job_is_active` if it is queued or running — cancel it first |
 | `POST` | `/api/jobs/clear` | Bulk delete finished jobs. Optional `status`, `type`, `site_id`; nothing set clears every finished job. Returns `{deleted}`. Never touches a queued or running job, and `status: "running"` is a `422` rather than a silent `deleted: 0` |
-
-> Clearing the job list does not touch archives. `captures.job_id`, `discoveries.job_id` and `feed_polls.job_id` are all `ON DELETE SET NULL`, so a capture outlives the job that made it and simply stops naming it.
-| `POST` | `/api/jobs/{id}/resume` | For `interrupted` jobs |
+| `POST` | `/api/jobs/{id}/pause` | Stop a running capture keeping the engine's place. `409 not_pausable` on an engine whose manifest says `resumable: false` — see below |
 | `GET` | `/api/jobs/{id}/events` | **SSE** |
 | `GET` | `/api/events` | **SSE** — global firehose for the activity sidebar |
+
+> Clearing the job list does not touch archives. `captures.job_id`, `discoveries.job_id` and `feed_polls.job_id` are all `ON DELETE SET NULL`, so a capture outlives the job that made it and simply stops naming it.
+
+**Pause is on the job; resume is on the capture.** They read like a pair and are not. Pausing is something you do to a process that is running, and continuing is something you do to the capture it left behind — which may be continued days later, by which time the job is gone. This document used to list `POST /api/jobs/{id}/resume` "for `interrupted` jobs"; the real one is `POST /api/captures/{id}/resume`.
+
+**Pause is refused rather than downgraded on an engine that cannot resume.** wget has no crawl-state serialisation, so pausing it would throw the work away while calling it a pause. `can_pause` on the job says whether the button should be there at all, so the browser never has to know what an engine is ([05](05-capture-engines.md#pausing-a-crawl)).
 
 **`/projection` reports no percentage, and that is the design.** Nothing knows how many URLs a site has until the crawl has found them. A bar drawn against the index's page estimate would have read *370% complete* on the crawl that prompted this endpoint — worse than showing nothing, because it looks like an answer. What it returns instead is the rate, the distance to the site's own cap, and the index estimate beside the live count; "this is not converging" reads off those in a second. See [04](04-discovery-and-scoping.md#why-the-crawl-is-always-bigger-than-this-number).
 
@@ -254,8 +300,10 @@ A stalled reader must never apply backpressure to a crawl, so each subscriber ha
 | Method | Path | Notes |
 |---|---|---|
 | `GET` | `/api/profiles` | **Metadata only** — never secret material |
-| `POST` | `/api/profiles` | `{name, mode, user_agent?, hosts?, verify_url?}` |
+| `POST` | `/api/profiles` | `{name, mode, user_agent?, hosts?, verify_url?}`. `verify_url` is normalised the way a seed is, so `google.com` is accepted and stored as `https://google.com/`; anything that is not a URL is `422 invalid_verify_url` |
+| `GET` | `/api/profiles/{id}` | One profile's metadata: mode, hosts, cookie counts, which hosts the jar covers, and `has_*` flags for each kind of material. Never the material |
 | `PATCH` | `/api/profiles/{id}` | Non-secret fields |
+| `DELETE` | `/api/profiles/{id}` | `409` while a site still points at it |
 | `PUT` | `/api/profiles/{id}/cookies` | `multipart` upload of `cookies.txt`; write-only. Returns the parse report |
 | `PUT` | `/api/profiles/{id}/script` | Upload `.user.js`; write-only. Returns parsed metadata + shim warnings |
 | `PUT` | `/api/profiles/{id}/browser-profile` | `multipart` upload of a browsertrix `profile.tar.gz`; write-only. Returns size, digest and stored time |
@@ -263,6 +311,7 @@ A stalled reader must never apply backpressure to a crawl, so each subscriber ha
 | `DELETE` | `/api/profiles/{id}/material` | Clear stored secrets, including the browser profile on disk |
 | `POST` | `/api/profiles/{id}/mint` | Run the script in a browser → `{result, profile}` |
 | `POST` | `/api/profiles/{id}/verify` | Fetch `verify_url` with the jar → `{ok, reason, status, final_url}` |
+| `POST` | `/api/profiles/{id}/verify-browser-profile` | The same question asked of the browser profile: load `verify_url` in the crawler's own browser with it. Needs Chromium |
 | `GET` | `/api/profiles/{id}/coverage?site_id=N` | Which of a site's scope hosts the jar covers |
 | `POST` | `/api/profiles/{id}/interactive` | Start a live browser session → `{session_id, url, width, height}` |
 | `WS` | `/api/profiles/{id}/interactive/ws?session_id=` | JPEG frames out, mouse and keyboard in |
@@ -287,7 +336,8 @@ The interactive session is a **CDP screencast over a WebSocket**, not the `vnc_u
 | `POST` | `/api/sites/{id}/feeds` | `{url, kind?, title?, interval_min?, enabled?, auto_capture?}` |
 | `POST` | `/api/sites/{id}/feeds/discover` | Everything worth watching, probed live. Saves nothing |
 | `POST` | `/api/sites/{id}/feeds/test` | `{url, kind?}` — parse without saving; returns format, entry count, recent titles, scope check |
-| `PATCH` `DELETE` | `/api/feeds/{id}` | |
+| `PATCH` | `/api/feeds/{id}` | Interval, enabled, auto-capture, title |
+| `DELETE` | `/api/feeds/{id}` | Stops watching. Nothing already captured is touched |
 | `POST` | `/api/feeds/{id}/poll` | Poll now, synchronously, and capture what it finds |
 | `POST` | `/api/feeds/{id}/capture` | Capture what is already pending, without polling |
 | `GET` | `/api/feeds/{id}/items` | `?status=pending\|captured\|failed\|skipped` |
@@ -303,8 +353,10 @@ The interactive session is a **CDP screencast over a WebSocket**, not the `vnc_u
 
 | Method | Path | Notes |
 |---|---|---|
-| `GET` `PUT` | `/api/schedule` | Quiet hours, per-host serialization, full-recapture interval |
-| `GET` `PUT` | `/api/notifications` | Targets and the per-event opt-ins |
+| `GET` | `/api/schedule` | Quiet hours, per-host serialization, full-recapture interval |
+| `PUT` | `/api/schedule` | Same shape |
+| `GET` | `/api/notifications` | Targets and the per-event opt-ins |
+| `PUT` | `/api/notifications` | Same shape. Secrets in a target's URL are never read back |
 | `POST` | `/api/notifications/test` | One message to every enabled target; reports per-target failures |
 
 ---
@@ -321,8 +373,8 @@ The interactive session is a **CDP screencast over a WebSocket**, not the `vnc_u
 **`enabled` and `available` are different questions.** The first is whether the manifest loaded; the second is whether this host can run it. A container engine on a machine with no Docker socket is a perfectly valid engine that cannot run, and the picker has to be able to say which — otherwise it is selectable and fails at capture time.
 
 **There is no `PATCH /api/engines/{id}`.** This document listed one for enable/disable and instance defaults, and neither turned out to be a real thing: an engine is enabled by being installed and disabled by being removed, and "instance defaults" would be a third layer under the schema defaults and the per-site config with no case that needs it. An engine is chosen and configured per site, through `PATCH /api/sites/{id}`.
-| `GET` | `/api/postprocessors` | Chain with order and enabled state |
-| `PATCH` | `/api/postprocessors/{id}` | Enable/disable, reorder |
+
+**There is no post-processor API either**, though this document listed one for reordering and enabling the chain. The chain is fixed and ordered by dependency — a checksum before a manifest, an index before a thumbnail — so exposing the order would expose a way to break it. The two post-processors with a real choice behind them have their own endpoints, `/api/media/settings` and `/api/thumbnails/settings`, and per-site overrides beside them. The chain itself is in [05](05-capture-engines.md#post-processors).
 
 ---
 
@@ -330,10 +382,8 @@ The interactive session is a **CDP screencast over a WebSocket**, not the `vnc_u
 
 | Method | Path | Notes |
 |---|---|---|
-| `GET` | `/api/health` | Unauthenticated. `{status, version, db, pywb, disk_free_bytes}` |
+| `GET` | `/api/health` | Unauthenticated. `{status, version, db, setup_complete, disk_free_bytes}` |
 | `GET` | `/api/version` | **Authenticated.** `{version, build, built_at, label}` — which build is running |
-| `GET` | `/api/settings` | All DB-backed settings |
-| `PATCH` | `/api/settings` | Partial update |
 | `GET` | `/api/storage` | Per-folder and per-site usage, free space, trash size |
 | `GET` | `/api/digest?days=` | The periodic report: what happened, and what quietly did not |
 | `GET` | `/api/site-health` | Which archived sites are still live, and which are not |
@@ -371,9 +421,9 @@ The interactive session is a **CDP screencast over a WebSocket**, not the `vnc_u
 | `PUT` | `/api/metrics/settings` | `{enabled?, token?}` |
 | `POST` | `/api/maintenance/rebuild-symlinks` | Regenerate `/data/by-tag` |
 | `POST` | `/api/maintenance/rebuild-collections` | Re-point every pywb collection |
-| `POST` | `/api/maintenance/rebuild-db` | Reconstruct DB rows from on-disk manifests |
 | `POST` | `/api/maintenance/recompute-status` | Re-decide `partial` captures from their manifests |
 | `POST` | `/api/maintenance/purge-trash` | Purge only what is past the retention window |
+| `GET` | `/api/audit` | Auth and admin events, newest first |
 
 `/api/search` never receives FTS5 syntax. What somebody types is translated: every bare term becomes a quoted string literal, and only `"a phrase"`, a trailing `*` and a leading `-` are read as operators. Typing `c++` or a stray quote is a MATCH syntax error otherwise, and `AND` is an operator rather than the word somebody meant — a search box that answers with *fts5: syntax error near* is a search box people stop using.
 
@@ -384,9 +434,20 @@ The interactive session is a **CDP screencast over a WebSocket**, not the `vnc_u
 `/api/sites/{id}/exports/{name}` is always `Content-Disposition: attachment` with `X-Content-Type-Options: nosniff`. A WACZ is a zip of untrusted archived bytes and the app origin is the last place it should ever be rendered ([11](11-security.md)).
 
 `/api/storage` reports per-site totals from `sites.size_bytes`, measured by the `stats` post-processor at the end of each capture — not by walking the tree on request. On a NAS array that walk is thousands of cold `stat` calls and the page would take seconds while spinning up disks nobody asked to wake. Free space and trash size are measured live, being one `statvfs` and one directory that is normally small.
-| `GET` | `/api/audit` | Auth and admin events |
-| `GET` | `/api/export/config` | Full config backup as JSON — **excludes secret material** |
-| `POST` | `/api/import/config` | Restore |
+**Three endpoints this document used to list were never built, and are not
+oversights.** `GET`/`PATCH /api/settings` as one blob would have been an
+untyped bag with no validation and no audit trail; settings are per feature
+instead — `/api/schedule`, `/api/notifications`, `/api/media/settings`,
+`/api/thumbnails/settings`, `/api/metrics/settings`, `/api/crawl/skip-patterns`
+— each with its own shape and its own refusal. `GET /api/export/config` and
+`POST /api/import/config` were a config backup; what makes a Cairn instance is
+`/config/cairn.db` and the archive tree, both of which copy with `cp`, and a
+JSON that deliberately excluded the sealed material would have restored to an
+instance that looked complete and could not fetch anything.
+`POST /api/maintenance/rebuild-db` was to reconstruct rows from on-disk
+manifests; the repairs that exist rebuild *derived* state — symlinks,
+collections, capture status — and rebuilding the database itself from files is
+a recovery path with no test that could honestly cover it.
 
 `/api/health` is unauthenticated because Unraid's healthcheck and any uptime monitor need it. It therefore must leak nothing: no version-specific vulnerability hints beyond the version string, no paths, no site names, no counts.
 
@@ -413,7 +474,8 @@ The chrome does **not** use that CDX API. It reads the app's own copy of the ind
 | `GET` | `/api/sites/{id}/replay/versions?url=…` | Every capture of one URL — the capture selector's data |
 | `GET` | `/api/sites/{id}/replay/record?url=…&timestamp=…` | Raw WARC record: headers and metadata as JSON |
 | `GET` | `…/record?…&download=true` | The payload, always `application/octet-stream` as an `attachment` |
-| `POST` | `/api/sites/{id}/reindex` | Rebuild the index from the WARCs |
+| `POST` | `/api/sites/{id}/reindex` | Rebuild the index from the WARCs. Per site, because one index spans every capture |
+| `GET` | `/api/sites/{id}/replay/links` | Which links in the archived pages replay cannot answer — the dead ends a reader will actually hit |
 
 Reading our own index rather than proxying pywb keeps the URL bar, the capture selector and the version count working when pywb is down — one failure then looks like one failure, instead of an empty frame with no explanation. It also means no replayed byte is ever served from the app's origin, which is the point of running pywb on its own.
 

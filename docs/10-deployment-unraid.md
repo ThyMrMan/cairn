@@ -168,6 +168,47 @@ Also keep `index/*.cdxj` on fast storage if you can. pywb binary-searches these 
 
 ---
 
+## Environment variables
+
+Every setting that needs a restart, in full. The README carries the dozen most
+people set; this is all of them, and each maps to a field on
+`cairn.config.Settings` with the `CAIRN_` prefix. Everything a person can
+change *while it runs* is in **Settings** instead and lives in the database.
+
+| Variable | Default | What it does |
+|---|---|---|
+| `CAIRN_SECRET_KEY` | — | **Required.** Seals cookie jars, 2FA secrets and recovery codes. Back it up: losing it makes stored credentials unrecoverable |
+| `CAIRN_CONFIG_DIR` | `/config` | Database, settings, engines, backups. Small and hot |
+| `CAIRN_DATA_DIR` | `/data` | The archive tree. Large and cold |
+| `CAIRN_HOST` | `0.0.0.0` | Bind address inside the container. Exposure is the port mapping's business, not this |
+| `CAIRN_PORT` | `8080` | The app |
+| `CAIRN_REPLAY_PORT` | `8081` | The port pywb **binds** inside the container |
+| `CAIRN_REPLAY_PUBLIC_PORT` | `0` | The port a **browser** should use, when it differs. `0` means "same as `CAIRN_REPLAY_PORT`". Needed whenever the replay port is published on a different host port — nothing inside the container can discover the published number |
+| `CAIRN_APP_PUBLIC_URL` | — | Set behind a reverse proxy |
+| `CAIRN_REPLAY_PUBLIC_URL` | — | Likewise, and it **must differ from the app in hostname**, not merely in port |
+| `CAIRN_REPLAY_UNCOVER_OVERLAYS` | `true` | Whether replay lifts a content warning a site drew over a page it had already sent in full. Off makes replay byte-faithful ([07](07-replay.md#uncovering-a-page-the-site-drew-a-warning-over)) |
+| `CAIRN_MAX_CONCURRENT_JOBS` | `2` | Parallel captures. Per-host serialisation applies regardless |
+| `CAIRN_TRUSTED_PROXY` | — | CIDR allowed to set `X-Forwarded-For`. Without it the header is ignored, which is what keeps the login rate limiter honest |
+| `CAIRN_AUTH_HEADER_MODE` | `false` | Trust an upstream proxy's authentication header instead of the login form. Only safe when the app is unreachable except through that proxy |
+| `CAIRN_AUTH_HEADER_NAME` | `Remote-User` | Which header, when the above is on |
+| `CAIRN_SESSION_IDLE_DAYS` | `7` | A session expires this long after its last use |
+| `CAIRN_SESSION_ABSOLUTE_DAYS` | `30` | And this long after it was created, used or not |
+| `CAIRN_LOGIN_MAX_ATTEMPTS` | `5` | Failures before a lockout |
+| `CAIRN_LOGIN_WINDOW_SECONDS` | `900` | The window they have to fall inside |
+| `CAIRN_LOGIN_LOCKOUT_SECONDS` | `3600` | How long the lockout lasts |
+| `CAIRN_PASSWORD_MIN_LENGTH` | `12` | Enforced at setup and at every change |
+| `CAIRN_COOKIE_SECURE` | inferred | Force the `Secure` flag on the session cookie. Unset, it follows the scheme of the public URL — set it explicitly if a proxy terminates TLS and the app does not know |
+| `CAIRN_COOKIE_NAME` | `cairn_session` | Rename to run two instances on one hostname |
+| `CAIRN_LOG_LEVEL` | `INFO` | |
+| `CAIRN_LOG_JSON` | `true` | Structured logs to stdout, with secrets redacted |
+| `CAIRN_DEV_MODE` | `false` | Serves the OpenAPI browser at `/api/docs`. Off in the shipped image |
+
+`PUID`, `PGID` and `UMASK` (`1000`/`1000`/`022`) are `linuxserver`-style and
+handled by the entrypoint rather than by `Settings` — they decide the ownership
+of files written to the share.
+
+---
+
 ## Reverse proxy
 
 Both origins must be proxied, and **replay must get its own hostname**. Ports do not isolate cookies ([07](07-replay.md#the-cookie-scope-trap)) — same host on a different port shares the session cookie with archived JavaScript.

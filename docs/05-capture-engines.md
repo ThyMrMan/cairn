@@ -540,22 +540,42 @@ runtime:
   command: ["python", "-m", "cairn.post.cdxj"]
 ```
 
-Built-in chain (✅ = shipped):
+The chain as it runs, in order. `Required` means a failure fails the capture;
+everything else is best-effort and reports into the manifest.
 
-| Order | ID | Does | Required | |
-|---:|---|---|:-:|:-:|
-| 10 | `cdxj-index` | Builds `index/site.cdxj` across all of the site's WARCs | ✓ | M3 |
-| 20 | `checksum` | SHA-256 every artifact, write into `manifest.json` | ✓ | ✅ |
-| 30 | `stats` | Roll up counts and sizes onto the site row | ✓ | ✅ |
-| 35 | `manifest` | Write `manifest.json` itself | ✓ | ✅ |
-| 40 | `pywb-collection` | Regenerate pywb config, reload the collection | ✓ | M3 |
-| 50 | `symlink-tree` | Refresh `/data/by-tag` (debounced) | | M4 |
-| 60 | `asset-audit` | Report referenced-but-uncaptured assets and lazy-load hints | | ✅ |
-| 50 | `text-extract` | Extract readable text into `derived/text/` and index it for search | | ✅ |
-| 65 | `screenshot` | Thumbnail of the archived front page, for the site card | | ✅ |
-| 70 | `media` | `yt-dlp` the video an archived post embedded, per-site opt-in | | ✅ |
-| 80 | `wacz-export` | ~~Package as `.wacz` if the site opts in~~ — an export job, not a step. See below | | ✗ |
-| 90 | `notify` | ntfy / Apprise / webhook on completion or failure | | M6 |
+| Order | ID | Does | Required |
+|---:|---|---|:-:|
+| 20 | `checksum` | SHA-256 every artifact | ✓ |
+| 30 | `stats` | Roll up counts and sizes onto the site row | ✓ |
+| 35 | `manifest` | Write `manifest.json` | ✓ |
+| 40 | `cdxj-index` | Build `index/site.cdxj` across every WARC the site has | |
+| 50 | `text-extract` | Extract readable text into `derived/text/` and index it for search | |
+| 60 | `asset-audit` | Report referenced-but-uncaptured assets and lazy-load hints | |
+| 65 | `screenshot` | Thumbnail of the archived front page, for the site card | |
+| 70 | `media` | `yt-dlp` the video an archived post embedded, per-site opt-in | |
+
+**The order is a dependency order, which is why it is not configurable.** A
+checksum has to precede the manifest it is written into; an index has to
+precede the thumbnail that asks it whether the front page is there; text
+extraction has to precede nothing but is cheap enough to sit early. Exposing
+the order over the API would expose a way to break it, which is why there is no
+post-processor endpoint ([09](09-api.md#engines--post-processors)).
+
+**Indexing is not required, and that is deliberate.** A capture whose index
+fails is still a capture — the WARCs are on disk, checksummed, and the index
+can be rebuilt from them at any time with `POST /api/sites/{id}/reindex`.
+Failing the capture would throw away good bytes over a derived file.
+
+**Three rows this table used to carry are not post-processors.**
+`pywb-collection` and `symlink-tree` are not per-capture work: a collection is
+re-pointed when a site moves and the tag tree is rebuilt when tags change, so
+running either after every incremental capture would be work in proportion to
+captures rather than to changes. Both are repairs on the maintenance menu as
+well. `notify` is not a step for a different reason: the chain runs synchronously in
+a worker thread with a database session open, and a webhook that takes ten
+seconds to time out would hold both long after the work was done. Notifications
+are sent from the supervisor's async side once the capture is finalised, where
+nothing they do can change its outcome.
 
 **The shipped chain runs in-process, not as subprocesses.** The manifest, the ordering and the required/optional distinction are all real; the isolation is not, because the built-ins need none and a subprocess contract nobody has written a second implementation of is a contract that will turn out to be wrong. It becomes a real addon boundary in M7, alongside the engine SDK, for the same reason engines got the seam first ([D3](00-decisions.md#d3--wget-for-v1-behind-an-engine-interface-from-day-one)).
 

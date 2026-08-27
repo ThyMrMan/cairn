@@ -43,6 +43,13 @@ link-following is a second domain half-archived.
 
 ## Capturing
 
+**Before it starts, it says what it is about to do.** Which engine, which
+filtering preset, how many skip patterns are in force, how many hosts it will
+crawl and how many it will only take files from, and where the URL cap is. A
+capture runs for hours and its cost is decided by settings that live on other
+tabs — the panel is there so the answer to "why did that take all night" is
+available before the night rather than after it.
+
 Press **Capture** and URLs stream past in a live log. What lands on disk is a
 WARC, a `manifest.json` with a SHA-256 of every file, the URL list with its
 failures, and a CDXJ index merged across every capture this site has ever had.
@@ -62,11 +69,19 @@ and so can only ever use cookies:
 
 **Test** then fetches the gated URL exactly the way the crawler will, so a jar
 that has stopped working is a five-second check rather than a six-hour one.
-Profiles now keep the whole browser session — localStorage and IndexedDB as
-well as cookies — so a re-mint no longer quietly downgrades one. The UI says
-the thing that had no home before: wget takes `--load-cookies` and nothing
-else, so a login kept in localStorage passes the profile test and fails the
-capture.
+Profiles keep the whole browser session — localStorage and IndexedDB as well as
+cookies — so a re-mint no longer quietly downgrades one. The UI says the thing
+that had no home before: wget takes `--load-cookies` and nothing else, so a
+login kept in localStorage passes the profile test and fails the capture.
+
+**All three modes work on both engines**, which was not true for a while. A
+browser profile is a browsertrix tarball and browsertrix has no cookie option,
+so for a time picking that mode silently picked the engine too. Cairn reads the
+tarball's own cookie database and derives a jar from it, so a session you
+signed into by hand now runs on wget as well. The asymmetry does not reverse —
+a jar cannot be turned back into a browser profile — which makes the browser
+profile the mode to prefer when either would do, because it is the only one
+that constrains nothing. ([06](06-access-profiles.md))
 
 > **An archive contains the cookies that fetched it.** A WARC records requests
 > as well as responses, `Cookie:` header included. That is unavoidable and
@@ -80,6 +95,63 @@ the crawl may not follow. So the archive holds a single 302 and nothing else.
 That capture is marked `partial` and explains itself, rather than leaving you
 to meet pywb reporting that a URL you never heard of is not in this collection.
 
+**What it is spending itself on.** A crawl that is three times bigger than the
+estimate is not usually mysterious once you can see it grouped: `What it
+fetched` collapses the URL list by shape — numeric segments become `#`, varying
+ones become `*`, a query becomes its key names — so a hundred thousand
+pagination URLs become one row with a count and a percentage beside it. It
+works mid-crawl, which is when it matters.
+
+Each row has a **Skip**, which turns that shape into the reject pattern that
+means it and adds it to this site or to every site. That button is the whole
+point of the report. Without it the shape gets copied into the pattern box by
+hand, where `#` is a literal that no URL contains — a pattern that compiles,
+saves, appears in the list, and matches nothing.
+
+**Skip patterns say what they match.** Beside each one is the number of
+archived URLs it actually hits, counted from what recent captures fetched. A
+pattern matching nothing says so instead of looking exactly like one doing all
+the work. The count is a floor rather than a forecast — a pattern that fires
+stops those URLs being discovered at all, so the next crawl's list is smaller
+than the number suggests.
+
+A pattern can be written once **for every site**, under *Settings → Skip these
+URLs everywhere*. Tracking parameters are the case: `[?&]utm_[a-z]+=` is junk
+on every blog there has ever been, and typing it into each domain picker in
+turn means the site added next month quietly does not have it. The list is
+merged as each capture is scoped rather than copied into sites, so adding a
+pattern reaches sites that already exist and removing one takes it away from
+all of them. Any single site can switch an individual entry off for itself,
+which is what keeps the list safe to use at all.
+
+**Pause keeps the crawler's place.** A long crawl sometimes has to stop for
+reasons that have nothing to do with the archive — the NAS is wanted for
+something else, or the bandwidth is. Pause stops it the way Cancel does and
+keeps the engine's own crawl state beside the capture, so Resume continues into
+the same capture directory rather than starting over.
+
+Only where the engine can genuinely continue. **wget has no Pause**, because it
+has no crawl-state serialisation — its queue of discovered-but-unfetched URLs
+exists only in memory. Pausing it would throw the work away while calling it a
+pause, so the button is not offered and the API refuses the call rather than
+quietly behaving like Cancel.
+
+**A companion pass** is a second, cheap capture that goes back for what the
+first deliberately skipped. Blogger's Older-posts trail is the case it was
+built for: measured at 86 distinct index URLs addressing about eleven pages of
+content, because every post links back into the index with a different
+pagination cursor. Those pages are server-rendered and their images are already
+in the archive, so a non-scripting engine fetches them for a fraction of the
+cost. It is offered after a capture whose preset skipped something recoverable,
+never run unasked.
+
+**A capture that was marked `partial` can be asked again.** *Settings → Storage
+→ recompute capture status* re-decides every partial from what that capture
+recorded about itself. It can only ever clear a partial, never create one —
+it exists because the rules for what counts as incomplete have been corrected
+more than once, and a capture that was fine all along should not carry the mark
+forever.
+
 **A second engine.** wget cannot run JavaScript, which on a modern blog theme
 means it misses a gallery built by script, images whose `src` is set on scroll,
 and links that only exist after the page runs. **browsertrix** runs a real
@@ -91,8 +163,9 @@ unavailable.
 
 browsertrix genuinely cannot use a cookie jar — it runs Brave, and a profile
 built with our Chrome for Testing is accepted and silently ignored — so a site
-behind a content warning still wants wget. The picker says so before the
-capture, not after.
+whose access is a `cookies.txt` still wants wget. A site whose access is a
+browser profile can now use either. The picker says which before the capture,
+not after.
 
 Both engines write into the same site folder and the same replay collection, so
 switching engines does not fork the archive.
@@ -111,6 +184,19 @@ live outside the iframe on purpose: archived CSS cannot restyle a capture
 selector it never receives, and archived JavaScript cannot fake one it cannot
 reach.
 
+**A content warning drawn over a page is lifted on the way out.** Some sites —
+Blogger among them — answer with the whole page and then put an iframe of their
+gate on top of it, plus a rule hiding everything underneath. The page is
+complete in the archive; nothing failed and the access profile worked, because
+a whole page had to arrive in order to be covered up. Nothing at capture time
+can prevent it: the same posts came back clean at 03:27 and curtained at 13:57
+the same day, with the same cookie and the same user agent throughout.
+
+So replay removes the covering, and only when both halves of it are present —
+the gate iframe *and* a rule hiding the body. This is the single place Cairn
+changes what a replayed page renders, it leaves a marker in the DOM saying it
+happened, and it can be switched off. ([07](07-replay.md#uncovering-a-page-the-site-drew-a-warning-over))
+
 **Reader view** sits beside replay, never instead of it. It renders the
 extracted text of an archived page — no CSS, no JavaScript, no pywb — which
 makes it fast, accessible, and the view that still works when the collection
@@ -124,6 +210,11 @@ cannot reach the app, which means the app cannot read a selection out of the
 iframe either. A quote is the better anchor anyway — re-extraction rewrites
 every byte offset, and a later capture has different ones again. A note whose
 sentence is gone is reported, never moved to a sentence it did not mark.
+
+**Dead ends are findable.** A link check walks the archived pages and reports
+the links replay cannot answer — the ones a reader will actually click into
+nothing. It is the difference between an archive that looks complete and one
+that is.
 
 **Search** reads the text extracted from every captured page, so "which of my
 archives mentioned this?" is one query, and a result opens the archived page at

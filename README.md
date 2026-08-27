@@ -99,7 +99,10 @@ Something wrong? → **[16 — Troubleshooting](docs/16-troubleshooting.md)**.
 ## Configuration
 
 Everything a person can change while it runs lives in **Settings**. These are
-the environment variables, which need a restart.
+the environment variables, which need a restart — the ones most people set.
+The complete list, including session lifetimes, login rate limiting and the
+proxy-auth header, is in
+[10 — Environment variables](docs/10-deployment-unraid.md#environment-variables).
 
 | Variable | Default | What it does |
 |---|---|---|

@@ -115,7 +115,24 @@ CREATE TABLE audit_log (
   ip         TEXT
 );
 CREATE INDEX idx_audit_ts ON audit_log(ts DESC);
+
+CREATE TABLE login_attempts (
+  id          INTEGER PRIMARY KEY,
+  ts          TEXT NOT NULL,
+  ip          TEXT NOT NULL DEFAULT '',
+  username    TEXT NOT NULL DEFAULT '',
+  successful  INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX ix_login_attempts_ip_ts   ON login_attempts(ip, ts);
+CREATE INDEX ix_login_attempts_user_ts ON login_attempts(username, ts);
 ```
+
+**`login_attempts` is separate from `audit_log` because they have opposite
+lifetimes.** The rate limiter needs a high-churn ledger it can prune
+aggressively; the audit log is a record that is kept. Sharing one table would
+mean either pruning the audit trail or never pruning the ledger. Both are keyed
+by IP *and* by username, so neither a single address trying many accounts nor
+many addresses trying one gets a free pass.
 
 ### Folders and tags
 
@@ -201,7 +218,51 @@ CREATE TABLE sites (
 );
 CREATE INDEX idx_sites_folder ON sites(folder_id) WHERE deleted_at IS NULL;
 CREATE INDEX idx_sites_host   ON sites(primary_host);
+
+CREATE TABLE site_health (
+  site_id       INTEGER PRIMARY KEY REFERENCES sites(id) ON DELETE CASCADE,
+  state         TEXT NOT NULL DEFAULT 'live', -- live|gone|moved|unreachable|blocked|error
+  http_status   INTEGER,
+  final_url     TEXT,                         -- where the seed ended up, if elsewhere
+  error         TEXT,
+  checked_at    TEXT NOT NULL,
+  since         TEXT NOT NULL,                -- when the current state began
+  consecutive   INTEGER NOT NULL DEFAULT 0,
+  pending_state TEXT                          -- what recent checks say, not yet believed
+);
+
+CREATE TABLE annotations (
+  id          INTEGER PRIMARY KEY,
+  site_id     INTEGER NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
+  url         TEXT NOT NULL,
+  quote       TEXT NOT NULL,                  -- the anchor
+  prefix      TEXT NOT NULL DEFAULT '',       -- context before, to disambiguate
+  suffix      TEXT NOT NULL DEFAULT '',       -- context after
+  block_index INTEGER NOT NULL DEFAULT 0,     -- a hint, not the anchor
+  note        TEXT,
+  color       TEXT NOT NULL DEFAULT 'yellow',
+  created_at  TEXT NOT NULL,
+  updated_at  TEXT NOT NULL
+);
+CREATE INDEX ix_annotations_page ON annotations(site_id, url);
 ```
+
+**`site_health` is one row per site, overwritten in place**, because it is a
+current state rather than a history. The only historical fact worth keeping is
+`since` — the moment the current state began — which is what turns "returning
+404" into "has been returning 404 since March". It is a separate table because
+every other column on `sites` describes the archive and these describe somebody
+else's server. `pending_state` and `consecutive` are what stop one bad minute
+announcing that a site is gone: a state changes only once enough checks agree.
+
+**An annotation is anchored by its quotation, not by an offset.** The text it
+points into is derived: re-extracting a capture rewrites the JSONL and a later
+capture of the same page has different offsets again, so a byte range would
+orphan every note in the archive on the next extraction. Quote plus a little
+context survives both, and a quote that genuinely cannot be found is *reported*
+rather than moved to a sentence it did not mark. `block_index` is a hint that
+makes the common case one string search instead of a scan; being wrong costs
+only speed.
 
 ### Discovery & scope
 

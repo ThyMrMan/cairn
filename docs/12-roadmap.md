@@ -424,6 +424,32 @@ Also worth doing: run `--warc-dedup` against a second capture and verify you get
 
 ---
 
+## After M8 — the content warning, and the scope you can see ✅
+
+**Ships:** an answer to a gate that is neither a redirect nor a substitute page, a browser profile that works on both engines, and a scope somebody can actually inspect and edit.
+
+- [x] Uncover a content warning drawn over a page replay already holds ([07](07-replay.md#uncovering-a-page-the-site-drew-a-warning-over))
+- [x] Recompute capture status, because the rules for `partial` changed under existing captures
+- [x] Derive a cookie jar from a browsertrix browser profile, closing [D4](00-decisions.md) in both directions
+- [x] Cancel as a standing request rather than a signal sent once
+- [x] A pagination companion pass, and replay that serves what it fetched
+- [x] Skip patterns that apply to every site, and a shape from the report that can become one
+- [x] Say what a capture will do before it starts, and what each skip pattern matches
+
+**Done when:** a gated blog replays its posts rather than its warning, a skip pattern that does nothing says so, and no capture is marked incomplete for a reason that has since been corrected. *Asserted in `test_replay.py`, `test_postprocess.py`, `test_skiplist.py` and `test_patterncheck.py`.*
+
+**Five corrections, and the shape of all five is the same — a check that passed while proving nothing.**
+
+1. **The gate stopped being a page and became a curtain.** The interstitial detector looked for a *redirect* to a warning, or a warning served *instead of* the page. Blogger now answers `200` with the whole post and draws an iframe over it under `body * { visibility: hidden }`. Every existing check passed: the cookie was accepted, the bytes were there, the length guard skipped a document too big to be a gate. Measured across three captures of one blog — same cookie, same user agent, **clean at 03:27 and curtained at 13:57 the same day** — which also killed the advice to re-accept the warning in the browser profile. Nothing the operator controls decides it, so the fix could not be at capture time.
+2. **Withholding the gate from the index swapped one wrong answer for another.** The frame is in the archived bytes, so refusing to serve it puts pywb's *URL Not Found* inside the same covering box. The repair had to be in what the page renders, which is why replay grew its one and only content modification.
+3. **Then the fix made the status wrong.** A page uncovered on the way out is not a partial capture, but `overlay-pages` still downgraded it — and gate documents were being counted as failed pages, so 147 of them beside 147 complete pages read as 147 failures with "the cookies were not accepted" beside them. Two separate corrections, and `recompute-status` exists because the first one left a mark on captures that were already finished.
+4. **`create-login-profile --automated` hangs forever** on a page with no login fields, which is what pointing it at a blog gives you. The instruction had said to point it at the blog.
+5. **The report and the pattern box speak different languages.** `/feeds/#/comments/default` pasted from *what it fetched* into the skip list compiles, saves, shows up in the list, and matches nothing — `#` is that report's shorthand for a numeric segment and a literal in a regex. 35% of a crawl went on URLs a rule was supposedly stopping. Both halves are closed now: the row generates the pattern, and every pattern says how many archived URLs it hits.
+
+**And three tests that passed for the wrong reason, caught by reverting the fix rather than by reading them:** a pattern scorer that reported "every gate record and nothing else" over *zero* records; a cancellation test that cancelled before the crawl started, so the boundary under test was never reached; and a `not in` assertion that held just as well when the whole merge was missing. Revert-to-confirm became the habit rather than the spot check.
+
+---
+
 ## Sequencing notes
 
 **Why discovery before replay.** Discovery determines *what gets captured*; getting it wrong means recapturing everything later. Replay is read-only over whatever exists and can be built against any archive.
