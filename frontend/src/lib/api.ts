@@ -1124,6 +1124,20 @@ export type CrawlProjection = {
   eta_to_cap_s: number | null;
   /** Pages the index expected — a different quantity from `urls`, on purpose. */
   index_estimate: number | null;
+  /**
+   * Whether the URLs are new. Null before the capture row exists. A crawl
+   * going round in circles looks exactly like one that is working, so this is
+   * the only field that tells them apart.
+   */
+  repetition: {
+    /** Fetches examined, from the recent end of the capture. */
+    checked: number;
+    distinct: number;
+    /** Fetches per distinct URL. 1.0 is healthy. */
+    ratio: number;
+    looping: boolean;
+    worst: { url: string; count: number }[];
+  } | null;
 };
 
 export type UrlShape = {

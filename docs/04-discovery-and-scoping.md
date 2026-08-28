@@ -279,6 +279,28 @@ Exceptions are matched by the pattern's text, so editing a global pattern retire
 
 Invalid regexes are refused at write time rather than at capture time. A bad pattern in one site's list breaks that site; a bad pattern here breaks every capture on the instance at once, so it is caught while somebody can still see what they typed.
 
+### A site on both schemes is two sites to wget
+
+`https://blog/p.html` and `http://blog/p.html` are one page to a reader and two URLs to a crawler — and if the site links to both from its own pages, as Blogger does, the crawl does not converge.
+
+**Measured on a real capture that ran for three days and never finished:** 205,903 fetches for 2,732 distinct URLs — **75×** — in 192 complete laps, alternating a full pass over `https://` with the identical list over `http://`, about seven minutes apart, for three days. No gap in the log exceeds two minutes, so it was one wget process throughout, and every number on the job page looked healthy the whole time.
+
+The mechanism is the mirror. wget's filename ignores the scheme, so both URLs are the same file — confirmed in that log: one target path, 384 writes, no `.1` suffixes. That file is also how wget remembers what it has fetched ([05](05-capture-engines.md)), so each side's fetch displaces the other's record, and every page carries a link to the twin that re-queues it.
+
+The archive says which URLs were affected, and it is exactly the ones you would predict. All 1,068 URLs that looped existed under both schemes. All 1,620 fetched exactly once were on asset hosts, linked under one scheme, so nothing ever collided with them.
+
+**So the `http://` form of a crawlable host is rejected whenever every seed for that host is `https://`.** Generated, like the asset-only fences, rather than left as advice — the failure is invisible while it is happening.
+
+It is lossless where it applies, which is what makes it safe to apply automatically: in that capture all 527 `http://` URLs had an `https://` twin already fetched, and there were **zero** http-only URLs. Rejecting them leaves 2,211 distinct URLs — about 45 minutes at that crawl's own measured rate.
+
+Three limits, each deliberate:
+
+- **The seed is the evidence.** A host rule records no scheme, so the seeds are the only place this instance has ever observed one. A host reached only by link-following is left alone rather than guessed at.
+- **A host seeded over `http://`, or seeded both ways, is untouched.** The first would archive nothing; the second was somebody being explicit.
+- **Only that host.** In the same capture six `http://` URLs lived on other hosts — fonts, two Blogger logos, two thumbnails — and none was part of the loop.
+
+`to_wget_args` reports it in `notes`, because a skip nobody was told about is indistinguishable from a bug.
+
 ### Translation to wget
 
 | Scope field | wget |

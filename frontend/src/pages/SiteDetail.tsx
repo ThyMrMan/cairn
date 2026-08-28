@@ -782,6 +782,7 @@ function CrawlProjection({ jobId }: { jobId: number }) {
     data.index_estimate && data.urls > data.index_estimate * 2
       ? Math.round((data.urls / data.index_estimate) * 10) / 10
       : null;
+  const repeats = data.repetition;
 
   return (
     <section className="card p-4">
@@ -797,6 +798,36 @@ function CrawlProjection({ jobId }: { jobId: number }) {
           value={data.eta_to_cap_s ? relativeSeconds(data.eta_to_cap_s) : "—"}
         />
       </div>
+
+      {/* Before the index comparison, because it is the stronger signal and
+          the one that needs acting on. "Bigger than expected" is often a fine
+          crawl of a big site; "fetching the same things" never is. */}
+      {repeats?.looping && (
+        <Alert kind="warn" title="This crawl is going round in circles">
+          Of the last {repeats.checked.toLocaleString()} fetches, only{" "}
+          {repeats.distinct.toLocaleString()} were distinct URLs — {repeats.ratio}× the same
+          ground. A crawl that keeps finding new pages sits at 1×, so this one is not going to
+          finish on its own.
+          {repeats.worst.length > 0 && (
+            <>
+              {" "}
+              Most repeated:
+              <ul className="mt-1 space-y-0.5">
+                {repeats.worst.map((hit) => (
+                  <li key={hit.url} className="truncate font-mono text-[11px]">
+                    {hit.count}× {hit.url}
+                  </li>
+                ))}
+              </ul>
+              <p className="mt-1">
+                Look for the same page under two addresses — <code>http://</code> and{" "}
+                <code>https://</code>, or with and without a query parameter. Cancel, add a skip
+                pattern for the duplicate, and start again.
+              </p>
+            </>
+          )}
+        </Alert>
+      )}
 
       {overIndex && (
         <Alert kind="warn" title={`${overIndex}x what the index expected`}>

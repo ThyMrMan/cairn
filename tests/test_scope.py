@@ -20,6 +20,7 @@ from cairn.services.scope import (
     asset_only_reject_pattern,
     combine_patterns,
     default_scope,
+    scheme_twin_reject_pattern,
     to_wget_args,
 )
 
@@ -179,16 +180,25 @@ def test_posix_is_refused_rather_than_silently_producing_a_broken_pattern() -> N
         to_wget_args(blog_scope(), regex_type="posix")
 
 
-def test_the_only_reject_for_a_single_crawlable_host_is_the_css_escape_guard() -> None:
-    """No asset host means no per-host fencing, but the CSS-escape reject is
-    unconditional: any scope can meet a skin that writes `url(https\\:\\/\\/…)`,
-    and wget requests that shape against the site itself, once per variant."""
+def test_the_generated_rejects_for_a_single_crawlable_host() -> None:
+    """No asset host means no per-host fencing, and two rejects are left.
+
+    The CSS-escape guard is unconditional: any scope can meet a skin that
+    writes `url(https\\:\\/\\/…)`, and wget requests that shape against the site
+    itself, once per variant.
+
+    The scheme twin joins it whenever the seed is https, because a site that
+    answers on both is two sites to wget and they link to each other. See
+    `test_crawlloop.py` for the three-day capture that established it.
+    """
     scope = Scope(
         seeds=["https://example.com/"],
         hosts=[HostRule("example.com", crawl_pages=True, fetch_assets=True)],
     )
     reject = next(a for a in to_wget_args(scope).args if a.startswith("--reject-regex="))
-    assert reject == f"--reject-regex=(?:{CSS_ESCAPE_REJECT})"
+    assert reject == (
+        f"--reject-regex=(?:{scheme_twin_reject_pattern('example.com')})|(?:{CSS_ESCAPE_REJECT})"
+    )
 
 
 def test_the_css_escape_reject_matches_both_forms_of_the_same_url() -> None:

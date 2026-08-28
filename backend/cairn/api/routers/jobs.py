@@ -13,7 +13,7 @@ from sqlalchemy import func, select
 from cairn.api.deps import ClientIp, Csrf, CurrentUser, DbSession
 from cairn.api.errors import ApiError
 from cairn.api.schemas import JobsClear, JobsCleared, JobSummary, Ok, Page
-from cairn.db.models import Job, Site
+from cairn.db.models import Capture, Job, Site
 from cairn.db.types import utcnow
 from cairn.engines.registry import EngineError
 from cairn.services import audit
@@ -146,6 +146,7 @@ def job_projection(job_id: int, db: DbSession, _user: CurrentUser) -> dict[str, 
             estimate = _index_estimate(db, site)
 
     remaining = max(cap - urls, 0) if cap else None
+    repeats = _repetition(db, job)
     return {
         "running": job.status == "running",
         "urls": urls,
@@ -172,7 +173,28 @@ def job_projection(job_id: int, db: DbSession, _user: CurrentUser) -> dict[str, 
         # instead of "0s remaining".
         "eta_to_cap_s": round(remaining / per_minute * 60) if remaining and per_minute else None,
         "index_estimate": estimate,
+        # Whether the URLs are new. A crawl going round in circles looks
+        # exactly like one that is working — the log scrolls, the counter
+        # rises, the rate holds — and this is the only number that tells them
+        # apart.
+        "repetition": repeats,
     }
+
+
+def _repetition(db: DbSession, job: Job) -> dict[str, Any] | None:
+    """How much of the recent crawl was ground already covered.
+
+    None when there is no capture to read yet, which is the first seconds of a
+    job and every job that is not a capture.
+    """
+    from cairn.services import crawlhealth
+
+    capture_id = db.scalar(
+        select(Capture.id).where(Capture.job_id == job.id).order_by(Capture.id.desc()).limit(1)
+    )
+    if capture_id is None:
+        return None
+    return crawlhealth.repetition(db, int(capture_id)).to_dict()
 
 
 def _unlisted_paths(db: DbSession, site_id: int | None) -> list[str]:

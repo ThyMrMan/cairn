@@ -272,6 +272,17 @@ would otherwise silently move every note in the archive.
 
 **Pause is refused rather than downgraded on an engine that cannot resume.** wget has no crawl-state serialisation, so pausing it would throw the work away while calling it a pause. `can_pause` on the job says whether the button should be there at all, so the browser never has to know what an engine is ([05](05-capture-engines.md#pausing-a-crawl)).
 
+`/projection` also carries `repetition`: how many of the last 20,000 fetches
+were of URLs already fetched, `looping` when that ratio passes 3. **A crawl
+going round in circles looks exactly like one that is working** — the log
+scrolls, the counter rises, the rate holds steady — and this is the only field
+that tells them apart. The threshold is 3 rather than 2 because two URLs
+mapping to one file on disk legitimately cost one extra fetch each, measured
+at a flat 2.0x; an alarm that fires on bounded, harmless duplication is an
+alarm that gets switched off. Answered over a window rather than the whole
+capture, so a crawl that starts looping on its second lap is named while it is
+happening rather than diluted by a healthy start.
+
 **`/projection` reports no percentage, and that is the design.** Nothing knows how many URLs a site has until the crawl has found them. A bar drawn against the index's page estimate would have read *370% complete* on the crawl that prompted this endpoint — worse than showing nothing, because it looks like an answer. What it returns instead is the rate, the distance to the site's own cap, and the index estimate beside the live count; "this is not converging" reads off those in a second. See [04](04-discovery-and-scoping.md#why-the-crawl-is-always-bigger-than-this-number).
 
 ### SSE

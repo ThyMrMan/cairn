@@ -278,6 +278,61 @@ def asset_only_reject_pattern(rule: HostRule) -> str:
     return rf"^https?://{host}/{tail}"
 
 
+def https_only_seed_hosts(scope: Scope) -> list[str]:
+    """Crawlable hosts every one of whose seeds is https.
+
+    Evidence, not assumption: the scheme is recorded nowhere in a host rule, so
+    the seeds are the only place this instance has ever *observed* one. A host
+    reached only by link-following is left alone, because nothing here knows
+    which scheme it answered on.
+    """
+    schemes: dict[str, set[str]] = {}
+    for seed in scope.seeds:
+        parts = urlsplit(seed)
+        host = (parts.hostname or "").lower()
+        if host:
+            schemes.setdefault(host, set()).add(parts.scheme)
+    crawlable = {rule.host for rule in scope.crawl_hosts}
+    return [
+        host for host, seen in sorted(schemes.items()) if seen == {"https"} and host in crawlable
+    ]
+
+
+def scheme_twin_reject_pattern(host: str) -> str:
+    """Block the `http://` twin of a host we only ever reach over `https://`.
+
+    **A site that serves both schemes is two sites to wget, and they link to
+    each other.** Measured on a real three-day capture that never finished:
+    205,903 fetches for 2,732 distinct URLs — 75x — in 192 complete laps,
+    alternating a full pass over `https://` with the identical list over
+    `http://`, roughly seven minutes apart, for three days.
+
+    The mechanism is the mirror. wget's filename ignores the scheme, so
+    `http://blog/p.html` and `https://blog/p.html` are one file — verified in
+    that log: one target path, 384 writes, no `.1` suffixes. That file is also
+    wget's record of what it has fetched, so each side's fetch displaces the
+    other's record, and every page carries a link to the twin that re-queues
+    it. Neither side is ever finished.
+
+    Nothing else in the crawl behaves this way, and the archive says why: the
+    1,620 URLs fetched exactly once were all on asset hosts, linked under one
+    scheme, so nothing ever collided with them. Every one of the 1,068 that
+    looped existed in both.
+
+    **Lossless where it applies, which is why it can be automatic.** All 527
+    `http://` URLs in that capture had an `https://` twin that had already been
+    fetched; there were zero http-only URLs. Rejecting them leaves 2,211
+    distinct URLs — about 45 minutes at that crawl's own measured rate, rather
+    than three days and counting.
+
+    Scoped to the host, so `http://` assets elsewhere are untouched. Generated
+    rather than offered as advice, because the failure is invisible while it is
+    happening: the crawl looks busy, the log looks healthy, and the counter
+    goes up forever.
+    """
+    return rf"^http://{_host_pattern(host)}/"
+
+
 # A backslash is never part of a real URL. It is what a crawler produces from
 # a CSS escape it cannot decode: a Blogger skin writing
 # `url(https\:\/\/host\/x.png)` turns into a request for
@@ -302,6 +357,7 @@ def build_reject_patterns(scope: Scope) -> list[str]:
     """Every reject pattern the engine should enforce, user's plus generated."""
     patterns = list(scope.all_reject_patterns)
     patterns.extend(asset_only_reject_pattern(rule) for rule in scope.asset_only_hosts)
+    patterns.extend(scheme_twin_reject_pattern(host) for host in https_only_seed_hosts(scope))
     patterns.append(CSS_ESCAPE_REJECT)
     return patterns
 
@@ -367,6 +423,12 @@ def to_wget_args(scope: Scope, *, regex_type: Literal["pcre", "posix"] = "pcre")
     if not scope.obey_robots:
         args += ["-e", "robots=off"]
         notes.append("robots.txt is being ignored for this capture.")
+
+    for host in https_only_seed_hosts(scope):
+        notes.append(
+            f"{host} is reached over https, so its http:// pages are skipped as duplicates. "
+            f"Remove that skip if this site serves anything only over http."
+        )
 
     for rule in scope.asset_only_hosts:
         if not rule.allow_extensionless:
