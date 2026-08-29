@@ -39,6 +39,10 @@ ROLE_SOCIAL = "social"
 ROLE_COMMENTS = "comments"
 ROLE_ADS = "ads"
 ROLE_UNKNOWN = "unknown"
+# The same site under another name — Blogger's country domains. Its own role
+# because the picker's other categories are all about *what a host is for*,
+# and this one is about what it *is*: not a third party at all.
+ROLE_ALIAS = "alias"
 
 # Hosts that only ever measure or monetize. Never worth archiving, and
 # defaulting them off keeps the picker's unknown list short enough to read.
@@ -175,14 +179,45 @@ def classify(
     return stats
 
 
-def apply_defaults(stats: list[HostStat], preset: Preset | None = None) -> list[HostStat]:
+def apply_defaults(
+    stats: list[HostStat],
+    preset: Preset | None = None,
+    *,
+    addresses: dict[str, dict[str, Any]] | None = None,
+) -> list[HostStat]:
     """Preselect so the common case needs zero clicks (docs/04).
 
     Unknown hosts default to *off*. That is the whole point: a crawl cannot
     reach a neighbouring blog that was merely linked, because nothing turns it
     on by accident.
+
+    **The one exception is an address of this same site**, and it is an
+    exception because it is not another site. `addresses` carries what
+    discovery asked each one — see `runner._probe_addresses` — and only an
+    alias that *redirects* to a host being crawled is turned on. One that
+    serves its own content is left off with the rest, because then the name
+    resembling an alias is all it has in common.
     """
+    addresses = addresses or {}
     for stat in stats:
+        record = addresses.get(stat.host) or {}
+        if record.get("alias_of") and not stat.is_seed_host:
+            stat.role = ROLE_ALIAS
+            if record.get("alias") == "redirects":
+                stat.crawl_pages = True
+                stat.fetch_assets = True
+                stat.reason = (
+                    f"the same site as {record['alias_of']} under another name — it "
+                    "redirects there, so this costs a few redirect records and makes "
+                    "the links that use it work in replay"
+                )
+            else:
+                stat.reason = (
+                    f"looks like another name for {record['alias_of']}, but it serves "
+                    "its own content rather than redirecting — treat it as a separate site"
+                )
+            continue
+
         if stat.is_seed_host:
             stat.crawl_pages = True
             stat.fetch_assets = True

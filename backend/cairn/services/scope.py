@@ -118,6 +118,12 @@ class Scope:
     # scope built by hand, which is what makes this module still testable
     # without a database.
     global_reject_patterns: list[str] = field(default_factory=list)
+    # Hosts whose `http://` form is a duplicate of the `https://` one, as
+    # *observed* rather than assumed. `None` means nothing has asked, which is
+    # different from `[]` meaning it asked and the answer was none — the first
+    # falls back to the conservative default below, the second does not.
+    # Populated by `sites.resolved_scope` from what discovery probed.
+    http_twin_hosts: list[str] | None = None
     seed_urls_from: dict[str, bool] = field(
         default_factory=lambda: {"sitemap": True, "feeds": True}
     )
@@ -141,6 +147,7 @@ class Scope:
             "accept_patterns": list(self.accept_patterns),
             "reject_patterns": list(self.reject_patterns),
             "global_reject_patterns": list(self.global_reject_patterns),
+            "http_twin_hosts": self.http_twin_hosts,
             "max_depth": self.max_depth,
             "max_pages": self.max_pages,
             "max_bytes": self.max_bytes,
@@ -159,6 +166,13 @@ class Scope:
             accept_patterns=[str(p) for p in raw.get("accept_patterns") or []],
             reject_patterns=[str(p) for p in raw.get("reject_patterns") or []],
             global_reject_patterns=[str(p) for p in raw.get("global_reject_patterns") or []],
+            # `or []` would erase the difference between "nothing asked" and
+            # "asked, and none of them", which is the whole point of the field.
+            http_twin_hosts=(
+                None
+                if raw.get("http_twin_hosts") is None
+                else [str(h) for h in raw["http_twin_hosts"]]
+            ),
             seed_urls_from=dict(raw.get("seed_urls_from") or {"sitemap": True, "feeds": True}),
             path_prefix=raw.get("path_prefix") or None,
             max_depth=raw.get("max_depth"),
@@ -278,13 +292,32 @@ def asset_only_reject_pattern(rule: HostRule) -> str:
     return rf"^https?://{host}/{tail}"
 
 
+def http_twin_targets(scope: Scope) -> list[str]:
+    """Hosts whose `http://` form should be rejected as a duplicate.
+
+    Discovery's answer when it has one, and the conservative guess otherwise.
+    The guess errs toward rejecting because the two mistakes are not the same
+    size: over-rejecting costs a page reachable *only* through an `http://`
+    link, which is rare, while under-rejecting is a crawl that never finishes.
+
+    Once discovery has asked, nothing is guessed either way — and on a site
+    that redirects `http://` to `https://` the reject is dropped entirely, so
+    the redirect chain stays walkable. Blogger does both, depending on a
+    per-blog setting, which is why this cannot come from the platform.
+    """
+    if scope.http_twin_hosts is not None:
+        crawlable = {rule.host for rule in scope.crawl_hosts}
+        return [h for h in scope.http_twin_hosts if h in crawlable]
+    return https_only_seed_hosts(scope)
+
+
 def https_only_seed_hosts(scope: Scope) -> list[str]:
     """Crawlable hosts every one of whose seeds is https.
 
-    Evidence, not assumption: the scheme is recorded nowhere in a host rule, so
-    the seeds are the only place this instance has ever *observed* one. A host
-    reached only by link-following is left alone, because nothing here knows
-    which scheme it answered on.
+    The fallback for a scope discovery has not probed. The scheme is recorded
+    nowhere in a host rule, so the seeds are the only place this instance has
+    ever *observed* one. A host reached only by link-following is left alone,
+    because nothing here knows which scheme it answered on.
     """
     schemes: dict[str, set[str]] = {}
     for seed in scope.seeds:
@@ -357,7 +390,7 @@ def build_reject_patterns(scope: Scope) -> list[str]:
     """Every reject pattern the engine should enforce, user's plus generated."""
     patterns = list(scope.all_reject_patterns)
     patterns.extend(asset_only_reject_pattern(rule) for rule in scope.asset_only_hosts)
-    patterns.extend(scheme_twin_reject_pattern(host) for host in https_only_seed_hosts(scope))
+    patterns.extend(scheme_twin_reject_pattern(host) for host in http_twin_targets(scope))
     patterns.append(CSS_ESCAPE_REJECT)
     return patterns
 
@@ -424,7 +457,7 @@ def to_wget_args(scope: Scope, *, regex_type: Literal["pcre", "posix"] = "pcre")
         args += ["-e", "robots=off"]
         notes.append("robots.txt is being ignored for this capture.")
 
-    for host in https_only_seed_hosts(scope):
+    for host in http_twin_targets(scope):
         notes.append(
             f"{host} is reached over https, so its http:// pages are skipped as duplicates. "
             f"Remove that skip if this site serves anything only over http."

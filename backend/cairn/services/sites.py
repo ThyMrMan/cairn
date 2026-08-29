@@ -379,7 +379,32 @@ def resolved_scope(session: Session, site: Site) -> Scope:
     scope.seeds = all_seeds(site)
     excepted = set(global_reject_exceptions(site))
     scope.global_reject_patterns = [p for p in skiplist.load(session) if p not in excepted]
+    scope.http_twin_hosts = probed_http_twins(session, site)
     return scope
+
+
+def probed_http_twins(session: Session, site: Site) -> list[str] | None:
+    """Which hosts discovery *observed* serving content over `http://`.
+
+    None when nothing has probed, which leaves the scope on its conservative
+    guess rather than on an empty answer nobody gave. An archive that predates
+    the probe therefore keeps the behaviour it has until its next discovery
+    run, instead of quietly widening.
+    """
+    from cairn.services import discovery_service
+
+    discovery = discovery_service.latest_discovery(session, site.id)
+    summary = getattr(discovery, "summary", None) if discovery is not None else None
+    if not isinstance(summary, dict):
+        return None
+    addresses = summary.get("addresses")
+    if not isinstance(addresses, dict) or not addresses:
+        return None
+    return [
+        host
+        for host, record in addresses.items()
+        if isinstance(record, dict) and record.get("http") == "serves"
+    ]
 
 
 def scope_is_unindexed(session: Session, site: Site) -> bool:

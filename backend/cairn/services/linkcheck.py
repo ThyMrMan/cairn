@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from cairn.discovery import aliases
 from cairn.logging import get_logger
 from cairn.services import htmlrefs, replay, storage
 
@@ -222,11 +223,19 @@ def _worth_checking(target: str, crawlable: set[str], refused: list[re.Pattern[s
     the report: another site is not this archive's job; a fragment or a
     `mailto:` is not a page; and something the scope refuses is a decision
     somebody made, not a gap.
+
+    **An alias of a crawled host is not another site**, and treating it as one
+    is how an archive full of dead navigation reports itself clean. Measured on
+    a real one: every page of 7,654 carried at least one link to the blog's
+    country domain — 67,246 in all — and the first exclusion discarded every
+    one of them before anything was checked. The report said the archive was
+    fine while the story's own next-chapter links went nowhere.
     """
     parts = urlsplit(target)
     if parts.scheme not in ("http", "https"):
         return False
-    if (parts.hostname or "").lower() not in crawlable:
+    host = (parts.hostname or "").lower()
+    if host not in crawlable and not any(aliases.is_alias(host, c) for c in crawlable):
         return False
     return not any(p.search(target) for p in refused)
 

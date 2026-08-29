@@ -19,8 +19,8 @@ from dataclasses import dataclass, field, replace
 from typing import Any
 from urllib.parse import urljoin, urlsplit
 
+from cairn.discovery import fetch, render, sources
 from cairn.discovery import hosts as host_classify
-from cairn.discovery import render, sources
 from cairn.discovery.fetch import USER_AGENT, Fetcher
 from cairn.discovery.platform import Fingerprint, fingerprint
 from cairn.logging import get_logger
@@ -91,6 +91,10 @@ class DiscoveryResult:
     rendered_pages: int = 0
     browser_requests: int = 0
     browser_only_hosts: list[str] = field(default_factory=list)
+    # What this site's other addresses do when asked: the `http://` form of
+    # each seed host, and any country alias the pages link to. See
+    # `_probe_addresses`.
+    addresses: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     @property
     def all_urls(self) -> list[str]:
@@ -119,6 +123,7 @@ class DiscoveryResult:
                 "requests_seen": self.browser_requests,
                 "hosts_only_a_browser_saw": self.browser_only_hosts,
             },
+            "addresses": dict(self.addresses),
             "errors": self.errors[:50],
             "warnings": self.warnings,
         }
@@ -259,7 +264,9 @@ async def discover(
         urls_by_host=counts.urls_by_host,
         mime_by_host=counts.mime_by_host,
     )
-    host_classify.apply_defaults(result.hosts, preset)
+    report("addresses", message="checking what this site's other addresses do")
+    result.addresses = await _probe_addresses(result)
+    host_classify.apply_defaults(result.hosts, preset, addresses=result.addresses)
     result.escaped_assets = sorted(counts.escaped_assets)[:MAX_ESCAPED_ASSETS]
     result.browser_only_hosts = sorted(counts.browser_only_hosts - counts.markup_hosts)
 
@@ -514,6 +521,63 @@ async def _sample(
         report("sampling", pages=result.pages_fetched, hosts=len(counts.urls_by_host))
 
     return counts
+
+
+async def _probe_addresses(result: DiscoveryResult) -> dict[str, dict[str, Any]]:
+    """What each of this site's other addresses actually does when asked.
+
+    Two questions, both about a hostname that is the *same site* under another
+    name, and both answered by asking rather than by assuming — because the
+    two possible answers lead to opposite decisions and the wrong one is
+    expensive either way.
+
+    **`http://` on a host we reach over https.** If it redirects, nothing needs
+    doing. If it *serves the page*, the crawl has two addresses for every page
+    on the site, they link to each other, and wget's mirror keeps one file for
+    both — which is the three-day, 192-lap crawl in
+    [04](../../../docs/04-discovery-and-scoping.md#a-site-on-both-schemes-is-two-sites-to-wget).
+    Blogger does both depending on a per-blog setting, so this genuinely cannot
+    be inferred from the platform.
+
+    **A country alias.** If it redirects to the canonical host, adding it to
+    the scope costs a handful of tiny redirect records and makes 67,000 links
+    in the archive resolve. If it serves its own content, it is a second site
+    and crawling it as a duplicate would double the archive.
+
+    Failures are recorded as `unreachable` rather than guessed at. A site that
+    does not answer on `http://` at all is not a site whose `http://` pages are
+    duplicates.
+    """
+    from cairn.discovery import aliases
+
+    seed_hosts = [h for h in (result.seed_hosts or [result.seed_host]) if h]
+    canonical = set(seed_hosts)
+    linked = [stat.host for stat in result.hosts if stat.host not in canonical]
+    found: dict[str, dict[str, Any]] = {}
+
+    for host in seed_hosts:
+        verdict = await fetch.probe(f"http://{host}/")
+        found[host] = {
+            "http": (
+                "serves" if verdict.serves else "redirects" if verdict.redirects else "unreachable"
+            ),
+            "http_status": verdict.status,
+        }
+
+    for alias, target in aliases.aliases_among(linked, canonical).items():
+        verdict = await fetch.probe(f"https://{alias}/")
+        found[alias] = {
+            "alias_of": target,
+            "alias": (
+                "redirects"
+                if verdict.redirects_to_host(target)
+                else "serves"
+                if verdict.serves
+                else "unreachable"
+            ),
+            "alias_status": verdict.status,
+        }
+    return found
 
 
 def _dedupe(values: list[str]) -> list[str]:

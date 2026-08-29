@@ -279,6 +279,20 @@ Exceptions are matched by the pattern's text, so editing a global pattern retire
 
 Invalid regexes are refused at write time rather than at capture time. A bad pattern in one site's list breaks that site; a bad pattern here breaks every capture on the instance at once, so it is caught while somebody can still see what they typed.
 
+### One blog, several hostnames
+
+Blogger publishes every blog on `<label>.blogspot.com` **and** on a country domain — `.co.uk`, `.de`, `.com.au`, dozens of them. Until 2018 Google sent each visitor to their own, so posts written then contain links an author typed while looking at the ccTLD version of their own blog. The redirection is gone; the links are still in the HTML.
+
+A crawler sees a different hostname and stops, because `--domains` says so. Nothing is wrong with the capture — the page is archived under the canonical host — and replay answers a URL key nobody links to.
+
+**Measured on a real archive of 7,654 pages:** every single page carried at least one link to the blog's UK address. 54 distinct alias URLs across 67,246 occurrences, and **52 of the 54 had their canonical twin already in the WARC**. One of the two that did not, `/p/blog-page.html`, was linked *only* through the alias — so it cost a page, not just a link.
+
+**No TLD list.** Enumerating Blogger's country domains is a list that goes stale and every entry is a guess about somebody else's product. The structure is the evidence: two hosts are the same blog when the label matches and only the part after `blogspot.` differs. A different label is a different person's blog, which is exactly what the PSL's private section already separates.
+
+**And a name is never enough on its own.** `aliases.is_alias` says two hosts *look* like one blog; whether they are is settled by asking. Discovery probes the alias and preselects it only when it **redirects** to a host already being crawled — then it costs a handful of tiny redirect records and makes every one of those links resolve. An alias that serves its own content is left off with a reason, because then the resemblance is all it has in common and crawling it would double the archive.
+
+The link checker was excluding these too, and that mattered more than it sounds: it drops any link whose host is not crawlable, so all 67,246 were discarded before anything was checked and the archive reported itself clean while the story's own next-chapter links went nowhere. An alias of a crawled host is now checked like any other link.
+
 ### A site on both schemes is two sites to wget
 
 `https://blog/p.html` and `http://blog/p.html` are one page to a reader and two URLs to a crawler — and if the site links to both from its own pages, as Blogger does, the crawl does not converge.
@@ -289,13 +303,17 @@ The mechanism is the mirror. wget's filename ignores the scheme, so both URLs ar
 
 The archive says which URLs were affected, and it is exactly the ones you would predict. All 1,068 URLs that looped existed under both schemes. All 1,620 fetched exactly once were on asset hosts, linked under one scheme, so nothing ever collided with them.
 
-**So the `http://` form of a crawlable host is rejected whenever every seed for that host is `https://`.** Generated, like the asset-only fences, rather than left as advice — the failure is invisible while it is happening.
+**So the `http://` form of a crawlable host is rejected when that host serves content there.** Generated, like the asset-only fences, rather than left as advice — the failure is invisible while it is happening.
+
+**Which it does is asked, not assumed**, because Blogger does both: the blog above answers `http://` with a 200 and the full page, while another blog on the same platform answers `301` to `https://`. Discovery probes `http://<seed host>/` without following the redirect and records the answer, and a site that redirects gets no reject at all — which matters, because rejecting `http://` also cuts a redirect chain, and that chain can be the only route to a page.
+
+Until a site has been probed the reject is applied anyway. The two mistakes are not the same size: over-rejecting costs a page reachable *only* through an `http://` link, and under-rejecting is a crawl that never finishes. An archive captured before the probe existed therefore keeps the behaviour it has until its next discovery run — `None` and `[]` mean different things in `Scope.http_twin_hosts`, and conflating them would widen a scope on an answer nobody gave.
 
 It is lossless where it applies, which is what makes it safe to apply automatically: in that capture all 527 `http://` URLs had an `https://` twin already fetched, and there were **zero** http-only URLs. Rejecting them leaves 2,211 distinct URLs — about 45 minutes at that crawl's own measured rate.
 
 Three limits, each deliberate:
 
-- **The seed is the evidence.** A host rule records no scheme, so the seeds are the only place this instance has ever observed one. A host reached only by link-following is left alone rather than guessed at.
+- **Without a probe, the seed is the evidence.** A host rule records no scheme, so the seeds are the only place this instance has ever observed one. A host reached only by link-following is left alone rather than guessed at.
 - **A host seeded over `http://`, or seeded both ways, is untouched.** The first would archive nothing; the second was somebody being explicit.
 - **Only that host.** In the same capture six `http://` URLs lived on other hosts — fonts, two Blogger logos, two thumbnails — and none was part of the loop.
 

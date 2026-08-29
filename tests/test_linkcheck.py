@@ -32,6 +32,14 @@ PAGE_ONE = (
 
 POST = b"<html><body>a post with no links</body></html>"
 
+# The same blog under Blogger's UK address, which is what an author typed into
+# their own posts while Google was still sending them there.
+ALIAS_PAGE = (
+    f'<html><body><a href="{BLOG}/2019/04/post.html">next chapter</a>'
+    f'<a href="https://b.blogspot.co.uk/2019/04/post.html">next chapter, UK address</a>'
+    f'<a href="https://b.blogspot.co.uk/p/blog-page.html">about</a></body></html>'
+).encode()
+
 
 def _write_warc(path: Path, pages: list[tuple[str, bytes]]) -> None:
     from warcio.statusandheaders import StatusAndHeaders
@@ -238,3 +246,45 @@ def test_the_budget_is_reported_rather_than_silently_applied(
     assert report.pages_scanned == 2
     assert report.truncated is True
     assert linkcheck.check_links(db, settings, site, budget=50).truncated is False
+
+
+def test_a_link_to_the_same_blog_under_another_name_is_checked(
+    db: Session, settings: Settings
+) -> None:
+    """The exclusion that made an archive of dead navigation report itself fine.
+
+    Measured on a real one: every page of 7,654 carried at least one link to
+    the blog's country domain — 67,246 in all — and every one was discarded as
+    "another site" before anything was checked. An alias of a crawled host is
+    not another site.
+    """
+    site = _site(db, settings, rejects=[r"[?&]m=1"], preset="blogger")
+    _capture(settings, site, "20260101T000000Z-full-wget", [(f"{BLOG}/", ALIAS_PAGE)])
+    replay.build_index(settings, site.archive_path, withhold=replay.withheld_patterns(db, site))
+
+    report = linkcheck.check_links(db, settings, site)
+    targets = {d.target for d in report.dead}
+
+    assert "https://b.blogspot.co.uk/2019/04/post.html" in targets
+    assert "https://b.blogspot.co.uk/p/blog-page.html" in targets
+    # All three links are this blog: two under the alias, one canonical.
+    assert report.in_scope == 3
+
+
+def test_a_link_to_a_different_blog_on_the_platform_is_still_someone_elses(
+    db: Session, settings: Settings
+) -> None:
+    """The alias rule must not readmit the neighbours. `someoneelse.blogspot.*`
+    is a different person's site, which is the whole reason the picker groups
+    by the PSL's private section."""
+    page = (
+        f'<html><body><a href="https://someoneelse.blogspot.co.uk/x.html">a friend</a>'
+        f'<a href="{BLOG}/2019/04/post.html">a post</a></body></html>'
+    ).encode()
+    site = _site(db, settings, rejects=[], preset="blogger")
+    _capture(settings, site, "20260101T000000Z-full-wget", [(f"{BLOG}/", page)])
+    replay.build_index(settings, site.archive_path, withhold=replay.withheld_patterns(db, site))
+
+    report = linkcheck.check_links(db, settings, site)
+    assert not any("someoneelse" in d.target for d in report.dead)
+    assert report.in_scope == 1

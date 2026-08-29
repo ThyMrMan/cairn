@@ -139,6 +139,64 @@ class Fetcher:
         return await self.get(url)
 
 
+@dataclass(slots=True)
+class Probe:
+    """What one address does when asked, without following the answer.
+
+    Three outcomes and they lead to different decisions, which is why the
+    redirect must not be followed: a client that follows sees `200` and a final
+    URL for all three.
+    """
+
+    url: str
+    status: int
+    # Where a 3xx points, absolute. None for anything else.
+    location: str | None = None
+    error: str | None = None
+
+    @property
+    def serves(self) -> bool:
+        """Answers with its own content rather than sending you elsewhere."""
+        return self.error is None and 200 <= self.status < 300
+
+    @property
+    def redirects(self) -> bool:
+        return self.error is None and 300 <= self.status < 400 and bool(self.location)
+
+    def redirects_to_host(self, host: str) -> bool:
+        if not self.redirects:
+            return False
+        from urllib.parse import urlsplit
+
+        return (urlsplit(self.location or "").hostname or "").lower() == host.strip().lower()
+
+
+async def probe(url: str, *, timeout_s: float = DEFAULT_TIMEOUT_S) -> Probe:
+    """Ask one address what it is, without following redirects.
+
+    Its own client rather than the `Fetcher`'s, because that one is built with
+    `follow_redirects=True` and the whole question here is what the *first*
+    response was. Answering it by turning redirects off on a shared client
+    would change every other caller's behaviour for the duration.
+    """
+    try:
+        async with httpx.AsyncClient(
+            follow_redirects=False,
+            timeout=httpx.Timeout(timeout_s),
+            headers={"User-Agent": USER_AGENT},
+            trust_env=False,
+        ) as probe_client:
+            response = await probe_client.get(url)
+            location = response.headers.get("location")
+            if location:
+                location = str(httpx.URL(url).join(location))
+            return Probe(url=url, status=response.status_code, location=location)
+    except (httpx.HTTPError, ssl_error_types()) as exc:
+        return Probe(url=url, status=0, error=str(exc)[:300])
+    except Exception as exc:  # pragma: no cover — malformed URLs
+        return Probe(url=url, status=0, error=f"{type(exc).__name__}: {exc}")
+
+
 def ssl_error_types() -> type[BaseException]:
     import ssl
 

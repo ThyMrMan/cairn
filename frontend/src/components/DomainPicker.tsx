@@ -321,9 +321,16 @@ function HostRow({
 }) {
   const [open, setOpen] = useState(false);
   const roleTone =
-    { self: "text-accent", analytics: "text-danger", images: "text-ok", cdn: "text-ok" }[
-      host.role
-    ] ?? "text-muted";
+    {
+      self: "text-accent",
+      // The same site under another name, so it reads like the seed host
+      // rather than like a third party — which is the whole point of telling
+      // them apart.
+      alias: "text-accent",
+      analytics: "text-danger",
+      images: "text-ok",
+      cdn: "text-ok",
+    }[host.role] ?? "text-muted";
 
   return (
     <>
