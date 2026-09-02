@@ -6,6 +6,7 @@ import {
   type DiscoveredHost,
   type DiscoverySummary,
   type HostRule,
+  type ScopePreview,
   endpoints,
 } from "../lib/api";
 import { bytes } from "../lib/format";
@@ -305,7 +306,7 @@ export function DomainPicker({ siteId, onChanged }: { siteId: number; onChanged?
         />
       </div>
 
-      <Preview siteId={siteId} />
+      <Preview siteId={siteId} onApplyPreset={(id) => applyPreset.mutate(id)} />
     </div>
   );
 }
@@ -649,7 +650,13 @@ function RejectPatterns({
   );
 }
 
-function Preview({ siteId }: { siteId: number }) {
+function Preview({
+  siteId,
+  onApplyPreset,
+}: {
+  siteId: number;
+  onApplyPreset?: (preset: string) => void;
+}) {
   const preview = useQuery({
     queryKey: ["preview", siteId],
     queryFn: () => endpoints.scopePreview(siteId),
@@ -668,13 +675,85 @@ function Preview({ siteId }: { siteId: number }) {
           value={data.excluded_by_pattern.toLocaleString()}
         />
         <Row label="Rough size" value={bytes(data.estimated_bytes)} />
+        <Row label="Rough time" value={roughTime(data.estimated_seconds)} />
       </dl>
+      <Pagination outlook={data.pagination} onApply={onApplyPreset} />
       {data.notes.map((note) => (
         <p key={note} className="hint mt-2">
           {note}
         </p>
       ))}
     </div>
+  );
+}
+
+/** Seconds as something a person can weigh a decision against. */
+function roughTime(seconds: number): string {
+  if (!seconds) return "—";
+  if (seconds < 90) return `${Math.round(seconds)}s`;
+  const minutes = seconds / 60;
+  if (minutes < 90) return `${Math.round(minutes)} min`;
+  const hours = minutes / 60;
+  return hours < 48 ? `${Math.round(hours)} h` : `${Math.round(hours / 24)} days`;
+}
+
+/**
+ * What Blogger's Older-posts trail will cost this blog.
+ *
+ * It is kept by default because dropping it leaves a dead link at the bottom
+ * of every archived page, and on the blog that was first measured against it
+ * cost 86 fetches — an obviously good trade. The cost is **quadratic in post
+ * count**, which that measurement could not show: 1.2 index URLs per post at
+ * 71 posts, 4.6 at 371, and 71.9 at 2,855, where it was 92% of a capture that
+ * ran for four days without finishing.
+ *
+ * So the trade is still offered, with the number attached.
+ */
+function Pagination({
+  outlook,
+  onApply,
+}: {
+  outlook: ScopePreview["pagination"];
+  onApply?: (preset: string) => void;
+}) {
+  if (!outlook) return null;
+  if (outlook.skipped) {
+    return (
+      <p className="hint mt-2">
+        The Older-posts trail is skipped by this scope — roughly{" "}
+        {outlook.estimated_urls.toLocaleString()} index fetches it does not have to make. Run the
+        companion pass after the capture and those links still work in replay.
+      </p>
+    );
+  }
+  const tone = outlook.recommend_lean ? "warn" : "ok";
+  return (
+    <Alert kind={tone} title={`Older-posts trail: about ${outlook.estimated_urls.toLocaleString()} extra fetches`}>
+      This blog has around {outlook.posts.toLocaleString()} posts, and Blogger gives every one of
+      them its own address into the index. The cost grows with the square of the post count —
+      measured at{" "}
+      {outlook.measured
+        .map((m) => `${m.urls.toLocaleString()} on ${m.posts.toLocaleString()} posts`)
+        .join(", ")}
+      .{" "}
+      {outlook.recommend_lean ? (
+        <>
+          At this size the trail is most of the capture. The <strong>lean preset</strong> leaves it
+          out and a cheap second pass fetches it afterwards, so Older and Newer Posts still resolve
+          in replay.
+          {onApply && (
+            <button
+              className="btn-ghost ml-2 px-2 py-0.5 text-xs"
+              onClick={() => onApply("blogger-lean")}
+            >
+              apply the lean preset
+            </button>
+          )}
+        </>
+      ) : (
+        <>At this size it is worth keeping: it is what makes Older Posts work in replay.</>
+      )}
+    </Alert>
   );
 }
 

@@ -288,6 +288,52 @@ def test_scope_preview_estimates_without_fetching(authed: TestClient, blogger_si
     assert IMAGES in preview["asset_hosts"]
 
 
+def test_the_preview_says_what_the_pagination_trail_will_cost(
+    authed: TestClient, blogger_site: str
+) -> None:
+    """The trade the standard preset makes, with the number attached.
+
+    Whether the trail is already skipped is asked of the *scope*, not of which
+    preset was applied — a pattern added by hand counts for as much as the lean
+    preset's, and reading the preset id would call that scope unprotected.
+    """
+    site_id, _result = discovered_site(authed, blogger_site)
+
+    outlook = authed.post(f"/api/sites/{site_id}/scope/preview", headers=XHR).json()["pagination"]
+    assert outlook is not None, "a Blogger blog with posts should have an outlook"
+    assert outlook["posts"] >= 1
+    assert not outlook["skipped"], "the standard preset keeps the trail"
+    # The fixture is a handful of posts, where keeping it is the right answer.
+    assert not outlook["recommend_lean"]
+
+    applied = authed.post(
+        f"/api/sites/{site_id}/scope/apply-preset", json={"preset": "blogger-lean"}, headers=XHR
+    )
+    assert applied.status_code == 200, applied.text
+
+    after = authed.post(f"/api/sites/{site_id}/scope/preview", headers=XHR).json()["pagination"]
+    assert after["skipped"], "the lean preset's reject must be seen by the outlook"
+    assert not after["recommend_lean"], "nothing to recommend once it is already skipped"
+
+
+def test_a_hand_written_reject_counts_as_much_as_the_preset(
+    authed: TestClient, blogger_site: str
+) -> None:
+    site_id, _result = discovered_site(authed, blogger_site)
+    edited = authed.put(
+        f"/api/sites/{site_id}/scope",
+        json={
+            "hosts": [{"host": BLOG, "crawl_pages": True, "fetch_assets": True}],
+            "reject_patterns": [r"/search\?[^#]*updated-(max|min)="],
+        },
+        headers=XHR,
+    )
+    assert edited.status_code == 200, edited.text
+
+    outlook = authed.post(f"/api/sites/{site_id}/scope/preview", headers=XHR).json()["pagination"]
+    assert outlook["skipped"]
+
+
 def test_rerunning_discovery_keeps_a_user_edited_scope(
     authed: TestClient, blogger_site: str
 ) -> None:

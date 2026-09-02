@@ -397,6 +397,26 @@ Because neither setting is reliably correct, the `asset-audit` post-processor cl
 
 If you ever hit a wget that genuinely lacks PCRE, the fallback is to invert the logic into an `--accept-regex` that positively lists asset extensions on those hosts. Encode whichever you use in the engine, because getting it wrong means either crawling image CDNs as websites or dropping images entirely.
 
+### What the Older-posts trail costs, and when to stop paying it
+
+The standard Blogger preset keeps the `/search?updated-max=` trail. That decision was measured, and on the blog it was measured against it was obviously right: 86 extra fetches, buying a working Older Posts link at the bottom of every archived page. Dropping it there would have saved nothing worth having.
+
+**What the measurement could not show is that the cost is quadratic.** Three captures, counting the trail against the posts each blog actually has:
+
+| Posts | Pagination URLs | Per post | Share of the capture |
+|---:|---:|---:|---:|
+| 71 | 86 | 1.2 | — |
+| 371 | 1,696 | 4.6 | 34% |
+| 2,855 | 205,386 | 71.9 | **92%** |
+
+The per-post rate rises with the post count, because Blogger gives every post page its own address into the index — a different `updated-max`/`start`/`reverse-paginate` combination for each arrival context — so the number of distinct index URLs grows with the pages that link to them *and* with the boundaries there are to name. The third row is a **lower bound**: that crawl ran for three days and eighteen hours at a healthy rate and was roughly a quarter of the way through when it was stopped.
+
+So the trade is still offered, with the number attached. The scope preview estimates the trail at `0.02 × posts²` — fitted to those three points, and deliberately no better than an order of magnitude, because two of them are complete and one is not. Above **500 posts**, where the trail is around five thousand index fetches, the preview recommends the lean preset and offers to apply it.
+
+**Whether the trail is already skipped is asked of the scope, not of the preset.** A pattern somebody added by hand counts for exactly as much as the lean preset's, and reading the preset id would report that scope as unprotected. The check compiles the scope's own rejects and tries a representative trail URL against them.
+
+The trail also lands in `estimated_seconds`, which is where it hurts: index pages are cheap to store and cost a full politeness delay each, so a trail that adds little to the archive can add days to the capture.
+
 ### Scope preview
 
 Before a capture runs, show a dry-run summary computed from discovery data — no fetching:

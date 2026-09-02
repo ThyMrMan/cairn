@@ -17,6 +17,7 @@ from cairn.api.deps import AppSettings, ClientIp, Csrf, CurrentUser, DbSession
 from cairn.api.errors import ApiError
 from cairn.api.schemas import JobAccepted, ScopeResponse
 from cairn.db.models import Discovery, Job, Site
+from cairn.discovery import platform
 from cairn.discovery.platform import PRESETS
 from cairn.services import audit, discovery_service
 from cairn.services import sites as site_service
@@ -227,14 +228,59 @@ def preview_scope(site_id: int, db: DbSession, _user: CurrentUser) -> dict[str, 
     except ScopeError as exc:
         notes = [f"This scope cannot run as-is: {exc}"]
 
+    trail = _pagination_outlook(scope, discovery, pages)
+    total = pages + (trail["estimated_urls"] if trail and not trail["skipped"] else 0)
+
     return {
         "pages_to_crawl": pages,
         "excluded_by_pattern": excluded,
         "crawl_hosts": crawl_hosts,
         "asset_hosts": asset_hosts,
         "estimated_bytes": pages * 2_500_000 if pages else 0,
-        "estimated_seconds": int(pages * (scope.politeness.get("wait_s") or 1.0)) if pages else 0,
+        # The trail is index pages, so it costs time at the politeness rate
+        # even where it costs little storage — and time is what ran out.
+        "estimated_seconds": int(total * (scope.politeness.get("wait_s") or 1.0)) if total else 0,
+        "pagination": trail,
         "notes": notes,
+    }
+
+
+def _pagination_outlook(scope: Any, discovery: Any, posts: int) -> dict[str, Any] | None:
+    """What Blogger's Older-posts trail will add, and whether to keep it.
+
+    The cost is **quadratic in post count** — 1.2 index URLs per post on a
+    71-post blog, 71.9 on a 2,855-post one — which is the fact the standard
+    preset's "keep the trail, it makes the links work" decision was taken
+    without. It is still right on a small blog. On a large one the trail *is*
+    the capture.
+
+    Whether it is already skipped is asked of the scope rather than inferred
+    from which preset was applied: a pattern somebody added by hand counts for
+    exactly as much as the lean preset's, and reading the preset id would call
+    that scope unprotected.
+    """
+    summary = getattr(discovery, "summary", None) if discovery is not None else None
+    if not isinstance(summary, dict):
+        return None
+    fingerprint = summary.get("fingerprint")
+    if not isinstance(fingerprint, dict) or fingerprint.get("platform") != platform.BLOGGER:
+        return None
+    if posts <= 0:
+        return None
+
+    host = next((rule.host for rule in scope.hosts if rule.crawl_pages), None)
+    if host is None:
+        return None
+    probe = f"https://{host}/search?updated-max=2019-01-01T00:00:00-05:00&max-results=20"
+    skipped = any(p.search(probe) for p in discovery_service.compiled_rejects(scope))
+
+    estimate = platform.pagination_estimate(posts)
+    return {
+        "posts": posts,
+        "estimated_urls": estimate,
+        "skipped": skipped,
+        "recommend_lean": not skipped and posts > platform.LEAN_RECOMMENDED_ABOVE,
+        "measured": [{"posts": p, "urls": u} for p, u in platform.PAGINATION_MEASURED],
     }
 
 

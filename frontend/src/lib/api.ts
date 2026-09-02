@@ -929,8 +929,21 @@ export type ScopePreview = {
   crawl_hosts: string[];
   asset_hosts: string[];
   estimated_bytes: number;
+  /** Includes the pagination trail when the scope keeps it — that is where the time goes. */
   estimated_seconds: number;
   notes: string[];
+  /**
+   * Blogger's Older-posts trail, whose cost is quadratic in post count. Null
+   * for anything that is not a Blogger blog with a known post count.
+   */
+  pagination: {
+    posts: number;
+    estimated_urls: number;
+    /** Whether this scope already refuses it, however that was arranged. */
+    skipped: boolean;
+    recommend_lean: boolean;
+    measured: { posts: number; urls: number }[];
+  } | null;
 };
 
 export type JobAccepted = { job_id: number };

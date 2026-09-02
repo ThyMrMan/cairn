@@ -149,6 +149,56 @@ BLOGGER_PAGER_REJECT = r"/search\?[^#]*updated-(max|min)="
 # the third member of the same family.
 BLOGGER_ARCHIVE_PAGER_REJECT = r"/[0-9]{4}/[0-9]{2}/\?[^#]*updated-(max|min)="
 
+# ── what the trail costs, and why the answer changes with the blog ───────
+#
+# Three captures, each counting the `/search?...updated-max=` URLs against the
+# posts the blog actually has:
+#
+#     71 posts        86 pagination URLs      1.2 per post
+#    371 posts     1,696 pagination URLs      4.6 per post    34% of the crawl
+#  2,855 posts   205,386 pagination URLs     71.9 per post    92% of the crawl
+#
+# **The per-post rate rises with the post count**, so the total is quadratic
+# rather than linear. That is the fact the standard preset was designed
+# without: keeping the trail was measured on the first blog, where it cost
+# eighty-six fetches and bought working Older-posts links, and it is still the
+# right answer there. On the third it *was* the capture — four days in, at a
+# perfectly healthy rate, roughly a quarter of the way through.
+#
+# The mechanism is in `CompanionPass` above: every post page links back into
+# the index with a different `updated-max`/`start`/`reverse-paginate`
+# combination, so the number of distinct index addresses grows with the number
+# of pages that link to them *and* with the number of boundaries there are to
+# name.
+PAGINATION_MEASURED: tuple[tuple[int, int], ...] = ((71, 86), (371, 1_696), (2_855, 205_386))
+
+# Fitted as `urls ≈ k * posts²`, which the three points give as k = 0.017,
+# 0.012 and 0.025. The third is a *lower* bound — that crawl never finished —
+# so the true k there is higher, and a least-squares fit through it would be
+# false precision on top of an incomplete measurement. 0.02 sits between the
+# two complete ones and under the incomplete one, and the estimate's job is to
+# tell hundreds from hundreds of thousands rather than to be right to the URL.
+PAGINATION_PER_POST_SQUARED = 0.02
+
+# Above this many posts the trail is worth more than it costs no longer. At
+# 500 posts it is around 5,000 index fetches — hours at a polite rate, for
+# links that could be had afterwards for the price of a cheap second pass. At
+# 2,855 it is six figures and the crawl does not end.
+LEAN_RECOMMENDED_ABOVE = 500
+
+
+def pagination_estimate(posts: int) -> int:
+    """Roughly how many index URLs the Older-posts trail will add.
+
+    Deliberately an order of magnitude rather than a number: see
+    `PAGINATION_MEASURED` for what it is fitted to and why nothing better is
+    honest with three points, one of them incomplete.
+    """
+    if posts <= 0:
+        return 0
+    return round(PAGINATION_PER_POST_SQUARED * posts * posts)
+
+
 # The other half of the lean preset's bargain: it keeps the trail out of the
 # expensive crawl, and this fetches the same URLs cheaply afterwards so both
 # Older *and* Newer Posts still resolve in replay.

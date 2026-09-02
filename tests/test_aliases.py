@@ -256,3 +256,36 @@ def test_the_narrower_pattern_is_retired_by_both_presets() -> None:
 
     for preset_id in ("blogger", "blogger-lean"):
         assert r"[?&]m=1" in PRESETS[preset_id].retired_patterns, preset_id
+
+
+# ── what the pagination trail costs ──────────────────────────────────────
+
+
+def test_the_estimate_lands_in_the_right_order_of_magnitude() -> None:
+    """Three real captures, and the estimate has to be useful against all of
+    them. Not accurate — useful: it decides between "keep it" and "this will
+    be the whole capture", and being out by a factor of two either way changes
+    neither answer."""
+    from cairn.discovery.platform import PAGINATION_MEASURED, pagination_estimate
+
+    for posts, measured in PAGINATION_MEASURED:
+        estimate = pagination_estimate(posts)
+        assert measured / 3 <= estimate <= measured * 3, (posts, measured, estimate)
+
+
+def test_the_cost_grows_faster_than_the_blog() -> None:
+    """The fact the standard preset was designed without. Ten times the posts
+    is far more than ten times the trail, which is why "keep it, it is only
+    eighty-six fetches" stopped being true."""
+    from cairn.discovery.platform import pagination_estimate
+
+    small = pagination_estimate(100)
+    large = pagination_estimate(1_000)
+    assert large > small * 50
+
+
+def test_an_empty_blog_costs_nothing() -> None:
+    from cairn.discovery.platform import pagination_estimate
+
+    assert pagination_estimate(0) == 0
+    assert pagination_estimate(-5) == 0
