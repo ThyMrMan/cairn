@@ -248,6 +248,28 @@ The mechanism is deliberately not a new one. Pause sends the same SIGTERM cancel
 >
 > Two details that came out of it and are easy to get wrong: an interrupted crawl exits **11**, not 0 — the engine reports `partial` off its own `terminating` flag rather than the exit code, so this does not matter, but it would if anything started reading the code. And command-line options are **not** persisted in the state file, so `--config` is passed *alongside* the full argv rather than instead of it; a resume that passed the config alone would silently lose the scope, the rejects and the profile.
 
+### A crawl can outlive the process that started it
+
+An engine is spawned with `start_new_session=True`, which is right: it gives one handle — the process group — covering the engine *and* the wget under it, so cancelling a job cannot signal the whole container.
+
+**It also means a subprocess does not die with its parent**, which this document and `_sweep_containers` both used to say it did. A new session is not in the parent's process group, so nothing signals it when the parent goes; it is reparented and carries on.
+
+Reported as a crawl that "got stuck and wasn't able to be cancelled". It was doing neither: `crawl.log` shows wget fetching at a steady 2,470 URLs an hour, no gap over a minute, for **three days and eighteen hours** — writing into a capture the database had already marked `interrupted`. The boot reconcile had marked the job interrupted and set `job.pid = None`, throwing away the only handle anybody had; `cancel` then found nothing running, nothing queued and a status that is not `running`, and returned False.
+
+Three things now hold:
+
+- **The pid is spent, not cleared.** `_recover_interrupted` reaps before it forgets, and a pid it could not act on is *kept* so a later cancel can try again.
+- **Cancel reaches a job this process is not running.** That click used to do nothing at all.
+- **Identity is checked before anything is signalled.** A pid outlives its process and the number is reused, so the job's own temp directory — which appears in the engine's command line — must match, and the pid must still lead its own group. An unreadable `/proc` is *unknown*, never *no*.
+
+Killing the group rather than the process is the point: wget is a child of the engine and shares its group id, so signalling only the engine leaves the same orphan one level down, still writing `crawl.log`, with no recorded pid at all.
+
+### Nothing was watching the clock
+
+`limits.max_duration_s` was hardcoded `None` in every job spec, so the engine's own `_over_limit` — which stops the crawl gracefully, closes the WARC and reports `partial` — had no number to check against.
+
+It is now `crawl.max_duration_hours`, **48 by default**. Generous rather than tight: a genuinely large site at one request a second is a day or two of honest work, and truncating that would be worse than the runaway it guards against. What it rules out is the order of magnitude above. Stopping costs nothing that was fetched, so this is a floor under how long a mistake can run rather than a risk to an archive. Set it to 0 for no limit.
+
 ### Failure statuses
 
 `ok` (everything fetched), `partial` (some URLs failed or cancelled — artifacts still valid and indexed), `failed` (no usable output).

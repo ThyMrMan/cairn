@@ -185,6 +185,12 @@ feed_paths: ["/blog?format=rss", "/news?format=rss", "/journal?format=rss"]
 
 **No site-wide feed exists.** Each blog collection publishes its own at `<collection>?format=rss`, so there is no path that is right for every site — the three above are the usual collection names, tried after the page's own `<link rel="alternate">`, which is where a correct answer normally comes from.
 
+#### Both mobile markers, not just one
+
+The preset rejected `[?&]m=1` and not `[?&]m=0`. The first is Blogger's mobile duplicate; the second is what it appends when a visitor opts back *out* of mobile, and it serves the identical desktop page the bare URL does.
+
+Measured on one blog's crawl: **69,930 URLs carried `m=0` — 31% of the whole capture**, every one a second copy of a page already being fetched. The pattern is now `[?&]m=[01]`, and the narrow one is named in `retired_patterns` on both Blogger presets so the correction reaches scopes that already carry it rather than only new sites.
+
 **`?offset=` and `?tag=` are deliberately not rejected.** `?offset=<timestamp>` is the blog's own pagination and `?tag=` / `?category=` / `?author=` / `?month=` are real navigation. This is the Blogger lesson applied ahead of time: rejecting that platform's Older-posts trail saved nothing worth having and left a dead link at the bottom of every archived page. If a capture shows tag pages dominating, add the reject to that site rather than to the preset.
 
 **`allow_extensionless` is off.** Squarespace image URLs keep the source extension ahead of the query (`…/photo.jpg?format=2500w`) and the asset pattern already permits an extension followed by `?`, so they match without it. Turning it on would let a crawl follow HTML on the CDN for no gain.

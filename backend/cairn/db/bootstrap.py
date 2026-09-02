@@ -43,6 +43,13 @@ DEFAULT_SETTINGS: dict[str, object] = {
     # services/skiplist.py for why it is merged at capture time rather than
     # copied into sites.
     "crawl.global_reject_patterns": [],
+    # Hours a single capture may run before the engine stops itself, 0 for no
+    # limit. Nothing watched the clock until a crawl ran for three days and
+    # eighteen hours at a healthy rate, on a pagination space that would have
+    # taken weeks. Stopping costs nothing archived — the WARC is closed and
+    # kept, and the capture reports `partial` with the reason — so this is a
+    # floor under how long a mistake runs, not a risk to an archive.
+    "crawl.max_duration_hours": 48,
     "storage.trash_retention_days": 30,
     # How old a minted jar may be before a capture re-mints it first. Only
     # userscript profiles can be re-minted unattended — they are the only mode

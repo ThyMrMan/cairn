@@ -246,7 +246,18 @@ BLOGGER_PRESET = Preset(
         "themes.googleusercontent.com",
     ],
     reject_patterns=[
-        (r"[?&]m=1", "the mobile duplicate of every page — halves the crawl, loses nothing"),
+        # Both values, and the second was missing for a long time. `m=1` is the
+        # mobile duplicate; `m=0` is what Blogger appends when a visitor opts
+        # back out of it, and it serves the identical desktop page the bare URL
+        # does. Measured on one blog's crawl: 69,930 URLs carried `m=0`, which
+        # was **31% of the whole capture**, every one of them a second copy of
+        # a page already being fetched.
+        (
+            r"[?&]m=[01]",
+            "the mobile and opted-out-of-mobile duplicates of every page — "
+            "together a third of an unfiltered Blogger crawl, and neither has "
+            "any content the bare URL does not",
+        ),
         (r"[?&]replytocom=", "one permutation per comment reply"),
         (r"[?&]showComment=", "comment anchors"),
         # Pagination *within a label*, which is the combination that multiplies:
@@ -318,6 +329,9 @@ BLOGGER_PRESET = Preset(
     # dead link in the archive rather than an infinite loop. The other two are
     # what the lean variant adds, retired here so switching back is clean.
     retired_patterns=[
+        # Superseded by `[?&]m=[01]`. Named so the correction reaches scopes
+        # that already carry the narrower one rather than only new sites.
+        r"[?&]m=1",
         r"/search\?updated-(max|min)=",
         BLOGGER_PAGER_REJECT,
         BLOGGER_ARCHIVE_PAGER_REJECT,
@@ -404,9 +418,12 @@ BLOGGER_LEAN_PRESET = Preset(
             "month. Rejected by neither preset until now",
         ),
     ],
-    # Nothing to retire: this is the standard preset's rejects plus two. Going
-    # the other way is what needs the retirement, and the standard preset has it.
-    retired_patterns=[],
+    # This is the standard preset's rejects plus two, so going the *other* way
+    # is what needs the retirement and the standard preset has it. The one
+    # entry here is a correction rather than a difference between the presets:
+    # `[?&]m=1` was widened to `[?&]m=[01]`, and a scope that already carries
+    # the narrow one must lose it whichever preset is applied next.
+    retired_patterns=[r"[?&]m=1"],
     alternatives=(BLOGGER,),
     companion_pass=BLOGGER_PAGINATION_PASS,
     sitemap_paths=BLOGGER_PRESET.sitemap_paths,

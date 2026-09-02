@@ -664,7 +664,7 @@ def test_a_companion_pass_lifts_its_rejects_from_the_index_too(db, settings) -> 
         assert lifted not in withheld, "but the index must not hide what the pass fetched"
     # Everything else the site refuses is still kept out of replay — the
     # content-warning iframe this mechanism was written for above all.
-    assert r"[?&]m=1" in withheld
+    assert r"[?&]m=[01]" in withheld
     assert r"^https?://[^/]+\.blogger\.com/interstitial/" in withheld
 
 

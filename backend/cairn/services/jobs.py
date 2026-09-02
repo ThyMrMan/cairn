@@ -179,10 +179,17 @@ class JobSupervisor:
     async def _sweep_containers(self) -> None:
         """Remove engine containers a previous process left running.
 
-        The subprocess path gets this for free — a child dies with its parent.
-        A sibling container does not: our process can be killed mid-capture and
-        the crawler keeps going, holding the archive open and writing into a
-        capture that the database already calls interrupted.
+        A sibling container outlives us: our process can be killed mid-capture
+        and the crawler keeps going, holding the archive open and writing into
+        a capture the database already calls interrupted.
+
+        **The subprocess path does not get this for free**, which this
+        docstring claimed for as long as it took somebody to report a crawl
+        that could not be cancelled. `start_new_session=True` puts the engine
+        outside our process group precisely so that signalling a job cannot
+        signal the container — and a process in its own session is not
+        signalled when its parent dies either. It is reparented and carries
+        on. `_reap_orphan` is the other half.
         """
         from cairn.services import containers
 
@@ -200,7 +207,7 @@ class JobSupervisor:
                 job.status = "interrupted"
                 job.finished_at = utcnow()
                 job.error = "the container stopped while this job was running"
-                job.pid = None
+                job.pid = self._reap_orphan(job)
             captures = session.scalars(select(Capture).where(Capture.status == "running")).all()
             for capture in captures:
                 capture.status = "interrupted"
@@ -212,6 +219,41 @@ class JobSupervisor:
                     "recovered interrupted work",
                     extra={"jobs": len(stale), "captures": len(captures)},
                 )
+
+    def _reap_orphan(self, job: Job) -> int | None:
+        """Stop a crawl the previous process left running, and say whether it
+        worked by what it returns.
+
+        Returns the pid to keep, which is `None` once there is nothing left to
+        stop. Clearing it unconditionally is what made a runaway crawl
+        uncancellable: the boot reconcile threw away the only handle anybody
+        had, and everything downstream then agreed there was nothing to cancel
+        while wget carried on for another three days.
+
+        So a pid the reaper could not act on is *kept*, and `cancel` can try
+        again later — which also covers the case this cannot fix from here, a
+        host where `/proc` is unreadable.
+        """
+        from cairn.services import orphans
+
+        if job.pid is None:
+            return None
+        marker = str(self._settings.tmp_dir / f"job-{job.id}")
+        outcome = orphans.reap(job.pid, marker)
+        if outcome in (orphans.STOPPED, orphans.KILLED):
+            log.warning(
+                "stopped a crawl left running by a previous process",
+                extra={"job": job.id, "pid": job.pid, "outcome": outcome},
+            )
+            return None
+        if outcome in (orphans.GONE, orphans.NOT_OURS):
+            return None
+        log.warning(
+            "could not tell whether a job's process is still running; keeping the pid "
+            "so it can be cancelled by hand",
+            extra={"job": job.id, "pid": job.pid, "outcome": outcome},
+        )
+        return job.pid
 
     # ── queueing ─────────────────────────────────────────────────────────
 
@@ -280,7 +322,37 @@ class JobSupervisor:
         if await asyncio.to_thread(self._is_live, job_id):
             self._cancel_requests.add(job_id)
             return True
-        return False
+        # Nothing of ours is running it, and it may still be running anyway.
+        # An engine is spawned into its own session so that cancelling cannot
+        # signal the container, which also means it survives this process
+        # restarting — and then the only thing left pointing at it is the pid
+        # on the row.
+        return await asyncio.to_thread(self._cancel_orphan, job_id)
+
+    def _cancel_orphan(self, job_id: int) -> bool:
+        """Stop a crawl this process does not own but can still identify.
+
+        The case a user hits after a restart: the job reads `interrupted`, the
+        UI offers Cancel, and the click used to do nothing at all because every
+        branch above needs a job this process is running. Meanwhile wget is
+        still fetching.
+        """
+        with self._sessions() as session:
+            job = session.get(Job, job_id)
+            if job is None or job.pid is None:
+                return False
+            pid = job.pid
+            job.pid = self._reap_orphan(job)
+            stopped = job.pid is None
+            if stopped and job.finished_at is None:
+                job.status = "cancelled"
+                job.finished_at = utcnow()
+            session.commit()
+        log.info(
+            "cancel reached a job this process was not running",
+            extra={"job": job_id, "pid": pid, "stopped": stopped},
+        )
+        return stopped
 
     def _is_live(self, job_id: int) -> bool:
         with self._sessions() as session:
@@ -1394,11 +1466,7 @@ class JobSupervisor:
                 },
                 "resume": {"state_file": _resume_state(resuming, output_dir, temp_dir, engine)},
                 "config": config,
-                "limits": {
-                    "max_bytes": scope.max_bytes,
-                    "max_duration_s": None,
-                    "free_space_floor_bytes": None,
-                },
+                "limits": _limits(session, scope),
             }
             storage.write_json(temp_dir / JOB_SPEC_FILE, spec)
 
@@ -2374,6 +2442,36 @@ def _paused_capture(session: Session, job: Job, site: Site) -> Capture | None:
         )
         return None
     return capture
+
+
+def _limits(session: Session, scope: Scope) -> dict[str, Any]:
+    """The `limits` block of a job spec.
+
+    Its own function so the duration cap is reachable by a test. It was
+    hardcoded `None` here, which is how a crawl ran for three days and eighteen
+    hours against an engine that had a perfectly good self-stop and no number
+    to check it against.
+    """
+    return {
+        "max_bytes": scope.max_bytes,
+        "max_duration_s": _duration_cap(session),
+        "free_space_floor_bytes": None,
+    }
+
+
+def _duration_cap(session: Session) -> int | None:
+    """How long a single capture may run, in seconds. None for no limit.
+
+    Generous by default rather than tight: a genuinely large site at one
+    request a second is a day or two of honest work, and truncating that would
+    be worse than the runaway it guards against. What it rules out is the
+    order of magnitude above — a crawl still going after two days is one
+    somebody would have stopped if they had been watching.
+    """
+    from cairn.services import settings_store
+
+    hours = settings_store.get_int(session, "crawl.max_duration_hours", 48)
+    return int(hours * 3600) if hours > 0 else None
 
 
 def _dedup_cdx(

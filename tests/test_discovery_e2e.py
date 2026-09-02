@@ -11,6 +11,7 @@ scope decisions have something real to be right or wrong about.
 
 from __future__ import annotations
 
+import re
 import threading
 import time
 from collections.abc import Iterator
@@ -221,7 +222,11 @@ def test_the_picker_preselects_the_blogger_case(authed: TestClient, blogger_site
 def test_the_blogger_reject_patterns_are_applied(authed: TestClient, blogger_site: str) -> None:
     site_id, _result = discovered_site(authed, blogger_site)
     scope = authed.get(f"/api/sites/{site_id}/scope").json()
-    assert any("m=1" in pattern for pattern in scope["reject_patterns"])
+    # By what it does, not how it is spelled: the pattern was widened from
+    # `m=1` to `m=[01]` once a real crawl showed `m=0` was 31% of it.
+    combined = re.compile("|".join(f"(?:{p})" for p in scope["reject_patterns"]))
+    assert combined.search("https://b.blogspot.com/post.html?m=1")
+    assert combined.search("https://b.blogspot.com/post.html?m=0")
 
 
 def test_the_selection_becomes_the_crawlers_actual_boundary(
@@ -248,7 +253,10 @@ def test_the_selection_becomes_the_crawlers_actual_boundary(
     reject = next(a for a in scope["wget_preview"] if a.startswith("--reject-regex="))
     assert IMAGES.replace(".", r"\.") in reject
     assert "--regex-type=pcre" in args, "the lookahead needs PCRE; POSIX would fail at crawl time"
-    assert "m=1" in reject
+    # The mobile duplicate, whichever marker the theme emits.
+    boundary = re.compile(reject.split("=", 1)[1])
+    assert boundary.search("https://b.blogspot.com/post.html?m=1")
+    assert boundary.search("https://b.blogspot.com/post.html?m=0")
 
 
 def test_discovered_feeds_are_attached_to_the_site(authed: TestClient, blogger_site: str) -> None:
@@ -353,4 +361,4 @@ def test_applying_a_preset_reports_what_it_changed(authed: TestClient, blogger_s
         f"/api/sites/{site_id}/scope/apply-preset", json={"preset": "blogger"}, headers=XHR
     )
     assert applied.status_code == 200, applied.text
-    assert any("m=1" in note for note in applied.json()["notes"])
+    assert any("m=" in note for note in applied.json()["notes"])

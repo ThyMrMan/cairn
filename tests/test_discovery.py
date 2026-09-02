@@ -1022,7 +1022,7 @@ def test_the_companion_scope_lifts_only_its_own_rejects() -> None:
     assert narrowed.accept_patterns == [companion.accept_pattern]
     for lifted in companion.lifts_rejects:
         assert lifted not in narrowed.reject_patterns
-    assert r"[?&]m=1" in narrowed.reject_patterns
+    assert r"[?&]m=[01]" in narrowed.reject_patterns
     assert r"/b/stats\?" in narrowed.reject_patterns
     # A whole-site cap has no business stopping a pass part-way; a half-walked
     # trail is dead links, which is what the pass exists to prevent.

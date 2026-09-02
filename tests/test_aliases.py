@@ -222,3 +222,37 @@ def test_an_older_discovery_that_never_probed_keeps_the_guess(
     it has rather than quietly widening on an answer nobody gave."""
     site = make_site(db, settings, {"seed_host": BLOG})
     assert site_service.resolved_scope(db, site).http_twin_hosts is None
+
+
+# ── the duplicate that was half-rejected ─────────────────────────────────
+
+
+def test_both_mobile_markers_are_rejected() -> None:
+    """`m=1` is the mobile duplicate and `m=0` is what Blogger appends when a
+    visitor opts back out of it. Both serve the identical page the bare URL
+    does, and only the first was rejected: measured on one crawl, 69,930 URLs
+    carried `m=0` — 31% of the whole capture, every one a second copy of a
+    page already being fetched.
+    """
+    import re as _re
+
+    from cairn.discovery.platform import PRESETS
+
+    pattern = _re.compile(next(p for p, _ in PRESETS["blogger"].reject_patterns if "m=" in p))
+    assert pattern.search("https://b.blogspot.com/p.html?m=0")
+    assert pattern.search("https://b.blogspot.com/p.html?m=1")
+    assert pattern.search("https://b.blogspot.com/search?max-results=20&m=0")
+    # And the page itself survives, or the crawl archives nothing.
+    assert not pattern.search("https://b.blogspot.com/p.html")
+    # `m=2` is not a thing Blogger emits; matching it would be guessing.
+    assert not pattern.search("https://b.blogspot.com/p.html?m=2")
+
+
+def test_the_narrower_pattern_is_retired_by_both_presets() -> None:
+    """A correction only reaches scopes that already carry the old pattern if
+    the preset names it as retired — otherwise the wrong rule stays in every
+    scope that has it, indistinguishable from a deliberate choice."""
+    from cairn.discovery.platform import PRESETS
+
+    for preset_id in ("blogger", "blogger-lean"):
+        assert r"[?&]m=1" in PRESETS[preset_id].retired_patterns, preset_id
