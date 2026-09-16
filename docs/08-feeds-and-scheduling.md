@@ -140,6 +140,8 @@ Three properties that make this work well:
 
 The manifest records the scope that ran, depth included. It had not been: post-processing re-read the site's scope when the crawl ended, so a companion pass was recorded, and its asset audit run, as though the site's own boundary had applied.
 
+**A paused feed capture keeps its posts.** Only an engine that can resume can pause, and a paused capture is resumed as what it was — the same posts, at depth 0, marking the same items when it finishes ([05](05-capture-engines.md#pausing-a-crawl)). Until then its items stay `pending` and are *held*: not dispatched again, counted apart as `held` on the feed, and released by nothing but the pause ending, because held is worked out from the paused captures rather than written on the item. A pause is not a failed capture, so it does not touch the feed's capture backoff either — it used to, and the next capture after the backoff fetched the same posts beside the paused one.
+
 **What depth 0 gives up is the neighbourhood.** The archived home page, labels and monthly archives no longer change with each feed capture. Replay shows them as of the last capture that fetched them, and a new post is reached from the capture list and search rather than by browsing to it from the front page. That freshness was what the 40 minutes were buying; a full capture still buys it.
 
 ### Dispatch is guarded, and failures back off

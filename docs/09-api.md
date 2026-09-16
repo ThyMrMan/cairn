@@ -184,7 +184,7 @@ for why it is merged at resolve time rather than copied into sites.
 | `GET` | `/api/captures/{id}/log` | Plain text; `?tail=500` |
 | `GET` | `/api/captures/{id}/urls` | With `?errors_only=true`, `?host=`, `?q=` |
 | `GET` | `/api/captures/{id}/url-shapes` | What the capture is fetching, grouped by URL shape, biggest first. Works mid-crawl. Each row carries a `pattern` — the reject regex meaning what that row means, or `null` |
-| `POST` | `/api/captures/{id}/resume` | Continue a `paused` capture into the same directory. `409` unless it is paused *and* its engine's resume state is on disk |
+| `POST` | `/api/captures/{id}/resume` | Continue a `paused` capture into the same directory, asking for what the capture was asked for — the job's spec carries it as `request`. `409` unless it is paused *and* its engine's resume state is on disk; `409 resume_unknown` for a capture that is not a full crawl and has nothing recording what it was for |
 | `POST` | `/api/captures/{id}/export/wacz` | `202 {job_id}` — this capture alone |
 | `POST` | `/api/sites/{id}/capture/companion` | Run the cheap second pass this site's preset offers, if it has one ([04](04-discovery-and-scoping.md)) |
 
@@ -262,7 +262,7 @@ would otherwise silently move every note in the archive.
 | `POST` | `/api/jobs/{id}/cancel` | SIGTERM → grace → SIGKILL |
 | `DELETE` | `/api/jobs/{id}` | Remove a finished job from the list. `409 job_is_active` if it is queued or running — cancel it first |
 | `POST` | `/api/jobs/clear` | Bulk delete finished jobs. Optional `status`, `type`, `site_id`; nothing set clears every finished job. Returns `{deleted}`. Never touches a queued or running job, and `status: "running"` is a `422` rather than a silent `deleted: 0` |
-| `POST` | `/api/jobs/{id}/pause` | Stop a running capture keeping the engine's place. `409 not_pausable` on an engine whose manifest says `resumable: false` — see below |
+| `POST` | `/api/jobs/{id}/pause` | Stop a running capture keeping the engine's place. `409 not_pausable` when the engine the job runs — for a companion pass not the site's — says `resumable: false`; see below |
 | `GET` | `/api/jobs/{id}/events` | **SSE** |
 | `GET` | `/api/events` | **SSE** — global firehose for the activity sidebar |
 
@@ -343,7 +343,7 @@ The interactive session is a **CDP screencast over a WebSocket**, not the `vnc_u
 
 | Method | Path | Notes |
 |---|---|---|
-| `GET` | `/api/sites/{id}/feeds` | Each row carries its poll state and its item counts |
+| `GET` | `/api/sites/{id}/feeds` | Each row carries its poll state and its item counts. `held` is pending items a paused capture will capture when resumed, and is not included in `pending` |
 | `POST` | `/api/sites/{id}/feeds` | `{url, kind?, title?, interval_min?, enabled?, auto_capture?}` |
 | `POST` | `/api/sites/{id}/feeds/discover` | Everything worth watching, probed live. Saves nothing |
 | `POST` | `/api/sites/{id}/feeds/test` | `{url, kind?}` — parse without saving; returns format, entry count, recent titles, scope check |

@@ -44,6 +44,30 @@ def _registry(request: Request) -> Any:
     return request.app.state.registry
 
 
+def _engine_running(db: DbSession, registry: Any, job: Job, site: Site) -> Any:
+    """The engine this job runs, which is not always the site's.
+
+    A companion pass brings its own — the Blogger one runs wget, on a site that
+    may be set to browsertrix — so asking the site's engine put a Pause button
+    on a crawl that cannot be paused, and the click landed as an ordinary stop:
+    the quiet downgrade the pause endpoint exists to refuse. The capture row
+    says which engine actually ran once there is one; until then the job's own
+    request says whether it is a companion pass.
+    """
+    spec = job.spec or {}
+    capture = db.get(Capture, int(spec["capture_id"])) if spec.get("capture_id") else None
+    if capture is not None:
+        return registry.get(capture.engine_id)
+    asked = spec.get("request") if spec.get("kind") == "resume" else spec
+    if isinstance(asked, dict) and asked.get("kind") == "companion":
+        from cairn.services import discovery_service
+
+        companion = discovery_service.companion_pass_for(site)
+        if companion is not None:
+            return registry.get(companion.engine_id)
+    return registry.get(site.engine_id)
+
+
 def _summary(db: DbSession, job: Job, registry: Any = None) -> JobSummary:
     title = None
     can_pause = False
@@ -55,7 +79,8 @@ def _summary(db: DbSession, job: Job, registry: Any = None) -> JobSummary:
         crawling = (job.progress or {}).get("phase") != PHASE_POSTPROCESSING
         if site is not None and registry is not None and job.status == "running" and crawling:
             with contextlib.suppress(EngineError):
-                can_pause = bool(registry.get(site.engine_id).capabilities.get("resumable"))
+                engine = _engine_running(db, registry, job, site)
+                can_pause = bool(engine.capabilities.get("resumable"))
     return JobSummary(
         can_pause=can_pause,
         id=job.id,
@@ -310,7 +335,10 @@ async def pause_job(
         )
 
     site = db.get(Site, job.site_id) if job.site_id else None
-    engine = registry.get(site.engine_id) if site is not None else None
+    engine = None
+    if site is not None:
+        with contextlib.suppress(EngineError):
+            engine = _engine_running(db, registry, job, site)
     if engine is None or not engine.capabilities.get("resumable"):
         name = engine.name if engine is not None else "this engine"
         raise ApiError(

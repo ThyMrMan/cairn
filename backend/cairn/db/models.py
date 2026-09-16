@@ -343,6 +343,11 @@ class Capture(Base):
     bytes_written: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     warc_files: Mapped[Any | None] = mapped_column(JsonText, default=None)
     indexed_at: Mapped[datetime | None] = mapped_column(UtcDateTime, default=None)
+    # What the capture was asked to fetch: the job-spec keys in
+    # `jobs.CAPTURE_REQUEST_KEYS`. Kept here rather than read back off the job,
+    # because a paused capture outlives its job — pause leaves the job
+    # finished, and clearing finished jobs deletes it.
+    request: Mapped[Any | None] = mapped_column(JsonText, default=None)
 
     site: Mapped[Site] = relationship(back_populates="captures")
 
@@ -481,7 +486,9 @@ class FeedItem(Base):
     capture_id: Mapped[int | None] = mapped_column(
         ForeignKey("captures.id", ondelete="SET NULL"), default=None
     )
-    # pending | captured | failed | skipped
+    # pending | captured | failed | skipped. A pending item a paused capture
+    # was asked for is held by it rather than dispatched again — derived from
+    # the capture, not stored here (`feeds.held_item_ids`).
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
 
     feed: Mapped[Feed] = relationship(back_populates="items")

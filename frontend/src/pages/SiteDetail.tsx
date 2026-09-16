@@ -713,6 +713,15 @@ function CaptureRow({ summary }: { summary: Capture }) {
         </dl>
       </button>
 
+      {/* A refused resume says why — the state file is gone, the site is
+          busy, or nothing records what the capture was for. It used to
+          say nothing at all, and the button simply did not work. */}
+      {resume.error && (
+        <div className="border-t border-border p-4">
+          <Alert kind="error">{(resume.error as ApiError).message}</Alert>
+        </div>
+      )}
+
       {open && capture.isLoading && (
         <div className="border-t border-border p-4">
           <Spinner className="h-4 w-4 text-muted" />

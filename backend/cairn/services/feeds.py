@@ -49,7 +49,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from cairn.db.models import Feed, FeedItem, FeedPoll, Site
+from cairn.db.models import Capture, Feed, FeedItem, FeedPoll, Site
 from cairn.db.types import utcnow
 from cairn.discovery.fetch import Fetched, Fetcher
 from cairn.logging import get_logger
@@ -1007,13 +1007,46 @@ def add_feed(
 # ── reads ────────────────────────────────────────────────────────────────
 
 
+def held_item_ids(session: Session, feed_id: int) -> set[int]:
+    """Items a paused capture was asked for, and captures when it is resumed.
+
+    Worked out from the captures rather than stored on the items. An item
+    marked as held would need releasing on every way a paused capture stops
+    being one — resumed and then failed, deleted, interrupted by a restart —
+    and the one path that forgot would leave a post nothing ever captures. A
+    capture that is no longer paused simply stops holding anything.
+
+    A capture paused before captures kept their request holds nothing here:
+    its pause put the items back to pending, as pausing did then.
+    """
+    feed = session.get(Feed, feed_id)
+    if feed is None:
+        return set()
+    held: set[int] = set()
+    requests = session.scalars(
+        select(Capture.request).where(Capture.site_id == feed.site_id, Capture.status == "paused")
+    )
+    for request in requests:
+        if isinstance(request, dict) and request.get("feed_id") == feed_id:
+            held.update(int(i) for i in request.get("item_ids") or [])
+    return held
+
+
 def pending_items(session: Session, feed_id: int, *, limit: int = 500) -> list[FeedItem]:
+    """What the next capture of this feed is for: pending, and not held.
+
+    A held item is pending too — nothing has captured it — but a paused
+    capture will, and dispatching it again would fetch the same post twice.
+    """
+    query = select(FeedItem).where(FeedItem.feed_id == feed_id, FeedItem.status == "pending")
+    held = held_item_ids(session, feed_id)
+    if held:
+        query = query.where(FeedItem.id.not_in(held))
     return list(
         session.scalars(
-            select(FeedItem)
-            .where(FeedItem.feed_id == feed_id, FeedItem.status == "pending")
-            .order_by(FeedItem.published_at.desc().nulls_last(), FeedItem.id.asc())
-            .limit(limit)
+            query.order_by(FeedItem.published_at.desc().nulls_last(), FeedItem.id.asc()).limit(
+                limit
+            )
         ).all()
     )
 
@@ -1035,9 +1068,26 @@ def counts_for(session: Session, feed_id: int) -> dict[str, int]:
         )
         or 0
     )
+    held_ids = held_item_ids(session, feed_id)
+    held = (
+        session.scalar(
+            select(func.count(FeedItem.id)).where(
+                FeedItem.feed_id == feed_id,
+                FeedItem.status == "pending",
+                FeedItem.id.in_(held_ids),
+            )
+        )
+        or 0
+        if held_ids
+        else 0
+    )
     return {
         "seen": sum(by_status.values()),
-        "pending": by_status.get("pending", 0),
+        # Waiting for the next capture. Held items are waiting for a resume,
+        # and counting them here would offer "Capture pending" for posts a
+        # paused capture already has in hand.
+        "pending": by_status.get("pending", 0) - int(held),
+        "held": int(held),
         "captured": by_status.get("captured", 0),
         "failed": by_status.get("failed", 0),
         "skipped": by_status.get("skipped", 0),

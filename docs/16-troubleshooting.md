@@ -257,6 +257,19 @@ fetched hit the one thing this costs: a file the site serves at a URL that
 does not end in a type like `.jpg` or `.css` reads to wget exactly like a page. The warning names them, and a full
 capture fetches them.
 
+## Resume says nothing records what a capture was for
+
+A paused capture that is not a full crawl — a feed capture, a pasted list —
+was paused before captures kept a note of what they were asked to fetch, and
+the job that knew has since been cleared from the job list. Resuming it could
+only continue as a crawl of the whole site, which is what resuming used to do
+by mistake, so it is refused instead.
+
+Delete the paused capture. Its feed items are pending again the moment it is
+gone, and the next scheduled pass captures them; or press **Capture pending**
+on the feed. A capture paused from now on keeps the note with it, and clearing
+the job list no longer matters.
+
 ## A skip pattern is saved but nothing was skipped
 
 Look at the count beside it. **matches nothing** means it is inert.

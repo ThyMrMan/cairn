@@ -332,12 +332,13 @@ CREATE TABLE captures (
   dir_name      TEXT NOT NULL,               -- 20260809T142530Z-full-wget
   started_at    TEXT NOT NULL,
   finished_at   TEXT,
-  status        TEXT NOT NULL,               -- running|ok|partial|failed|cancelled|interrupted
+  status        TEXT NOT NULL,               -- running|ok|partial|paused|failed|cancelled|interrupted
   url_count     INTEGER NOT NULL DEFAULT 0,
   error_count   INTEGER NOT NULL DEFAULT 0,
   bytes_written INTEGER NOT NULL DEFAULT 0,
   warc_files    TEXT,                        -- JSON: [{name, size, sha256}]
   indexed_at    TEXT,
+  request       TEXT,                        -- JSON: what it was asked to fetch; see below
   UNIQUE(site_id, dir_name)
 );
 
@@ -358,6 +359,10 @@ CREATE INDEX idx_curls_capture ON capture_urls(capture_id);
 CREATE INDEX idx_curls_url     ON capture_urls(url);
 CREATE INDEX idx_curls_errors  ON capture_urls(capture_id) WHERE status_code >= 400 OR error IS NOT NULL;
 ```
+
+**`captures.request` is what the capture was asked to fetch**, and it lives on the capture because the job that asked may be gone. It holds the job-spec keys that decide it — `kind`, `pass`, `extra_seeds`, `only_extra_seeds`, `feed_id`, `item_ids` — and nothing about how the job ran. A paused capture is continued by a new job, and pause leaves the old one finished, where clearing the job list deletes it; before the column existed, a paused feed capture resumed as a crawl of the whole site ([05](05-capture-engines.md#pausing-a-crawl)). Captures made before it carry NULL, and a resume reads their job's spec while that still exists.
+
+**A held feed item is not a status.** A pending item that a paused capture was asked for is left `pending` and not dispatched again, and which items those are is worked out from the paused captures' requests each time. Stored on the item, "held" would need undoing on every way a pause can end — a resume that finishes or fails, a delete, a restart mid-resume — and the one path that forgot would leave a post nothing ever captures.
 
 `capture_urls` is the highest-volume table by far — hundreds of thousands of rows across a mature instance. Insert in batched transactions (500–1000 rows), never per-event. Add a retention policy that prunes `capture_urls` for superseded captures after N days; the CDXJ index remains the authoritative URL list.
 
@@ -400,7 +405,7 @@ CREATE TABLE feed_items (
   last_seen_at  TEXT NOT NULL,
   gone_at     TEXT,                              -- sitemaps only; see below
   capture_id  INTEGER REFERENCES captures(id) ON DELETE SET NULL,
-  status      TEXT NOT NULL DEFAULT 'pending', -- pending|captured|skipped|failed
+  status      TEXT NOT NULL DEFAULT 'pending', -- pending|captured|skipped|failed; held is derived
   UNIQUE(feed_id, guid)
 );
 

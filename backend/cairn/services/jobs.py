@@ -134,6 +134,13 @@ PHASE_POSTPROCESSING = "post-processing"
 # carried as well (`_carried`).
 _CAPTURE_RESULT_FIELDS = ("status", "url_count", "error_count", "bytes_written", "warc_files")
 _SITE_RESULT_FIELDS = ("size_bytes", "url_count", "updated_at")
+# The job-spec keys that decide what a capture fetches and what it settles
+# when it ends, kept on the capture as `request` so a resume can ask for the
+# same thing after the job that knew is gone.
+CAPTURE_REQUEST_KEYS = ("kind", "pass", "extra_seeds", "only_extra_seeds", "feed_id", "item_ids")
+# Captures that crawl the site, which their kind alone describes. `resume` is
+# what a resume whose capture had gone used to fall back to: the site.
+WHOLE_SITE_KINDS = ("full", "resume")
 
 PER_HOST_SERIAL_SETTING = "jobs.per_host_serial"
 # Whether engines may start sibling containers. Defaults to *true*: mounting
@@ -1487,7 +1494,12 @@ class JobSupervisor:
             if site is None or site.deleted_at is not None:
                 raise JobError("the site was deleted before the capture started")
 
-            kind = str(job.spec.get("kind") or "full")
+            # A resume continues a paused capture and asks for what that
+            # capture was asked for. Found first, because that request decides
+            # everything below: the engine, the scope, the seeds.
+            resuming = _paused_capture(session, job, site)
+            asked = _asked(session, job, resuming)
+            kind = str(asked.get("kind") or "full")
             scope = sites.resolved_scope(session, site)
 
             # A companion pass runs a *different* engine against a *narrower*
@@ -1496,7 +1508,7 @@ class JobSupervisor:
             # directory name, the manifest — then records what actually ran
             # rather than what the site is configured for, which is the whole
             # point of it being a capture of its own.
-            companion = _companion_pass(session, job, site) if kind == "companion" else None
+            companion = _companion_pass(session, asked, site) if kind == "companion" else None
             if companion is not None:
                 engine = self._registry.get(companion.engine_id)
                 config = engine.defaults()
@@ -1520,7 +1532,7 @@ class JobSupervisor:
             # says 1, and is the one this must not believe. A bulk import said
             # nothing at all, so its "archive only these" ran `--level=inf`
             # from every URL on the list.
-            if job.spec.get("only_extra_seeds"):
+            if asked.get("only_extra_seeds"):
                 scope.max_depth = 0
 
             warnings: list[str] = []
@@ -1548,13 +1560,17 @@ class JobSupervisor:
             # interrupted crawl need no reconciling — which is what makes
             # continuing into the same capture the simple option rather than
             # the clever one.
-            resuming = _paused_capture(session, job, site)
             if resuming is not None:
                 capture = resuming
                 dir_name = capture.dir_name
                 capture.job_id = job.id
                 capture.status = "running"
                 capture.finished_at = None
+                if capture.request is None and asked.get("kind") != "resume":
+                    # Paused before captures kept their request, and resumed
+                    # while its old job still said what it was. Kept now, so a
+                    # second pause does not depend on a job row either.
+                    capture.request = {**capture_request(asked), "kind": kind}
                 site.status = "capturing"
             else:
                 dir_name = storage.capture_dir_name(started, kind, engine.id)
@@ -1567,6 +1583,7 @@ class JobSupervisor:
                     dir_name=dir_name,
                     started_at=started,
                     status="running",
+                    request={**capture_request(asked), "kind": kind},
                 )
                 session.add(capture)
                 site.status = "capturing"
@@ -1582,7 +1599,7 @@ class JobSupervisor:
             # reach the way it was under a depth limit (docs/04, docs/05).
             from cairn.services import discovery_service
 
-            extra = list(job.spec.get("extra_seeds") or [])
+            extra = list(asked.get("extra_seeds") or [])
             if companion is not None:
                 # The seed and nothing else. A companion pass walks to its
                 # targets by following links, and handing it the discovered URL
@@ -1590,7 +1607,7 @@ class JobSupervisor:
                 # engine, into a capture that is not supposed to hold them.
                 seeds = list(scope.seeds)
                 seed_source = {"manual": len(seeds)}
-            elif job.spec.get("only_extra_seeds"):
+            elif asked.get("only_extra_seeds"):
                 # The whole discovered URL set is what makes a *full* capture
                 # complete; handing it to an incremental one turns "archive
                 # this new post" back into "archive the site". The seed URL is
@@ -1678,8 +1695,8 @@ class JobSupervisor:
                 warnings=warnings,
                 site_title=site.title,
                 runtime=dict(engine.runtime),
-                feed_id=job.spec.get("feed_id"),
-                item_ids=[int(i) for i in (job.spec.get("item_ids") or [])],
+                feed_id=asked.get("feed_id"),
+                item_ids=[int(i) for i in (asked.get("item_ids") or [])],
                 scope=boundary,
             )
 
@@ -2758,6 +2775,13 @@ def _settle_feed_items(
     from cairn.db.models import Feed, FeedItem
     from cairn.services import feeds as feed_service
 
+    if status == "paused":
+        # Neither a success nor a failure. The items stay pending, and the
+        # paused capture holds them (`feeds.held_item_ids`) until it is resumed
+        # or deleted. Counted as a failure, a pause backed the feed off and,
+        # once the backoff ran out, captured the same posts again beside it.
+        return
+
     feed = session.get(Feed, feed_id) if feed_id is not None else None
     ok = status in ("ok", "partial")
 
@@ -2778,7 +2802,7 @@ def _settle_feed_items(
     feed.next_capture_at = feed_service.next_capture_due(feed)
 
 
-def _companion_pass(session: Session, job: Job, site: Site) -> Any:
+def _companion_pass(session: Session, asked: dict[str, Any], site: Site) -> Any:
     """Which companion pass this job is, refusing rather than guessing.
 
     The id is carried in the spec and checked against the one the site's preset
@@ -2789,7 +2813,7 @@ def _companion_pass(session: Session, job: Job, site: Site) -> Any:
     from cairn.services import discovery_service
 
     available = discovery_service.companion_pass_for(site)
-    wanted = str(job.spec.get("pass") or "")
+    wanted = str(asked.get("pass") or "")
     if available is None:
         raise JobError(
             "this site's preset offers no companion pass; apply a preset that has one first"
@@ -2933,7 +2957,8 @@ def _paused_capture(session: Session, job: Job, site: Site) -> Capture | None:
     Every clause here is a way a resume can be stale by the time it runs, and
     each one falls back to a fresh capture rather than failing: the button was
     pressed against a state of the world that may have changed while the job
-    sat in the queue.
+    sat in the queue. A fresh capture of what the paused one was asked for —
+    `_asked` — not of the whole site.
     """
     capture_id = job.spec.get("resume_capture_id")
     if capture_id is None:
@@ -2946,6 +2971,63 @@ def _paused_capture(session: Session, job: Job, site: Site) -> Capture | None:
         )
         return None
     return capture
+
+
+def capture_request(spec: dict[str, Any]) -> dict[str, Any]:
+    """The part of a capture job's spec that says what to fetch."""
+    return {key: spec[key] for key in CAPTURE_REQUEST_KEYS if key in spec}
+
+
+def recorded_request(session: Session, capture: Capture) -> dict[str, Any] | None:
+    """What a capture was asked to fetch, from wherever that is still written.
+
+    On the capture, for one made since captures kept it. Before that only the
+    job knew, and the job of a paused capture is finished — clearing the job
+    list deletes it. A crawl of the whole site is described completely by its
+    kind; anything else with no record cannot be continued as itself, and None
+    says so.
+    """
+    if isinstance(capture.request, dict) and capture.request:
+        return dict(capture.request)
+    job = session.get(Job, capture.job_id) if capture.job_id is not None else None
+    spec = dict(job.spec or {}) if job is not None else {}
+    if spec and spec.get("kind") != "resume":
+        return capture_request(spec)
+    if isinstance(spec.get("request"), dict) and spec["request"]:
+        return dict(spec["request"])
+    if capture.kind in WHOLE_SITE_KINDS:
+        return {"kind": capture.kind}
+    return None
+
+
+def _asked(session: Session, job: Job, resuming: Capture | None) -> dict[str, Any]:
+    """What this job was asked to capture.
+
+    A job that starts a capture says so in its own spec. A resume says only
+    which capture to continue, and asks for whatever that capture was asked
+    for. Its spec said nothing else, so a paused feed capture came back as a
+    crawl of the whole site — the discovered URL set at the site's depth, into
+    the feed capture's directory — and the items it was for were never marked.
+
+    The copy the endpoint put in the job comes first, because if the capture
+    is gone by the time the job runs the job becomes a fresh capture, and a
+    fresh capture of the same posts is what was wanted. Then whatever still
+    records the capture's request (`recorded_request`), for a resume queued
+    before jobs carried one. A resume with neither continues as a capture of
+    the site, as it always did; the endpoint no longer queues one of those for
+    anything but a full crawl.
+    """
+    spec = dict(job.spec or {})
+    if spec.get("kind") != "resume":
+        return spec
+    carried = spec.get("request")
+    if isinstance(carried, dict) and carried:
+        return dict(carried)
+    if resuming is not None:
+        recorded = recorded_request(session, resuming)
+        if recorded is not None:
+            return recorded
+    return spec
 
 
 def _limits(session: Session, scope: Scope) -> dict[str, Any]:

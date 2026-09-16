@@ -8,9 +8,13 @@ that really matters is that tidying it never touches work still in progress.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from cairn.config import Settings
 from cairn.db.models import Capture, Job, Site
 from cairn.db.types import utcnow
 from tests.conftest import XHR
@@ -320,6 +324,205 @@ def test_resuming_without_a_state_file_is_refused_rather_than_silently_recrawlin
     assert res.status_code == 409
     assert res.json()["error"]["code"] == "no_resume_state"
     assert "start from the beginning" in res.json()["error"]["message"]
+
+
+def test_a_companion_pass_on_a_resumable_site_cannot_be_paused(
+    authed: TestClient, db: Session
+) -> None:
+    """The Blogger pagination pass runs wget whatever the site is set to.
+
+    Asked of the site's engine, a browsertrix site offered Pause on it, and the
+    click landed as an ordinary stop — the downgrade the endpoint refuses.
+    """
+    site = _site(db, engine_id="browsertrix", slug="leanblog")
+    site.scope_settings = {"preset": "blogger-lean"}
+    companion = Job(
+        type="capture",
+        site_id=site.id,
+        status="running",
+        spec={"kind": "companion"},
+        queued_at=utcnow(),
+    )
+    db.add(companion)
+    db.commit()
+    crawl = make_job(db, "running", site_id=site.id)
+
+    by_id = {j["id"]: j for j in authed.get("/api/jobs", headers=XHR).json()["items"]}
+    assert by_id[companion.id]["can_pause"] is False
+    assert by_id[crawl]["can_pause"] is True, "the site's own crawl still can"
+
+    res = authed.post(f"/api/jobs/{companion.id}/pause", headers=XHR)
+    assert res.status_code == 409
+    assert res.json()["error"]["code"] == "not_pausable"
+    assert res.json()["error"]["message"].startswith("wget")
+
+
+def test_once_a_job_has_a_capture_its_engine_is_the_one_that_says(
+    authed: TestClient, db: Session
+) -> None:
+    site = _site(db, engine_id="browsertrix", slug="switched")
+    capture = Capture(
+        site_id=site.id, kind="full", engine_id="wget-warc",
+        dir_name="20260815T090000Z-full-wget", status="running", started_at=utcnow(),
+    )  # fmt: skip
+    db.add(capture)
+    db.flush()
+    job = Job(
+        type="capture",
+        site_id=site.id,
+        status="running",
+        spec={"kind": "full", "capture_id": capture.id},
+        queued_at=utcnow(),
+    )
+    db.add(job)
+    db.commit()
+
+    by_id = {j["id"]: j for j in authed.get("/api/jobs", headers=XHR).json()["items"]}
+    assert by_id[job.id]["can_pause"] is False
+
+
+# ── what a resume asks for ───────────────────────────────────────────────
+
+FEED_REQUEST = {
+    "kind": "feed",
+    "feed_id": 3,
+    "item_ids": [7],
+    "extra_seeds": ["https://paused.test/2026/09/post.html"],
+    "only_extra_seeds": True,
+}
+
+
+def _paused(
+    db: Session,
+    site: Site,
+    *,
+    kind: str = "feed",
+    request: dict[str, object] | None = None,
+    job_spec: dict[str, object] | None = None,
+) -> Capture:
+    job_id = None
+    if job_spec is not None:
+        job = Job(
+            type="capture", site_id=site.id, status="ok", spec=job_spec,
+            queued_at=utcnow(), finished_at=utcnow(),
+        )  # fmt: skip
+        db.add(job)
+        db.flush()
+        job_id = job.id
+    capture = Capture(
+        site_id=site.id, job_id=job_id, kind=kind, engine_id="browsertrix",
+        dir_name=f"20260815T090000Z-{kind}-browsertrix", status="paused",
+        started_at=utcnow(), request=request,
+    )  # fmt: skip
+    db.add(capture)
+    db.commit()
+    return capture
+
+
+def test_a_capture_keeps_what_it_was_asked_for(db: Session) -> None:
+    from cairn.services.jobs import recorded_request
+
+    capture = _paused(db, _site(db, engine_id="browsertrix", slug="kept"), request=FEED_REQUEST)
+    assert recorded_request(db, capture) == FEED_REQUEST
+
+
+def test_an_older_capture_is_read_off_its_job_while_the_job_exists(db: Session) -> None:
+    """Paused before captures kept a request. Its job still says what it was,
+    until somebody clears the job list."""
+    from cairn.services.jobs import recorded_request
+
+    site = _site(db, engine_id="browsertrix", slug="older")
+    spec = {**FEED_REQUEST, "capture_id": 1, "dir_name": "20260815T090000Z-feed-browsertrix"}
+    assert recorded_request(db, _paused(db, site, job_spec=spec)) == FEED_REQUEST
+
+
+def test_with_nothing_written_down_only_a_crawl_of_the_site_can_continue(db: Session) -> None:
+    from cairn.services.jobs import recorded_request
+
+    for kind, expected in (("full", {"kind": "full"}), ("feed", None), ("incremental", None)):
+        site = _site(db, engine_id="browsertrix", slug=f"bare{kind}")
+        assert recorded_request(db, _paused(db, site, kind=kind)) == expected, kind
+
+
+def test_a_resume_that_carried_no_request_says_nothing_about_its_capture(db: Session) -> None:
+    """A capture resumed before resumes carried a request ran as a crawl of the
+    site, and its last job no longer says what it was for."""
+    from cairn.services.jobs import recorded_request
+
+    site = _site(db, engine_id="browsertrix", slug="resumedonce")
+    capture = _paused(db, site, job_spec={"kind": "resume", "resume_capture_id": 99})
+    assert recorded_request(db, capture) is None
+
+
+def test_a_resume_asks_for_what_its_capture_was_asked_for(db: Session) -> None:
+    from cairn.services.jobs import _asked
+
+    carried = Job(spec={"kind": "resume", "resume_capture_id": 5, "request": FEED_REQUEST})
+    assert _asked(db, carried, None) == FEED_REQUEST, "and still does if the capture is gone"
+    kept_full = Capture(kind="full", request={"kind": "full"})
+    assert _asked(db, carried, kept_full) == FEED_REQUEST, "the job's copy first"
+
+    queued_before = Job(spec={"kind": "resume", "resume_capture_id": 5})
+    assert _asked(db, queued_before, Capture(kind="feed", request=FEED_REQUEST)) == FEED_REQUEST
+    assert _asked(db, queued_before, None) == queued_before.spec, "a crawl of the site, as before"
+
+    plain = Job(spec={"kind": "full", "extra_seeds": []})
+    assert _asked(db, plain, Capture(kind="feed", request=FEED_REQUEST)) == plain.spec
+
+
+def test_a_resume_queued_before_requests_existed_still_resumes_as_its_capture(
+    authed: TestClient, db: Session, tmp_path: Path
+) -> None:
+    """Paused before captures kept a request, and resumed by a job queued
+    before jobs carried one — while the old job still said what it was for.
+    Prepared as the posts it was, and the request kept on the capture from
+    then on, so the next pause does not depend on that job either."""
+    site = _site(db, engine_id="wget-warc", slug="upgraded")
+    spec = {**FEED_REQUEST, "capture_id": 1, "dir_name": "20260815T090000Z-feed-browsertrix"}
+    capture = _paused(db, site, job_spec=spec)
+    resume = Job(
+        type="capture",
+        site_id=site.id,
+        status="running",
+        spec={"kind": "resume", "resume_capture_id": capture.id},
+        queued_at=utcnow(),
+    )
+    db.add(resume)
+    db.commit()
+
+    supervisor = authed.app.state.supervisor  # type: ignore[attr-defined]
+    prepared = supervisor._prepare(resume.id, tmp_path / "job")
+
+    assert prepared.capture_id == capture.id
+    assert prepared.seeds == FEED_REQUEST["extra_seeds"]
+    assert prepared.scope["max_depth"] == 0
+    assert (prepared.feed_id, prepared.item_ids) == (3, [7])
+    db.expire_all()
+    assert db.get(Capture, capture.id).request == FEED_REQUEST  # type: ignore[union-attr]
+
+
+def test_resuming_a_capture_nothing_describes_is_refused(
+    authed: TestClient, db: Session, settings: Settings
+) -> None:
+    """Better than the alternative, which is a crawl of the whole site in the
+    place of a handful of posts."""
+    from cairn.engines.protocol import RESUME_STATE_FILE
+    from cairn.services import storage
+
+    site = _site(db, engine_id="browsertrix", slug="undescribed")
+    capture = _paused(db, site, kind="feed")
+    directory = storage.site_dir(settings, site.archive_path) / storage.CAPTURES_DIR
+    (directory / capture.dir_name).mkdir(parents=True)
+    (directory / capture.dir_name / RESUME_STATE_FILE).write_text("queued: []\n")
+
+    res = authed.post(f"/api/captures/{capture.id}/resume", headers=XHR)
+
+    assert res.status_code == 409
+    error = res.json()["error"]
+    assert error["code"] == "resume_unknown"
+    assert "crawl the whole site" in error["message"]
+    db.expire_all()
+    assert not db.scalars(select(Job).where(Job.site_id == site.id)).all()
 
 
 # ── cancelling at every stage ────────────────────────────────────────────

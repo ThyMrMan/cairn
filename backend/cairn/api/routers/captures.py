@@ -185,8 +185,17 @@ def resume_capture(
     Checked here rather than left to the job: a resume whose state file has
     been deleted would run as a silent full re-crawl of a site somebody
     thought they were finishing.
+
+    **The job asks for what the capture was asked for.** It used to say only
+    which capture to continue, so a paused feed capture — a handful of posts
+    at depth 0 — continued as a crawl of the whole site, and the feed items it
+    was for were never marked. The request travels in the job as well as on
+    the capture, because if the capture is deleted while the job waits, the
+    job becomes a fresh capture, and a fresh capture of the same posts is the
+    one that was wanted.
     """
     from cairn.engines.protocol import RESUME_STATE_FILE
+    from cairn.services import jobs
 
     capture = _require_capture(db, capture_id)
     if capture.status != "paused":
@@ -210,6 +219,17 @@ def resume_capture(
             status_code=409,
         )
 
+    asked = jobs.recorded_request(db, capture)
+    if asked is None:
+        raise ApiError(
+            "resume_unknown",
+            f"Nothing records what this {capture.kind} capture was asked to fetch: it was "
+            "paused before captures kept that, and the job that knew has since been cleared "
+            "from the list. Resuming it would crawl the whole site instead. Capture again, "
+            "or delete this capture.",
+            status_code=409,
+        )
+
     busy = db.scalar(
         select(Job.id).where(Job.site_id == site.id, Job.status.in_(("queued", "running"))).limit(1)
     )
@@ -226,7 +246,7 @@ def resume_capture(
         db,
         job_type="capture",
         site_id=site.id,
-        spec={"kind": "resume", "resume_capture_id": capture.id},
+        spec={"kind": "resume", "resume_capture_id": capture.id, "request": asked},
     )
     audit.record(
         db,

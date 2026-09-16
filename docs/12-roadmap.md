@@ -504,7 +504,26 @@ Also worth doing: run `--warc-dedup` against a second capture and verify you get
 - **The manifest recorded the site's scope, not the capture's.** Post-processing re-read the site's boundary when the crawl ended, so a companion pass was written down, and audited, as though it had crawled the whole site.
 - **`max_depth: 0` was always accepted, and always meant "crawl everything"** on wget.
 
-**Not changed, and worth knowing:** the archived front page, labels and monthly archives no longer move with each new post; a full capture refreshes them. A browsertrix capture that is paused and resumed does not carry its URL list or its depth into the resuming job, which is then prepared as a capture of the whole site — so a paused feed capture on that engine is not resumed as one.
+**Not changed, and worth knowing:** the archived front page, labels and monthly archives no longer move with each new post; a full capture refreshes them. A browsertrix capture that was paused and resumed did not carry its URL list or its depth into the resuming job, which was then prepared as a capture of the whole site; the next entry fixes it.
+
+---
+
+## After M8 — a paused capture that resumes as itself ✅
+
+**Ships:** resuming a paused capture continues what it was asked to fetch, whoever cleared the job list in between.
+
+- [x] `captures.request`: what a capture was asked for, kept with it, copied into the job that resumes it, and read by the job runner in place of the resume's own spec ([05](05-capture-engines.md#pausing-a-crawl))
+- [x] A resume whose capture was deleted while it waited becomes a fresh capture of the same posts, not of the site
+- [x] A capture nothing describes is refused (`409 resume_unknown`) unless it is a full crawl ([16](16-troubleshooting.md#resume-says-nothing-records-what-a-capture-was-for))
+- [x] A pause is neither a success nor a failure: the feed's items stay pending and are held, not dispatched, while the capture is paused — held worked out from the captures, never stored ([08](08-feeds-and-scheduling.md#incremental-captures))
+- [x] Pause is offered, and accepted, on the engine the job runs — not the site's, which a companion pass does not use
+- [x] Resume says why when it is refused, instead of doing nothing
+
+**Done when:** a feed capture paused mid-crawl, with its job cleared from the list, resumes as the capture of the same post at depth 0 and marks the feed item captured. *Asserted in `test_resume_e2e.py` against the real supervisor, endpoints and feed machinery, with a stand-in engine that keeps the resumable contract — browsertrix is the only shipped engine that can pause, and it needs Docker. Each property was reverted in turn to confirm a test fails without it.*
+
+**Found by reading the resume path, not from a report.** The previous entry noticed the job spec said only which capture to continue. Following that through turned up the rest: the feed items a resumed capture was for were never marked; the pause itself had been counted as a failed capture, so the feed backed off and then captured the same posts again beside the paused one; and the job that could have said what the capture was for is the kind of job "Clear finished jobs" deletes — docs/09 already said a paused capture might be continued "by which time the job is gone".
+
+**Why held is derived.** Stored on the item, a held flag needs releasing wherever a pause can end: a resume that finishes, one that fails or is cancelled, a delete, a restart during the resume. Boot recovery settles no feed items at all, so that path would have left posts that nothing ever captures. Worked out from which captures are paused, a pause that ends for any reason simply stops holding anything.
 
 ---
 

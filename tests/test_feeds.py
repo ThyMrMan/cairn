@@ -16,7 +16,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from cairn.config import Settings
-from cairn.db.models import Feed, FeedItem, FeedPoll, Job, Site
+from cairn.db.models import Capture, Feed, FeedItem, FeedPoll, Job, Site
 from cairn.db.types import utcnow
 from cairn.services import feeds, notify, scheduler, settings_store
 from tests.conftest import XHR, Blog
@@ -467,6 +467,107 @@ def test_dispatch_resumes_once_the_backoff_expires(
 
     sched._dispatch_pending(utcnow())
     assert _queued(db, site) == 1
+
+
+def _paused_for(db: Session, site: Site, feed: Feed, items: list[FeedItem]) -> Capture:
+    """A paused capture that was asked for these items."""
+    capture = Capture(
+        site_id=site.id,
+        kind="feed",
+        engine_id="browsertrix",
+        dir_name="20260815T100000Z-feed-browsertrix",
+        status="paused",
+        started_at=utcnow(),
+        request={
+            "kind": "feed",
+            "feed_id": feed.id,
+            "item_ids": [item.id for item in items],
+            "extra_seeds": [item.url for item in items],
+            "only_extra_seeds": True,
+        },
+    )
+    db.add(capture)
+    db.flush()
+    return capture
+
+
+def test_a_pause_is_neither_a_success_nor_a_failure(
+    authed: TestClient, db: Session, site: Site
+) -> None:
+    """Counted as a failure, a pause backed the feed off, and once the backoff
+    ran out the next tick captured the same posts beside the paused capture."""
+    from cairn.services.jobs import _settle_feed_items
+
+    feed = _feed_for(db, site, auto_capture=True)
+    items = _pending(db, feed, 2)
+    capture = _paused_for(db, site, feed, items)
+
+    _settle_feed_items(db, [i.id for i in items], capture, "paused", feed.id)
+
+    assert (feed.capture_failures, feed.next_capture_at) == (0, None)
+    assert all(i.status == "pending" and i.capture_id is None for i in items)
+
+
+def test_a_paused_capture_holds_its_items_and_nothing_else(
+    authed: TestClient, db: Session, site: Site
+) -> None:
+    sched = authed.app.state.scheduler  # type: ignore[attr-defined]
+    feed = _feed_for(db, site, auto_capture=True)
+    held = _pending(db, feed, 2)
+    _paused_for(db, site, feed, held)
+    later = FeedItem(
+        feed_id=feed.id,
+        guid="later",
+        url="https://blog.example/2026/09/later.html",
+        canonical_url="https://blog.example/2026/09/later.html",
+        status="pending",
+    )
+    db.add(later)
+    db.commit()
+
+    assert feeds.held_item_ids(db, feed.id) == {i.id for i in held}
+    assert [i.id for i in feeds.pending_items(db, feed.id)] == [later.id]
+    counts = feeds.counts_for(db, feed.id)
+    assert (counts["seen"], counts["pending"], counts["held"]) == (3, 1, 2)
+
+    # A post published while the capture waits is still captured — on its own.
+    sched._dispatch_pending(utcnow())
+    db.expire_all()
+    job = db.scalars(select(Job).where(Job.site_id == site.id)).one()
+    assert job.spec["item_ids"] == [later.id]
+
+
+def test_a_capture_holds_items_only_while_it_is_paused(db: Session, site: Site) -> None:
+    """Whatever ends the pause — a resume that finishes or fails, a delete, a
+    restart — frees the items, because nothing was written on them to undo."""
+    feed = _feed_for(db, site, auto_capture=True)
+    items = _pending(db, feed, 1)
+    capture = _paused_for(db, site, feed, items)
+    assert feeds.held_item_ids(db, feed.id) == {items[0].id}
+
+    for status in ("running", "failed", "interrupted", "ok"):
+        capture.status = status
+        db.flush()
+        assert feeds.held_item_ids(db, feed.id) == set(), status
+
+    capture.status = "paused"
+    db.flush()
+    db.delete(capture)
+    db.flush()
+    assert feeds.held_item_ids(db, feed.id) == set()
+    assert feeds.counts_for(db, feed.id)["pending"] == 1
+
+
+def test_a_paused_capture_of_another_feed_holds_nothing_here(db: Session, site: Site) -> None:
+    feed = _feed_for(db, site, auto_capture=True)
+    other = Feed(site_id=site.id, url="https://blog.example/other.xml", kind="atom")
+    db.add(other)
+    db.flush()
+    items = _pending(db, feed, 1)
+    _paused_for(db, site, other, items)
+
+    assert feeds.held_item_ids(db, feed.id) == set()
+    assert feeds.held_item_ids(db, other.id) == {items[0].id}
 
 
 def _capture_row(db: Session, site: Site) -> object:

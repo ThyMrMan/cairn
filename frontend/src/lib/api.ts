@@ -596,7 +596,17 @@ export type Feed = {
   last_error: string | null;
   /** Set when the tool switched it off, not when a person did. */
   disabled_reason: string | null;
-  counts: { seen: number; pending: number; captured: number; failed: number; skipped: number; gone: number };
+  /** `held` is pending items a paused capture will capture when it is resumed;
+   *  `pending` is the rest, which the next pass takes. */
+  counts: {
+    seen: number;
+    pending: number;
+    held: number;
+    captured: number;
+    failed: number;
+    skipped: number;
+    gone: number;
+  };
   /** The capture half's backoff, separate from the poll's. A feed sitting on
    *  pending items it is not capturing looks broken without these. */
   capture_failures: number;

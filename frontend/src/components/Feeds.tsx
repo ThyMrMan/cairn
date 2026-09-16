@@ -152,6 +152,11 @@ function FeedRow({ feed, siteId }: { feed: Feed; siteId: number }) {
           <p className="mt-0.5 text-xs text-muted tabular-nums">
             {feed.counts.seen} seen · {feed.counts.captured} captured · {feed.counts.pending}{" "}
             pending
+            {/* Held items are not pending in the sense the button means: a
+                paused capture has them, and resuming it is what finishes
+                them. Counted apart so nobody captures them twice. */}
+            {feed.counts.held > 0 &&
+              ` · ${feed.counts.held} in a paused capture — resume it under Captures`}
             {feed.counts.gone > 0 && ` · ${feed.counts.gone} gone from the site`}
           </p>
           {/* Without this, a feed sitting on pending items it is not capturing
