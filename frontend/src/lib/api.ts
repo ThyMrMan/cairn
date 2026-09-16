@@ -410,6 +410,9 @@ export type Job = {
     bytes?: number;
     eta_s?: number;
     unit?: string;
+    /** `post-processing` once the crawl is over and its capture is being
+     *  checksummed, indexed and audited — minutes, on a large one. */
+    phase?: string;
   } | null;
   queued_at: string;
   started_at: string | null;

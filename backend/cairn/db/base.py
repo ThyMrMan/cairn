@@ -21,6 +21,11 @@ from sqlalchemy import Engine, MetaData, create_engine, event
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
+# Milliseconds a connection waits for another's write lock before raising.
+# Short on purpose — a long wait here is invisible, while `db.busy` retries
+# the writes that matter and says so in the log.
+BUSY_TIMEOUT_MS = 5000
+
 # Explicit constraint naming, so Alembic can ALTER them on SQLite (which needs
 # batch mode and therefore needs to know the names).
 NAMING_CONVENTION = {
@@ -76,7 +81,7 @@ def _apply_pragmas(dbapi_connection: Any, _record: Any) -> None:
     try:
         cursor.execute("PRAGMA journal_mode=WAL")
         cursor.execute("PRAGMA foreign_keys=ON")
-        cursor.execute("PRAGMA busy_timeout=5000")
+        cursor.execute(f"PRAGMA busy_timeout={int(BUSY_TIMEOUT_MS)}")
         cursor.execute("PRAGMA synchronous=NORMAL")
         # Keep temp b-trees in memory; the alternative is writing them to
         # whatever TMPDIR points at, which on Unraid may be the array.

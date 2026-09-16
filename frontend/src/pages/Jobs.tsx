@@ -152,6 +152,10 @@ function JobRow({
             {job.progress?.done != null &&
               ` · ${job.progress.done.toLocaleString()} ${job.progress.unit ?? "URLs"}`}
             {job.progress?.bytes != null && ` · ${bytes(job.progress.bytes)}`}
+            {/* Said out loud: a job whose counter has stopped reads as a hang,
+                and post-processing a large capture takes minutes. */}
+            {active && job.progress?.phase === "post-processing" &&
+              " · crawl finished, post-processing"}
           </p>
         </div>
 

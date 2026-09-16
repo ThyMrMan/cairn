@@ -450,6 +450,24 @@ Also worth doing: run `--warc-dedup` against a second capture and verify you get
 
 ---
 
+## After M8 — a crawl nobody was watching ✅
+
+**Ships:** supervision that survives a database that briefly refuses writes, found by reading a live instance's database beside its crawl logs.
+
+- [x] URL rows kept and retried while the database is busy, with a bounded backlog and a declared count of anything lost
+- [x] Post-processing with no write transaction held; the crawl's outcome recorded before it starts
+- [x] Writes that close a job wait out contention ([`db/busy.py`](../backend/cairn/db/busy.py))
+- [x] An engine is stopped — group-signalled and drained — whenever its supervisor stops reading it
+- [x] A once-a-minute check for jobs reading `running` that nothing is running, and Cancel that reaches them
+
+**Done when:** a capture keeps recording while another job holds the write lock, and no job reads `running` for longer than a few minutes after its supervision ends. *Asserted in `test_supervision.py` against a real database file with the lock really held, and each fix reverted in turn to confirm its test fails.*
+
+**The live evidence was exact.** Twice, a capture's last URL row came one and two seconds before another job began post-processing, and the capture's `crawl.log` ran on for eight days and 25 minutes respectively afterwards ([05](05-capture-engines.md#a-database-that-says-no-must-not-end-a-capture)). A third stranded job had no post-processor anywhere near it, which is why the repair covers every way supervision can end rather than the one trigger that was understood.
+
+**One of the reverts found a test that could not fail.** The check that the chain holds no lock ran against a capture with no page text, so the one step that writes had nothing to write, and removing the writer it depends on changed nothing. It now indexes three pages.
+
+---
+
 ## Sequencing notes
 
 **Why discovery before replay.** Discovery determines *what gets captured*; getting it wrong means recapturing everything later. Replay is read-only over whatever exists and can be built against any archive.

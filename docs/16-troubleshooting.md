@@ -195,6 +195,31 @@ restart:
 docker exec cairn cairn replay-init
 ```
 
+## A job says running, but its crawl finished long ago
+
+The signs: the job has read `running` for hours or days, the capture's URL
+count stopped rising well before that, and the capture's `crawl.log` ends with
+`FINISHED` and a `Total wall clock time` line. Cancel may have done nothing.
+
+Another job held the database's write lock — usually while post-processing a
+large capture — and the task watching this crawl gave up on its next write. The
+crawl carried on unwatched, finished, and nothing recorded that it had.
+[05](05-capture-engines.md#a-database-that-says-no-must-not-end-a-capture) has
+the measurements and what changed.
+
+**Now:** the supervisor finds such a job within about three minutes, stops its
+engine if it is still running, and marks it `interrupted` with a reason that
+says whether the crawl or only its post-processing was lost. Cancel works on it
+too. While a capture is being post-processed the job list says so, and its row
+cannot be deleted until that is done.
+
+**A capture stranded before that change** reads `interrupted` with no URLs,
+but its WARCs are whole and on disk under `captures/<dir>/warc/`. **Rebuild
+index** on the site's Replay tab makes them replayable, and so does the site's
+next capture, whose post-processing re-indexes every WARC the site has. The
+capture's URL list and counts do not come back: they were the rows that were
+never written.
+
 ## A skip pattern is saved but nothing was skipped
 
 Look at the count beside it. **matches nothing** means it is inert.

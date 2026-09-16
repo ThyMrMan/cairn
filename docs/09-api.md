@@ -180,7 +180,7 @@ for why it is merged at resolve time rather than copied into sites.
 | `POST` | `/api/sites/{id}/capture` | `{kind: full\|incremental, extra_seeds?}` → `202 {job_id}`. The engine and its config come from the site, not from here — see below |
 | `GET` | `/api/sites/{id}/captures` | List |
 | `GET` | `/api/captures/{id}` | Manifest, WARC files, stats |
-| `DELETE` | `/api/captures/{id}` | `409` if it's the only capture unless `?force=true`; triggers reindex |
+| `DELETE` | `/api/captures/{id}` | `409` if it's the only capture unless `?force=true`; triggers reindex. `409 capture_running` while its job is still running — including after the crawl, while the capture is post-processed |
 | `GET` | `/api/captures/{id}/log` | Plain text; `?tail=500` |
 | `GET` | `/api/captures/{id}/urls` | With `?errors_only=true`, `?host=`, `?q=` |
 | `GET` | `/api/captures/{id}/url-shapes` | What the capture is fetching, grouped by URL shape, biggest first. Works mid-crawl. Each row carries a `pattern` — the reject regex meaning what that row means, or `null` |
@@ -270,7 +270,7 @@ would otherwise silently move every note in the archive.
 
 **Pause is on the job; resume is on the capture.** They read like a pair and are not. Pausing is something you do to a process that is running, and continuing is something you do to the capture it left behind — which may be continued days later, by which time the job is gone. This document used to list `POST /api/jobs/{id}/resume` "for `interrupted` jobs"; the real one is `POST /api/captures/{id}/resume`.
 
-**Pause is refused rather than downgraded on an engine that cannot resume.** wget has no crawl-state serialisation, so pausing it would throw the work away while calling it a pause. `can_pause` on the job says whether the button should be there at all, so the browser never has to know what an engine is ([05](05-capture-engines.md#pausing-a-crawl)).
+**Pause is refused rather than downgraded on an engine that cannot resume.** wget has no crawl-state serialisation, so pausing it would throw the work away while calling it a pause. `can_pause` on the job says whether the button should be there at all, so the browser never has to know what an engine is ([05](05-capture-engines.md#pausing-a-crawl)). It is false once the crawl is over: a job whose `progress.phase` is `post-processing` has no engine left to pause.
 
 `/projection` also carries `repetition`: how many of the last 20,000 fetches
 were of URLs already fetched, `looping` when that ratio passes 3. **A crawl

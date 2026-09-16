@@ -254,7 +254,11 @@ def delete_capture(
     even when it was deliberate.
     """
     capture = _require_capture(db, capture_id)
-    if capture.status == "running":
+    # The capture's own status is not enough on its own: it records the
+    # engine's verdict as soon as the crawl ends, while its job is still
+    # post-processing the files this would delete.
+    job = db.get(Job, capture.job_id) if capture.job_id is not None else None
+    if capture.status == "running" or (job is not None and job.status == "running"):
         raise ApiError(
             "capture_running", "Cancel the job before deleting this capture.", status_code=409
         )

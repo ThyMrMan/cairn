@@ -18,6 +18,15 @@ bar that will never move.
 **Database work happens off the event loop.** SQLAlchemy's session is sync; a
 batch of a thousand URL rows inside the loop would stall every other job's
 output and every SSE heartbeat.
+
+**A database that refuses a write never ends a capture's supervision.** SQLite
+has one writer at a time, and the task reading an engine's output used to die
+on the first `database is locked` — leaving the engine running in a session of
+its own, blocked on a pipe nobody read, and its job `running` forever. On one
+instance that cost a nine-day, 157 GB crawl, and two more captures after it.
+Rows the database will not take yet are kept and retried; writes that record
+how a job ended wait for as long as it takes (`db.busy`); and a task that
+stops watching an engine for any reason stops the engine first.
 """
 
 from __future__ import annotations
@@ -34,11 +43,13 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
+from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.orm import Session, sessionmaker
 
 from cairn.config import Settings
 from cairn.crypto.sealing import Sealer
+from cairn.db import busy
 from cairn.db.models import Capture, Job, Site
 from cairn.db.types import utcnow
 from cairn.engines.protocol import (
@@ -81,6 +92,48 @@ STDERR_LIMIT = 64 * 1024
 # stdout lines from an engine are bounded so a runaway engine printing one
 # enormous line cannot exhaust memory.
 LINE_LIMIT = 1024 * 1024
+
+# How long an engine gets to close its WARC once this process has decided to
+# stop watching it, and then how long a SIGKILL gets to take effect.
+HALT_GRACE_SECONDS = 30
+KILL_WAIT_SECONDS = 10
+_SIGKILL = getattr(signal, "SIGKILL", signal.SIGTERM)
+
+# URL rows are retried, not dropped, while the database refuses them. The
+# delay doubles from the first figure to the second; the cap is what keeps a
+# database that stays unwritable for hours from becoming a memory problem.
+URL_RETRY_FIRST_SECONDS = 1.0
+URL_RETRY_MAX_SECONDS = 30.0
+MAX_PENDING_URLS = 100_000
+WRITE_WARNING_SECONDS = 60.0
+
+# Recording the engine's pid is worth waiting for — it is how a later process
+# finds a crawl this one lost — but not for as long as a job's final state.
+PID_WRITE_SECONDS = 120.0
+# A job shutting down with the process gets a short wait: the executor is
+# joined at exit, and the next boot reconciles whatever this could not write.
+SHUTDOWN_WRITE_SECONDS = 10.0
+
+# How often the supervisor looks for jobs the database calls running that no
+# task here is watching, and how old such a job must be before it counts. The
+# age is a margin, not a mechanism: `_claim` commits and the dispatcher
+# registers the job in the same coroutine, so there is no window to cover.
+STRAY_CHECK_SECONDS = 60.0
+STRAY_MIN_AGE_SECONDS = 120
+STRAY_WRITE_SECONDS = 30.0
+
+# Stored in `job.progress["phase"]` while the crawl is over and the
+# post-processors are running, which on a large capture is minutes of a job
+# that would otherwise read as stalled.
+PHASE_POSTPROCESSING = "post-processing"
+
+# What post-processing sets on the capture and site rows, carried out of the
+# read-only session the chain runs in and written in one short transaction.
+# Read whether or not they changed, because a JSON column mutated in place
+# shows no change in the session's history; anything else a step changes is
+# carried as well (`_carried`).
+_CAPTURE_RESULT_FIELDS = ("status", "url_count", "error_count", "bytes_written", "warc_files")
+_SITE_RESULT_FIELDS = ("size_bytes", "url_count", "updated_at")
 
 PER_HOST_SERIAL_SETTING = "jobs.per_host_serial"
 # Whether engines may start sibling containers. Defaults to *true*: mounting
@@ -147,6 +200,10 @@ class JobSupervisor:
         self._dispatcher: asyncio.Task[None] | None = None
         self._stopping = False
 
+    def _write(self, apply: Any, *, what: str, budget_s: float = busy.WRITE_BUDGET_S) -> Any:
+        """A short transaction that waits out a busy database. Worker threads only."""
+        return busy.write(self._sessions, apply, what=what, budget_s=budget_s)
+
     # ── lifecycle ────────────────────────────────────────────────────────
 
     async def start(self) -> None:
@@ -206,7 +263,7 @@ class JobSupervisor:
             for job in stale:
                 job.status = "interrupted"
                 job.finished_at = utcnow()
-                job.error = "the container stopped while this job was running"
+                job.error = _interrupted_reason(session, job, stray=False)
                 job.pid = self._reap_orphan(job)
             captures = session.scalars(select(Capture).where(Capture.status == "running")).all()
             for capture in captures:
@@ -234,16 +291,24 @@ class JobSupervisor:
         again later — which also covers the case this cannot fix from here, a
         host where `/proc` is unreadable.
         """
-        from cairn.services import orphans
-
         if job.pid is None:
             return None
-        marker = str(self._settings.tmp_dir / f"job-{job.id}")
-        outcome = orphans.reap(job.pid, marker)
+        return self._reap(job.id, job.pid)
+
+    def _reap(self, job_id: int, pid: int) -> int | None:
+        """`_reap_orphan` for a job known only by its id and pid.
+
+        Blocks for up to the reaper's grace period, so callers hold no
+        transaction while it runs.
+        """
+        from cairn.services import orphans
+
+        marker = str(self._settings.tmp_dir / f"job-{job_id}")
+        outcome = orphans.reap(pid, marker)
         if outcome in (orphans.STOPPED, orphans.KILLED):
             log.warning(
-                "stopped a crawl left running by a previous process",
-                extra={"job": job.id, "pid": job.pid, "outcome": outcome},
+                "stopped a crawl nothing was supervising",
+                extra={"job": job_id, "pid": pid, "outcome": outcome},
             )
             return None
         if outcome in (orphans.GONE, orphans.NOT_OURS):
@@ -251,9 +316,9 @@ class JobSupervisor:
         log.warning(
             "could not tell whether a job's process is still running; keeping the pid "
             "so it can be cancelled by hand",
-            extra={"job": job.id, "pid": job.pid, "outcome": outcome},
+            extra={"job": job_id, "pid": pid, "outcome": outcome},
         )
-        return job.pid
+        return pid
 
     # ── queueing ─────────────────────────────────────────────────────────
 
@@ -319,7 +384,13 @@ class JobSupervisor:
         # worker thread, and until `_dispatch_once` resumes there is nothing
         # here to hold the flag. Recording it means the dispatcher applies it
         # the moment the job appears, instead of the click being lost.
-        if await asyncio.to_thread(self._is_live, job_id):
+        #
+        # Only a *recent* claim, though. A job that has read `running` for
+        # longer than that and is not in `_running` is never going to appear
+        # there: its supervision ended without recording how. Holding a
+        # request for it was the same lost click in a new place, so it falls
+        # through to the orphan path, which can actually stop it.
+        if await asyncio.to_thread(self._just_claimed, job_id):
             self._cancel_requests.add(job_id)
             return True
         # Nothing of ours is running it, and it may still be running anyway.
@@ -339,25 +410,46 @@ class JobSupervisor:
         """
         with self._sessions() as session:
             job = session.get(Job, job_id)
-            if job is None or job.pid is None:
+            if job is None:
                 return False
             pid = job.pid
-            job.pid = self._reap_orphan(job)
-            stopped = job.pid is None
-            if stopped and job.finished_at is None:
+            # Still `running` with nothing here watching it: cancellable even
+            # without a pid, because then there is nothing left to stop and
+            # the row is the only thing still claiming otherwise.
+            stranded = job.status == "running"
+        if pid is None and not stranded:
+            return False
+
+        kept = self._reap(job_id, pid) if pid is not None else None
+        stopped = kept is None
+
+        def apply(session: Session) -> None:
+            job = session.get(Job, job_id)
+            if job is None:
+                return
+            job.pid = kept
+            if not stopped or job.finished_at is not None:
+                return
+            if job.status == "running":
+                _close_stranded(session, job, "cancelled", STRANDED_CANCEL_REASON)
+            else:
                 job.status = "cancelled"
                 job.finished_at = utcnow()
-            session.commit()
+
+        self._write(apply, what=f"cancel job {job_id}")
         log.info(
             "cancel reached a job this process was not running",
             extra={"job": job_id, "pid": pid, "stopped": stopped},
         )
         return stopped
 
-    def _is_live(self, job_id: int) -> bool:
+    def _just_claimed(self, job_id: int) -> bool:
         with self._sessions() as session:
             job = session.get(Job, job_id)
-            return job is not None and job.status == "running"
+            if job is None or job.status != "running":
+                return False
+            started = job.started_at
+        return started is None or started > utcnow() - timedelta(seconds=STRAY_MIN_AGE_SECONDS)
 
     def _cancel_pending(self, running: RunningJob) -> bool:
         """Fold in any request that arrived before this job could hold one.
@@ -420,14 +512,78 @@ class JobSupervisor:
     # ── dispatch ─────────────────────────────────────────────────────────
 
     async def _dispatch_loop(self) -> None:
+        next_stray_check = time.monotonic() + STRAY_CHECK_SECONDS
         while not self._stopping:
             try:
                 await self._dispatch_once()
             except Exception:
                 log.exception("dispatcher iteration failed")
+            if time.monotonic() >= next_stray_check:
+                next_stray_check = time.monotonic() + STRAY_CHECK_SECONDS
+                try:
+                    await self._reconcile_strays()
+                except Exception:
+                    log.exception("stray-job check failed")
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self._wake.wait(), timeout=DISPATCH_POLL_SECONDS)
             self._wake.clear()
+
+    async def _reconcile_strays(self) -> list[int]:
+        """Close jobs the database calls running that no task here is running.
+
+        The boot reconcile does this once, for a process that died. This is the
+        same repair for supervision that ended while the process lived on — a
+        task that could not record how its job ended, for whatever reason.
+        Such a job otherwise reads `running` until the next restart, holds its
+        host under the per-host rule, and offers a Cancel button with nothing
+        behind it.
+
+        Safe because this process is the only supervisor there is: `serve`
+        runs one worker, and the boot reconcile already depends on that.
+        """
+        # Taken on the loop, where `_running` is mutated. A claim registers in
+        # the coroutine that calls this, so none can be half-done here.
+        owned = set(self._running)
+        settled = await asyncio.to_thread(self._settle_strays, owned)
+        for job_id in settled:
+            self._bus.publish(job_id, EV_STATUS, {"status": "interrupted"})
+        return settled
+
+    def _settle_strays(self, owned: set[int]) -> list[int]:
+        cutoff = utcnow() - timedelta(seconds=STRAY_MIN_AGE_SECONDS)
+        with self._sessions() as session:
+            rows = session.execute(
+                select(Job.id, Job.pid).where(Job.status == "running", Job.started_at < cutoff)
+            ).all()
+        strays = [(job_id, pid) for job_id, pid in rows if job_id not in owned]
+
+        settled: list[int] = []
+        for job_id, pid in strays:
+            kept = self._reap(job_id, pid) if pid is not None else None
+
+            def apply(session: Session, job_id: int = job_id, kept: int | None = kept) -> bool:
+                job = session.get(Job, job_id)
+                if job is None or job.status != "running":
+                    return False
+                job.pid = kept
+                reason = _interrupted_reason(session, job, stray=True)
+                _close_stranded(session, job, "interrupted", reason)
+                return True
+
+            try:
+                closed = self._write(
+                    apply, what=f"close stray job {job_id}", budget_s=STRAY_WRITE_SECONDS
+                )
+            except Exception:
+                log.exception("could not close a stray job", extra={"job": job_id})
+                continue
+            if closed:
+                settled.append(job_id)
+                log.warning(
+                    "a job was running with nothing supervising it; marked it interrupted",
+                    extra={"job": job_id, "pid": pid, "pid_kept": kept},
+                )
+        return settled
 
     async def _dispatch_once(self) -> None:
         capacity = self._settings.max_concurrent_jobs - len(self._running)
@@ -525,21 +681,46 @@ class JobSupervisor:
         except _CancelledJobError:
             # Raised out of an in-process job's progress callback, which is the
             # only cancellation point a job with no subprocess has.
-            await asyncio.to_thread(self._fail, job_id, running.capture_id, "cancelled")
+            await self._record_failure(job_id, running.capture_id, "cancelled")
         except asyncio.CancelledError:
-            await asyncio.to_thread(self._fail, job_id, running.capture_id, "cancelled")
+            # The process is shutting down, and its executor is joined on the
+            # way out: a short wait, and the next boot reconciles the rest.
+            await self._record_failure(
+                job_id, running.capture_id, "cancelled", budget_s=SHUTDOWN_WRITE_SECONDS
+            )
             raise
         except Exception as exc:
             log.exception("job failed", extra={"job": job_id})
-            await asyncio.to_thread(
-                self._fail, job_id, running.capture_id, f"{type(exc).__name__}: {exc}"
-            )
+            await self._record_failure(job_id, running.capture_id, f"{type(exc).__name__}: {exc}")
         finally:
             self._running.pop(job_id, None)
             # Plaintext cookie jars live here; remove them the moment the job
             # ends rather than waiting for the next boot sweep (docs/06).
             await asyncio.to_thread(_remove_tree, temp_dir)
             self._wake.set()
+
+    async def _record_failure(
+        self,
+        job_id: int,
+        capture_id: int | None,
+        message: str,
+        *,
+        budget_s: float = busy.WRITE_BUDGET_S,
+    ) -> None:
+        """`_fail`, where not managing to record it must not become a new failure.
+
+        Raising from here unwinds `_run` with the job still reading `running`.
+        The stray check closes such a job within a couple of minutes, so the
+        right response to a database that will not take this write is to say
+        so and let that happen.
+        """
+        try:
+            await asyncio.to_thread(self._fail, job_id, capture_id, message, budget_s=budget_s)
+        except Exception:
+            log.exception(
+                "could not record how a job ended; the stray check will close it",
+                extra={"job": job_id, "outcome": message},
+            )
 
     def _job_type(self, job_id: int) -> str:
         with self._sessions() as session:
@@ -1372,7 +1553,6 @@ class JobSupervisor:
                 capture.status = "running"
                 capture.finished_at = None
                 site.status = "capturing"
-                session.flush()
             else:
                 dir_name = storage.capture_dir_name(started, kind, engine.id)
                 capture = Capture(
@@ -1387,7 +1567,6 @@ class JobSupervisor:
                 )
                 session.add(capture)
                 site.status = "capturing"
-                session.flush()
 
             output_dir = storage.ensure_capture_dirs(self._settings, site.archive_path, dir_name)
             temp_dir.mkdir(parents=True, exist_ok=True)
@@ -1470,6 +1649,12 @@ class JobSupervisor:
             }
             storage.write_json(temp_dir / JOB_SPEC_FILE, spec)
 
+            # The first write, deliberately this late. Flushing the new row as
+            # soon as it existed took SQLite's write lock for everything above
+            # — seeds, a decrypted browser profile, and for an incremental
+            # capture a merge of every earlier CDX, which is up to an 80 MB
+            # file — and every other job waited behind it.
+            session.flush()
             job.spec = {**job.spec, "capture_id": capture.id, "dir_name": dir_name}
             session.commit()
 
@@ -1529,16 +1714,19 @@ class JobSupervisor:
         # timing.
         if running.cancelled:
             self._signal(running, signal.SIGTERM)
-        await asyncio.to_thread(self._record_pid, job_id, proc.pid)
+        try:
+            await asyncio.to_thread(self._record_pid, job_id, proc.pid)
+        except Exception:
+            # Not a reason to abandon a crawl that has already started. The pid
+            # is how a *later* process would find this engine; this one holds
+            # the process handle itself.
+            log.exception("could not record the engine's pid", extra={"job": job_id})
 
-        collector = _Collector(
-            supervisor=self,
-            prepared=prepared,
-            bus=self._bus,
-        )
+        collector = _Collector(supervisor=self, prepared=prepared, bus=self._bus)
         stderr_task = asyncio.create_task(_read_stderr(proc))
 
         assert proc.stdout is not None
+        read_to_end = False
         try:
             while True:
                 try:
@@ -1549,18 +1737,41 @@ class JobSupervisor:
                     continue
                 if not line:
                     break
-                await collector.handle(line.decode("utf-8", errors="replace"))
+                await collector.take(line.decode("utf-8", errors="replace"))
                 if prepared.max_pages and collector.url_count >= prepared.max_pages:
                     collector.note(f"page cap of {prepared.max_pages} reached; stopping")
                     running.cancelled = True
                     self._signal(running, signal.SIGTERM)
+            read_to_end = True
         finally:
-            await collector.flush()
+            if not read_to_end:
+                # Leaving before the engine closed its output — shutdown, or
+                # something here failed. The engine leads a session of its own
+                # and will not die with this task, and with nobody reading its
+                # stdout it blocks on its next write and never exits. That is
+                # how three captures on one instance came to read `running`
+                # for days after wget had finished.
+                await _halt(proc)
+            await collector.drain()
 
         returncode = await proc.wait()
         stderr = await stderr_task
+        await self._conclude(running, prepared, collector, returncode, stderr)
 
+    async def _conclude(
+        self,
+        running: RunningJob,
+        prepared: _Prepared,
+        collector: _Collector,
+        returncode: int,
+        stderr: str,
+    ) -> None:
         status = _final_status(collector.result, returncode, running.cancelled)
+        self._bus.publish(
+            prepared.job_id,
+            EV_LOG,
+            {"level": "info", "msg": "engine finished; post-processing the capture"},
+        )
         await asyncio.to_thread(
             self._finalize,
             prepared,
@@ -1665,26 +1876,15 @@ class JobSupervisor:
                 stderr = await self._pump_container(http, running, collector)
                 returncode = await containers.wait(http, running.container)
             except containers.ContainerError as exc:
-                await collector.flush()
+                await collector.drain()
                 await asyncio.to_thread(self._fail, job_id, prepared.capture_id, str(exc))
                 return
             finally:
-                await collector.flush()
+                await collector.drain()
                 if running.container is not None:
                     await containers.remove(http, running.container)
 
-        status = _final_status(collector.result, returncode, running.cancelled)
-        await asyncio.to_thread(
-            self._finalize,
-            prepared,
-            collector,
-            status,
-            returncode,
-            stderr,
-            running.cancelled,
-            running.paused,
-        )
-        await self._announce(prepared, collector, status)
+        await self._conclude(running, prepared, collector, returncode, stderr)
 
     async def _pump_container(self, http: Any, running: RunningJob, collector: _Collector) -> str:
         """Reassemble the container's framed log stream into protocol lines.
@@ -1709,14 +1909,14 @@ class JobSupervisor:
             stdout += chunk
             while b"\n" in stdout:
                 line, stdout = stdout.split(b"\n", 1)
-                await collector.handle(line.decode("utf-8", errors="replace"))
+                await collector.take(line.decode("utf-8", errors="replace"))
             cap = collector._prepared.max_pages
             if cap and collector.url_count >= cap and not running.cancelled:
                 collector.note(f"page cap of {cap} reached; stopping")
                 running.cancelled = True
                 await containers.stop(http, running.container)
         if stdout.strip():
-            await collector.handle(stdout.decode("utf-8", errors="replace"))
+            await collector.take(stdout.decode("utf-8", errors="replace"))
         return b"".join(errors).decode("utf-8", errors="replace")
 
     def _docker_allowed(self) -> bool:
@@ -1763,11 +1963,12 @@ class JobSupervisor:
     # ── terminal states ──────────────────────────────────────────────────
 
     def _record_pid(self, job_id: int, pid: int) -> None:
-        with self._sessions() as session:
+        def apply(session: Session) -> None:
             job = session.get(Job, job_id)
             if job is not None:
                 job.pid = pid
-                session.commit()
+
+        self._write(apply, what=f"record the pid of job {job_id}", budget_s=PID_WRITE_SECONDS)
 
     def _finalize(
         self,
@@ -1779,32 +1980,65 @@ class JobSupervisor:
         cancelled: bool,
         paused: bool = False,
     ) -> None:
-        with self._sessions() as session:
+        """Record how a capture ended, post-process it, close the job.
+
+        Three steps, and the middle one — the slow one — holds no write
+        transaction. It used to run inside one: the job's row was flushed
+        first, which takes SQLite's only write lock, and committed after the
+        whole chain had run — a checksum of every WARC, a walk of the site's
+        directory, a rebuild of its replay index, text extraction, a browser
+        for the thumbnail. Measured on a live instance, a 4.7 GB capture held
+        the lock for about four minutes, and the capture running beside it
+        lost its supervision at the first batch of URLs it tried to record.
+        """
+        # A pause is only a pause if there is something to continue from.
+        # The engine writes its state before exiting and says so; without it
+        # this was an ordinary stop, and calling the capture `paused` would put
+        # a Resume button on something that would silently start again from
+        # the beginning.
+        resumable = (
+            bool(collector.stats.get("resumable"))
+            and (prepared.output_dir / RESUME_STATE_FILE).is_file()
+        )
+        if paused and resumable and status in ("ok", "partial"):
+            status = "paused"
+        finished = utcnow()
+
+        # 1. The engine's verdict and totals, now — so a restart during the
+        # slow part costs the post-processing, not the record of the crawl.
+        def record(session: Session) -> None:
             job = session.get(Job, prepared.job_id)
             capture = session.get(Capture, prepared.capture_id)
-            site = session.get(Site, prepared.site_id)
-            if job is None or capture is None or site is None:  # pragma: no cover
+            if job is None or capture is None:
                 return
-
-            # A pause is only a pause if there is something to continue from.
-            # The engine writes its state before exiting and says so; without
-            # it this was an ordinary stop, and calling the capture `paused`
-            # would put a Resume button on something that would silently start
-            # from the beginning.
-            resumable = (
-                bool(collector.stats.get("resumable"))
-                and (prepared.output_dir / RESUME_STATE_FILE).is_file()
-            )
-            if paused and resumable and status in ("ok", "partial"):
-                status = "paused"
-
-            finished = utcnow()
             capture.status = status
             capture.finished_at = finished
             capture.url_count = collector.url_count
             capture.error_count = collector.error_count
             capture.bytes_written = collector.bytes_written
             capture.warc_files = collector.artifacts
+            job.progress = {
+                "done": collector.url_count,
+                "bytes": collector.bytes_written,
+                "phase": PHASE_POSTPROCESSING,
+            }
+
+        self._write(record, what=f"record the outcome of job {prepared.job_id}")
+
+        # 2. The slow part, reading only.
+        results = self._postprocess(prepared, collector)
+
+        # 3. Close the job, in one short transaction.
+        def close(session: Session) -> None:
+            job = session.get(Job, prepared.job_id)
+            capture = session.get(Capture, prepared.capture_id)
+            site = session.get(Site, prepared.site_id)
+            if job is None or capture is None or site is None:  # pragma: no cover
+                return
+            for name, value in results.get("capture", {}).items():
+                setattr(capture, name, value)
+            for name, value in results.get("site", {}).items():
+                setattr(site, name, value)
 
             job.status = (
                 "ok"
@@ -1832,36 +2066,22 @@ class JobSupervisor:
             site.status = "ready" if status in ("ok", "partial", "paused") else "error"
             if status in ("ok", "partial"):
                 site.last_capture_at = finished
-            session.flush()
-
-            if collector.malformed:
-                log.warning(
-                    "engine emitted unparseable lines",
-                    extra={"job": prepared.job_id, "count": collector.malformed},
-                )
-
-            try:
-                postprocess.run_chain(
-                    session,
-                    self._settings,
-                    capture=capture,
-                    site=site,
-                    output_dir=prepared.output_dir,
-                    tool_version=collector.tool_version,
-                    stats=collector.stats,
-                    scope=sites.resolved_scope(session, site).to_dict(),
-                    seeds=prepared.seeds or [site.seed_url],
-                    seed_source=prepared.seed_source,
-                    warnings=prepared.warnings,
-                )
-            except Exception:
-                log.exception("post-processing failed", extra={"capture": capture.id})
 
             if prepared.item_ids:
                 _settle_feed_items(session, prepared.item_ids, capture, status, prepared.feed_id)
 
-            sites.write_site_yaml(session, self._settings, site)
-            session.commit()
+        self._write(close, what=f"close job {prepared.job_id}")
+
+        if collector.malformed:
+            log.warning(
+                "engine emitted unparseable lines",
+                extra={"job": prepared.job_id, "count": collector.malformed},
+            )
+
+        with self._sessions() as session:
+            site = session.get(Site, prepared.site_id)
+            if site is not None:
+                sites.write_site_yaml(session, self._settings, site)
 
         self._bus.publish(
             prepared.job_id,
@@ -1874,8 +2094,55 @@ class JobSupervisor:
             },
         )
 
-    def _fail(self, job_id: int, capture_id: int | None, message: str) -> None:
+    def _postprocess(self, prepared: _Prepared, collector: _Collector) -> dict[str, Any]:
+        """Run the post-processor chain; return what it decided.
+
+        The chain reads through this session and writes only through
+        `self._write`, in transactions of its own. What it changes on the
+        capture and site rows is carried out as plain values and written by
+        the caller, so nothing flushed here can hold the lock through a step
+        that takes minutes.
+        """
         with self._sessions() as session:
+            capture = session.get(Capture, prepared.capture_id)
+            site = session.get(Site, prepared.site_id)
+            if capture is None or site is None:  # pragma: no cover
+                return {}
+            try:
+                postprocess.run_chain(
+                    session,
+                    self._settings,
+                    capture=capture,
+                    site=site,
+                    output_dir=prepared.output_dir,
+                    tool_version=collector.tool_version,
+                    stats=collector.stats,
+                    scope=sites.resolved_scope(session, site).to_dict(),
+                    seeds=prepared.seeds or [site.seed_url],
+                    seed_source=prepared.seed_source,
+                    warnings=[*prepared.warnings, *collector.report()],
+                    write=self._write,
+                )
+            except Exception:
+                log.exception("post-processing failed", extra={"capture": capture.id})
+            results = {
+                "capture": _carried(capture, _CAPTURE_RESULT_FIELDS),
+                "site": _carried(site, _SITE_RESULT_FIELDS),
+            }
+            # The values are out; nothing is written from here. A rollback
+            # rather than a quiet close says so.
+            session.rollback()
+        return results
+
+    def _fail(
+        self,
+        job_id: int,
+        capture_id: int | None,
+        message: str,
+        *,
+        budget_s: float = busy.WRITE_BUDGET_S,
+    ) -> None:
+        def apply(session: Session) -> None:
             job = session.get(Job, job_id)
             if job is not None:
                 job.status = "cancelled" if message == "cancelled" else "failed"
@@ -1890,7 +2157,8 @@ class JobSupervisor:
                     site = session.get(Site, capture.site_id)
                     if site is not None:
                         site.status = "error"
-            session.commit()
+
+        self._write(apply, what=f"record the failure of job {job_id}", budget_s=budget_s)
         self._bus.publish(job_id, EV_STATUS, {"status": "failed", "error": message})
 
 
@@ -1946,6 +2214,47 @@ class _Collector:
         self._pending: list[dict[str, Any]] = []
         self._last_flush = time.monotonic()
         self._last_progress_write = 0.0
+        # While the database is refusing writes: nothing is attempted before
+        # `_write_after`, and the delay doubles each time it refuses again.
+        self._write_after = 0.0
+        self._write_backoff = 0.0
+        self._refusals = 0
+        self._last_refusal_warning = -WRITE_WARNING_SECONDS
+        self._last_shed_warning = -WRITE_WARNING_SECONDS
+        self._event_failures = 0
+        # URL rows that never reached the database. Declared in the capture's
+        # report rather than lost quietly — though they cost only the per-URL
+        # table: replay is indexed from the WARCs, which they never touch.
+        self.unrecorded = 0
+
+    async def take(self, line: str) -> None:
+        """`handle`, except that no single event can end the capture.
+
+        Whatever went wrong with one line of output, the engine is still
+        crawling — and a supervisor that stops reading leaves it blocked on
+        its next write with nobody to notice.
+        """
+        try:
+            await self.handle(line)
+        except Exception:
+            self.malformed += 1
+            self._event_failures += 1
+            if self._event_failures == 1:
+                log.exception(
+                    "could not process an engine event; skipping it",
+                    extra={"job": self._prepared.job_id},
+                )
+
+    def report(self) -> list[str]:
+        """What the capture's gap report needs to say about this collection."""
+        if not self.unrecorded:
+            return []
+        return [
+            f"{self.unrecorded:,} fetched URL(s) could not be recorded: the database "
+            "refused writes for longer than Cairn waits. The archive is complete — "
+            "replay is indexed from the WARCs — but this capture's URL list, shapes "
+            "and counts are short by that many."
+        ]
 
     async def handle(self, line: str) -> None:
         event = parse_event(line)
@@ -2073,33 +2382,141 @@ class _Collector:
         )
 
     async def _maybe_flush(self) -> None:
-        """Flush on size or age.
+        """Flush on size or age, unless the database has asked for a pause.
 
         Size alone starves a slow crawl — a polite 1 req/s capture would hold
         rows in memory for eight minutes before the first write, and lose them
         all if the container stopped.
         """
-        aged = (time.monotonic() - self._last_flush) >= URL_BATCH_SECONDS
+        now = time.monotonic()
+        if now < self._write_after:
+            self._shed()
+            return
+        aged = (now - self._last_flush) >= URL_BATCH_SECONDS
         if len(self._pending) >= URL_BATCH_SIZE or aged:
             await self.flush()
 
     async def flush(self) -> None:
+        """Try once to write what is pending. Never raises.
+
+        This was the line that ended captures. The insert raised `database is
+        locked` while another job held SQLite's write lock, the exception
+        unwound the task reading the engine's output, and the rows — already
+        swapped out of `_pending` — went with it. A refusal now keeps the rows
+        and schedules the next attempt, and the engine goes on being read.
+        """
         if not self._pending:
             return
-        batch, self._pending = self._pending, []
         self._last_flush = time.monotonic()
-        await asyncio.to_thread(self._insert, batch)
+        batch, self._pending = self._pending, []
+        written, error = await asyncio.to_thread(self._insert, batch)
+        self._pending = batch[written:] + self._pending
+        if error is None:
+            if self._refusals:
+                log.info(
+                    "the database is accepting URL rows again",
+                    extra={"job": self._prepared.job_id, "refusals": self._refusals},
+                )
+            self._write_after = self._write_backoff = 0.0
+            self._refusals = 0
+            return
+        if busy.is_transient(error):
+            self._defer(error)
+            self._shed()
+            return
+        # Not the database being busy or unavailable but these rows being
+        # unacceptable to it, which waiting will not change. Drop the batch
+        # that failed so the ones behind it can go in.
+        lost = min(URL_BATCH_SIZE, len(self._pending))
+        del self._pending[:lost]
+        self.unrecorded += lost
+        log.error(
+            "the database rejected a batch of URL rows; dropping it",
+            extra={"job": self._prepared.job_id, "rows": lost, "err": str(error)},
+        )
 
-    def _insert(self, batch: list[dict[str, Any]]) -> None:
+    async def drain(self, budget_s: float = busy.WRITE_BUDGET_S) -> None:
+        """Write everything pending before the job is closed.
+
+        Waits out a refusing database for up to `budget_s` — the engine is
+        done, so waiting costs only time — and counts whatever is still left
+        rather than holding the job open for it.
+        """
+        deadline = time.monotonic() + budget_s
+        while self._pending:
+            now = time.monotonic()
+            if now >= deadline:
+                break
+            if self._write_after > now:
+                await asyncio.sleep(min(self._write_after, deadline) - now)
+                continue
+            await self.flush()
+        if self._pending:
+            self.unrecorded += len(self._pending)
+            log.error(
+                "gave up recording URL rows; the database refused them for too long",
+                extra={"job": self._prepared.job_id, "rows": len(self._pending)},
+            )
+            self._pending = []
+
+    def _defer(self, error: Exception) -> None:
+        """Back off after a refusal, and say so — once a minute, not per row."""
+        self._refusals += 1
+        self._write_backoff = min(
+            max(self._write_backoff * 2, URL_RETRY_FIRST_SECONDS), URL_RETRY_MAX_SECONDS
+        )
+        now = time.monotonic()
+        self._write_after = now + self._write_backoff
+        if now - self._last_refusal_warning >= WRITE_WARNING_SECONDS:
+            self._last_refusal_warning = now
+            log.warning(
+                "the database refused a write; keeping this capture's rows and retrying",
+                extra={
+                    "job": self._prepared.job_id,
+                    "pending": len(self._pending),
+                    "retry_in_s": self._write_backoff,
+                    "err": str(error),
+                },
+            )
+
+    def _shed(self) -> None:
+        """Bound what is held while the database refuses writes."""
+        excess = len(self._pending) - MAX_PENDING_URLS
+        if excess <= 0:
+            return
+        del self._pending[:excess]
+        self.unrecorded += excess
+        now = time.monotonic()
+        if now - self._last_shed_warning >= WRITE_WARNING_SECONDS:
+            self._last_shed_warning = now
+            log.error(
+                "too many URL rows waiting for the database; dropping the oldest",
+                extra={"job": self._prepared.job_id, "unrecorded": self.unrecorded},
+            )
+
+    def _insert(self, batch: list[dict[str, Any]]) -> tuple[int, Exception | None]:
+        """Write `batch` in short transactions, and say how far it got.
+
+        One transaction per URL_BATCH_SIZE rows, so a backlog that built up
+        while the database was busy does not become a long write of its own.
+        """
         from cairn.db.models import CaptureUrl
 
-        with self._supervisor._sessions() as session:
-            session.bulk_insert_mappings(CaptureUrl.__mapper__, batch)
-            session.commit()
+        written = 0
+        for start in range(0, len(batch), URL_BATCH_SIZE):
+            chunk = batch[start : start + URL_BATCH_SIZE]
+            try:
+                with self._supervisor._sessions() as session:
+                    session.bulk_insert_mappings(CaptureUrl.__mapper__, chunk)
+                    session.commit()
+            except Exception as exc:
+                return written, exc
+            written += len(chunk)
+        return written, None
 
     async def _write_progress(self, event: ProgressEvent) -> None:
         now = time.monotonic()
-        if (now - self._last_progress_write) < PROGRESS_WRITE_SECONDS:
+        if now - self._last_progress_write < PROGRESS_WRITE_SECONDS or now < self._write_after:
             return
         self._last_progress_write = now
         payload = {
@@ -2108,7 +2525,18 @@ class _Collector:
             "bytes": event.bytes,
             "eta_s": event.eta_s,
         }
-        await asyncio.to_thread(self._store_progress, payload)
+        try:
+            await asyncio.to_thread(self._store_progress, payload)
+        except Exception as exc:
+            # The next figure replaces this one in two seconds. All a failure
+            # may do is make the URL writes back off along with it.
+            if busy.is_transient(exc):
+                self._defer(exc)
+            else:
+                log.warning(
+                    "could not store job progress",
+                    extra={"job": self._prepared.job_id, "err": str(exc)},
+                )
 
     def _store_progress(self, payload: dict[str, Any]) -> None:
         with self._supervisor._sessions() as session:
@@ -2119,6 +2547,72 @@ class _Collector:
 
 
 # ── helpers ──────────────────────────────────────────────────────────────
+
+
+STRANDED_CANCEL_REASON = "cancelled; nothing was supervising this job any more"
+
+
+def _carried(row: Any, known: tuple[str, ...]) -> dict[str, Any]:
+    """What post-processing decided about one row, as plain values.
+
+    The fields the chain is known to set, and any other column it changed. A
+    step added later that sets something new would otherwise have its work
+    rolled back with the session, silently, which is the one failure a test
+    of the known fields cannot see.
+    """
+    state = sa_inspect(row)
+    changed = sorted(
+        column.key
+        for column in state.mapper.column_attrs
+        if column.key not in known and state.attrs[column.key].history.has_changes()
+    )
+    return {name: getattr(row, name) for name in (*known, *changed)}
+
+
+def _interrupted_reason(session: Session, job: Job, *, stray: bool) -> str:
+    """Why a job was interrupted — and which half of it.
+
+    A capture's row carries the engine's verdict from the moment the crawl
+    ends, before post-processing starts, so a job interrupted with its capture
+    no longer `running` lost only the post-processing. Worth saying: the WARCs
+    are whole, and "interrupted" alone reads as a crawl that is not.
+    """
+    capture_status = session.scalar(
+        select(Capture.status).where(Capture.job_id == job.id).order_by(Capture.id.desc()).limit(1)
+    )
+    cause = "Cairn lost track of this job" if stray else "the container stopped"
+    if capture_status is not None and capture_status != "running":
+        return (
+            f"{cause} while its capture was being post-processed. The crawl had finished "
+            "and its WARCs are complete; the replay index and search text catch up at the "
+            "site's next capture, or from Rebuild index."
+        )
+    if stray:
+        return f"{cause} while it was running. Anything it archived up to then is kept."
+    return "the container stopped while this job was running"
+
+
+def _close_stranded(session: Session, job: Job, status: str, reason: str) -> None:
+    """End a job nothing is supervising, and release what it held."""
+    now = utcnow()
+    job.status = status
+    job.finished_at = now
+    job.error = reason
+    for capture in session.scalars(
+        select(Capture).where(Capture.job_id == job.id, Capture.status == "running")
+    ).all():
+        capture.status = status
+        capture.finished_at = now
+    if job.site_id is None:
+        return
+    others = session.scalar(
+        select(func.count(Job.id)).where(
+            Job.site_id == job.site_id, Job.status == "running", Job.id != job.id
+        )
+    )
+    site = session.get(Site, job.site_id)
+    if site is not None and site.status == "capturing" and not others:
+        site.status = "ready"
 
 
 def _final_status(result: ResultEvent | None, returncode: int, cancelled: bool) -> str:
@@ -2574,6 +3068,55 @@ async def _read_stderr(proc: asyncio.subprocess.Process) -> str:
             chunks.append(chunk)
             size += len(chunk)
     return b"".join(chunks).decode("utf-8", errors="replace")
+
+
+async def _halt(proc: asyncio.subprocess.Process, *, grace_s: float = HALT_GRACE_SECONDS) -> None:
+    """Stop an engine this process is about to stop watching.
+
+    The whole group, because wget is the engine's child and carries on without
+    it. And with the engine's output drained while it goes: an engine blocked
+    on a full pipe cannot exit, and cannot even finish its own SIGTERM
+    handler, whose first act is to log — another write to the same pipe.
+    """
+    if proc.returncode is not None:
+        return
+    drain = asyncio.create_task(_discard(proc.stdout))
+    try:
+        _signal_group(proc, signal.SIGTERM)
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=grace_s)
+            return
+        except TimeoutError:
+            log.warning("engine did not stop in time; killing it", extra={"pid": proc.pid})
+        _signal_group(proc, _SIGKILL)
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(proc.wait(), timeout=KILL_WAIT_SECONDS)
+    finally:
+        drain.cancel()
+
+
+async def _discard(stream: asyncio.StreamReader | None) -> None:
+    if stream is None:
+        return
+    with contextlib.suppress(Exception):
+        while await stream.read(65536):
+            pass
+
+
+def _signal_group(proc: asyncio.subprocess.Process, sig: int) -> None:
+    """Signal an engine and everything it started.
+
+    The engine was spawned as a session leader, so its pid is its process
+    group's id. Where there are no process groups, the engine alone.
+    """
+    killpg = getattr(os, "killpg", None)
+    with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+        if killpg is not None:
+            killpg(proc.pid, sig)
+        elif sig == _SIGKILL:
+            proc.kill()
+        else:
+            proc.send_signal(sig)
 
 
 def _remove_tree(path: Path) -> None:

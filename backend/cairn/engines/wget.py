@@ -319,10 +319,14 @@ class Runner:
         if self.terminating:
             return
         self.terminating = True
-        self.events.log("cancellation requested; asking wget to stop", level="warning")
+        # wget first, the log line second. The log line is a write to stdout,
+        # and if the supervisor has stopped reading, that write blocks forever
+        # — inside this handler, before it ever reached wget. Measured on a
+        # live instance: an engine in that state outlived its crawl by days.
         if self.proc and self.proc.poll() is None:
             with contextlib.suppress(OSError):
                 self.proc.terminate()
+        self.events.log("cancellation requested; asking wget to stop", level="warning")
 
     def _warn_about_auth(self) -> None:
         """Say when a profile is attached that this engine got nothing from.

@@ -270,6 +270,33 @@ Killing the group rather than the process is the point: wget is a child of the e
 
 It is now `crawl.max_duration_hours`, **48 by default**. Generous rather than tight: a genuinely large site at one request a second is a day or two of honest work, and truncating that would be worse than the runaway it guards against. What it rules out is the order of magnitude above. Stopping costs nothing that was fetched, so this is a floor under how long a mistake can run rather than a risk to an archive. Set it to 0 for no limit.
 
+The clock is checked in the engine's own loop, which means an engine that is blocked cannot stop itself — one job read `running` for three days with this cap in force. The next section is why it was blocked.
+
+### A database that says no must not end a capture
+
+SQLite has one writer at a time, and a connection waits five seconds for the lock before raising `database is locked`. The task that reads an engine's output used to die on that error, and everything below followed from it.
+
+Measured on a live instance, twice, to the second. A capture recorded URL rows at a steady ~2,200 an hour until `05:40:24`. The job running beside it started post-processing at `05:40:25`. Not one row was recorded after that — while wget carried on for **eight more days**, fetched 539,598 files and 157 GB, and finished. The job read `running` until the container restarted 25 hours later, and the database had kept 3.7% of the crawl. The same site's next capture died the same way, at the first post-processor it met. A third job was found in the same state with no post-processor running near it, so the fix could not stop at the one trigger that was understood.
+
+The chain:
+
+1. `_finalize` flushed the job's row before running the post-processors — which takes the write lock — and committed after all of them: a checksum of every WARC, a walk of the site's directory, a rebuild of its replay index, text extraction, a browser for the thumbnail. On a 4.7 GB capture that held the lock for about four minutes.
+2. The capture beside it tried to record its next batch of URL rows, waited five seconds, and raised. The batch had already been swapped out of the pending list, so it went with the exception.
+3. The exception unwound the task reading the engine's stdout. The engine leads a session of its own, so nothing else signals it, and it kept running with nobody reading its output.
+4. Its next writes filled the pipe and blocked. So did its SIGTERM handler, whose first act was to log.
+5. The failure path tried to mark the job failed — another write, with the lock still held — and raised again, leaving the row at `running`.
+
+What holds now:
+
+- **Rows the database will not take are kept.** The collector retries them on a backoff that doubles up to 30 seconds and goes on reading the engine meanwhile. The backlog is capped at 100,000 rows. A row the database *objects* to — a constraint, not contention — is dropped so the ones behind it can go in. Anything that never lands is counted and declared in the capture's gap report. It costs the per-URL table, not the archive: replay is indexed from the WARCs.
+- **Post-processing holds no write transaction.** The engine's verdict and totals are recorded first, in a short transaction, with `job.progress.phase` set to `post-processing` so the UI can say what a job that has finished crawling is doing. The chain then reads through one session and writes only through short transactions of its own — text is indexed 200 pages at a time — and what it decided about the capture and site goes into a second short transaction at the end. A restart during a slow chain now costs the post-processing, not the record of the crawl.
+- **Writes that record how a job ended wait as long as it takes** — up to ten minutes, and only for contention ([`db/busy.py`](../backend/cairn/db/busy.py)). A failed commit cannot be retried, because SQLAlchemy discards the pending changes, so each attempt rebuilds the transaction from values in a fresh session.
+- **A supervisor that stops reading an engine stops the engine first.** The whole process group gets SIGTERM, the engine's output is drained while it exits so a blocked write can finish, and SIGKILL follows after 30 seconds. One malformed event is skipped rather than ending the read, and a pid that cannot be recorded no longer abandons a crawl that has already started. The wget engine now stops wget *before* it logs that it is doing so.
+- **Nothing reads `running` unsupervised for long.** Once a minute the supervisor looks for jobs the database calls running that no task of its own is running and that started more than two minutes ago. It reaps their engine by pid, under the same identity checks as the boot reconcile, and marks them `interrupted` with a reason saying whether the crawl or only its post-processing was cut short. Cancel works on such a job as well; it used to be mistaken for a job being claimed, and the request was parked for a task that would never exist.
+- **Preparing a capture no longer holds the lock either.** The new capture row used to be flushed as soon as it existed, which held the lock through resolving seeds, decrypting a browser profile and — for an incremental capture — merging every earlier CDX, up to an 80 MB file. It is now written at the end.
+
+Deleting a capture still removes its URL rows in a single transaction. That is now a delay for the jobs around it rather than an end to them.
+
 ### Failure statuses
 
 `ok` (everything fetched), `partial` (some URLs failed or cancelled — artifacts still valid and indexed), `failed` (no usable output).
@@ -598,6 +625,14 @@ a worker thread with a database session open, and a webhook that takes ten
 seconds to time out would hold both long after the work was done. Notifications
 are sent from the supervisor's async side once the capture is finalised, where
 nothing they do can change its outcome.
+
+**The chain reads through its session and writes around it.** A step that
+wrote through the session it was handed would hold SQLite's write lock through
+every step after it, which is how one post-processor once kept every other job
+from writing for four minutes. `Context.write` is the way a step writes — a
+short transaction, retried while the database is busy — and what the chain
+changes on the capture and site rows is written by the supervisor after it
+returns ([above](#a-database-that-says-no-must-not-end-a-capture)).
 
 **The shipped chain runs in-process, not as subprocesses.** The manifest, the ordering and the required/optional distinction are all real; the isolation is not, because the built-ins need none and a subprocess contract nobody has written a second implementation of is a contract that will turn out to be wrong. It becomes a real addon boundary in M7, alongside the engine SDK, for the same reason engines got the seam first ([D3](00-decisions.md#d3--wget-for-v1-behind-an-engine-interface-from-day-one)).
 

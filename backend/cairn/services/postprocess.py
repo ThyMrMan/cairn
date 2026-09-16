@@ -22,6 +22,7 @@ import hashlib
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +30,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from cairn.config import Settings
+from cairn.db.busy import Writer
 from cairn.db.models import Capture, CaptureUrl, EngineRecord, Site
 from cairn.db.types import utcnow
 from cairn.logging import get_logger
@@ -38,6 +40,7 @@ from cairn.services.scope import Scope, ScopeError, build_reject_patterns
 log = get_logger(__name__)
 
 CHECKSUM_CHUNK = 1024 * 1024
+TEXT_INDEX_BATCH = 200
 LAZY_ATTRIBUTES = (b"data-src", b"data-srcset", b"data-original", b"data-lazy-src")
 
 
@@ -55,6 +58,12 @@ class Context:
     seed_source: dict[str, int]
     artifacts: list[dict[str, Any]]
     warnings: list[str]
+    # When set, the only way a step may write: a short transaction of its own,
+    # retried while the database is busy. `session` is then for reading, since
+    # anything flushed through it holds SQLite's one write lock through every
+    # slow step that follows — which is how a post-processor once kept every
+    # other job from writing for four minutes (see `db.busy`).
+    write: Writer | None = None
 
 
 @dataclass(slots=True)
@@ -224,9 +233,28 @@ def step_text_extract(ctx: Context) -> None:
     result = textextract.extract_capture(ctx.settings, ctx.site.archive_path, ctx.capture.dir_name)
     if not result.pages:
         return
-    indexed = search.index_capture(
-        ctx.session, ctx.settings, site=ctx.site, capture=ctx.capture, pages=result.pages
-    )
+    if ctx.write is None:
+        indexed = search.index_capture(
+            ctx.session, ctx.settings, site=ctx.site, capture=ctx.capture, pages=result.pages
+        )
+    else:
+        # In batches, each its own transaction: indexing is a select, an
+        # insert and two FTS statements per page, and a capture of thousands
+        # of pages done in one go held the write lock for all of them. A
+        # batch is safe to repeat — rows are keyed on (site, url).
+        indexed = 0
+        for start in range(0, len(result.pages), TEXT_INDEX_BATCH):
+            batch = result.pages[start : start + TEXT_INDEX_BATCH]
+            indexed += ctx.write(
+                partial(
+                    search.index_capture,
+                    settings=ctx.settings,
+                    site=ctx.site,
+                    capture=ctx.capture,
+                    pages=batch,
+                ),
+                what=f"index the text of capture {ctx.capture.id}",
+            )
     ctx.stats["text_pages"] = indexed
     ctx.stats["text_words"] = sum(len(p.text.split()) for p in result.pages)
     ctx.stats["text_boilerplate_blocks"] = result.dropped_blocks
@@ -1086,7 +1114,16 @@ def run_chain(
     seeds: list[str],
     seed_source: dict[str, int] | None = None,
     warnings: list[str] | None = None,
+    write: Writer | None = None,
 ) -> Context:
+    """Run every step against one capture.
+
+    With `write`, the chain writes only through it and flushes nothing to
+    `session`: the caller reads the capture and site back off the returned
+    context and persists them itself, in a transaction that is short because
+    the slow work is already over. Without it, the old contract — everything
+    pending on `session`, flushed at the end.
+    """
     ctx = Context(
         session=session,
         settings=settings,
@@ -1102,6 +1139,7 @@ def run_chain(
         # Seeded with whatever the supervisor already knew was wrong before
         # the crawl started, so one report covers the whole capture.
         warnings=list(warnings or []),
+        write=write,
     )
 
     for step in sorted(CHAIN, key=lambda s: s.order):
@@ -1127,5 +1165,6 @@ def run_chain(
         ctx.stats = final
     step_manifest(ctx)
 
-    session.flush()
+    if write is None:
+        session.flush()
     return ctx

@@ -18,6 +18,7 @@ from cairn.db.types import utcnow
 from cairn.engines.registry import EngineError
 from cairn.services import audit
 from cairn.services.events import EV_STATUS, BusEvent, EventBus, format_sse
+from cairn.services.jobs import PHASE_POSTPROCESSING
 
 router = APIRouter(tags=["jobs"], dependencies=[Csrf])
 
@@ -49,7 +50,10 @@ def _summary(db: DbSession, job: Job, registry: Any = None) -> JobSummary:
     if job.site_id is not None:
         site = db.get(Site, job.site_id)
         title = site.title if site else None
-        if site is not None and registry is not None and job.status == "running":
+        # Not once the crawl is over: a job post-processing its capture has no
+        # engine left to pause, and the button would do nothing.
+        crawling = (job.progress or {}).get("phase") != PHASE_POSTPROCESSING
+        if site is not None and registry is not None and job.status == "running" and crawling:
             with contextlib.suppress(EngineError):
                 can_pause = bool(registry.get(site.engine_id).capabilities.get("resumable"))
     return JobSummary(
