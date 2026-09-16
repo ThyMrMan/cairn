@@ -228,6 +228,35 @@ docker exec cairn cairn reindex <site-slug>
 The capture's URL list and counts do not come back: they were the rows that
 were never written.
 
+## A feed capture takes most of an hour to add one post
+
+The signs: every feed capture of a site takes about as long as the last,
+whatever was published; its URL count runs to the thousands for one new post;
+and nearly all of those URLs are revisits — fetched, and found to be archived
+already.
+
+Feed captures ran at depth 1, and one link from a Blogger post is every monthly
+archive and label in its sidebar. wget then fetched every image on each of those
+pages. On a real blog that was 83 pages and about 1,560 images each time, 42
+minutes to add one post. [08](08-feeds-and-scheduling.md#incremental-captures)
+has the measurements.
+
+**Now:** a feed capture fetches the new posts, what they display and the files
+they link to — the full-size images included — and no other page. Expect tens
+of URLs rather than thousands. A feed job that was already queued when you
+updated runs the new way too. A pasted list of URLs behaves the same, and had
+been crawling each listed page's entire site.
+
+**What that gives up:** the archived home page, labels and monthly archives no
+longer change with each new post, so browsing the replay from the front page
+shows the site as of the last capture that fetched those pages. New posts are
+in the capture list and in search, and a full capture refreshes the rest.
+
+A capture whose warnings mention files "on this site's own host" that were not
+fetched hit the one thing this costs: a file the site serves at a URL that
+does not end in a type like `.jpg` or `.css` reads to wget exactly like a page. The warning names them, and a full
+capture fetches them.
+
 ## A skip pattern is saved but nothing was skipped
 
 Look at the count beside it. **matches nothing** means it is inert.

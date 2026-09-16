@@ -196,8 +196,9 @@ def build_argv(spec: JobSpec, out: Path, tmp: Path, job_dir: Path) -> list[str]:
     # On unless a caller says otherwise. The one caller that says otherwise is a
     # companion pass over pages whose images another capture already holds under
     # the same URLs — there, requisites would re-fetch the entire archive's
-    # imagery to add nothing, and `--page-requisites` is not subject to the
-    # reject regex (see the scope module), so no pattern can stand in for this.
+    # imagery to add nothing. The reject regex does reach requisites (the scope
+    # module, finding 5), but refusing them by pattern would mean naming every
+    # host and URL shape a theme loads from; the flag says it exactly.
     if cfg.get("page_requisites", True):
         argv.append("--page-requisites")
 

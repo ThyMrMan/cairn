@@ -508,6 +508,77 @@ def test_a_scope_with_no_asset_hosts_reports_everything_as_absent() -> None:
     assert excluded == []
 
 
+# ── what a capture of listed pages gives up ──────────────────────────────
+
+DEPTH_ZERO_SCOPE = {**BLOG_SCOPE, "max_depth": 0}
+
+
+def _depth_zero_audit(
+    db: Session, settings: Settings, tmp_path: Path, engine_id: str, scope: dict[str, object]
+) -> Context:
+    """A post that embeds an extension-less image served by the blog itself,
+    and an ordinary one, neither of which the capture holds."""
+    warc_dir = tmp_path / storage.WARC_DIR
+    warc_dir.mkdir(parents=True, exist_ok=True)
+    body = b'<html><img src="/counter?post=7"><img src="/real.png"></html>'
+    _write_warc(warc_dir / "part.warc.gz", [("https://blog.example.com/2026/09/p.html", 200, body)])
+    ctx = Context(
+        session=db,
+        settings=settings,
+        capture=Capture(engine_id=engine_id),
+        site=Site(),
+        output_dir=tmp_path,
+        tool_version=None,
+        stats={},
+        scope=scope,
+        seeds=[],
+        seed_source={},
+        artifacts=[],
+        warnings=[],
+    )
+    step_asset_audit(ctx)
+    return ctx
+
+
+def test_what_depth_zero_refused_is_reported_as_that_and_not_as_a_gap(
+    db: Session, settings: Settings, tmp_path: Path
+) -> None:
+    """wget at depth 0 refuses every extension-less URL on the site's own host,
+    because by URL it cannot tell one from a page. "Were not captured" is the
+    sentence for something that went wrong; nothing did."""
+    ctx = _depth_zero_audit(db, settings, tmp_path, "wget-warc", DEPTH_ZERO_SCOPE)
+
+    assert ctx.stats["unfollowed_assets"] == 1
+    said = next(w for w in ctx.warnings if "only the pages it was given" in w)
+    assert "https://blog.example.com/counter?post=7" in said
+    # The image with an extension passed the fence, so its absence is real.
+    assert ctx.stats["missing_assets"] == 1
+    gap = next(w for w in ctx.warnings if "were not captured" in w)
+    assert "real.png" in gap
+    assert "counter" not in gap
+
+
+@pytest.mark.parametrize("engine_id", ["browsertrix", "since-uninstalled"])
+def test_only_an_engine_on_record_as_deciding_by_url_is_explained_that_way(
+    db: Session, settings: Settings, tmp_path: Path, engine_id: str
+) -> None:
+    """A browser fetches what a page shows whatever its URL looks like, so a
+    miss there is a real one. An engine with no record is not given the
+    benefit of the doubt: explaining a gap away needs evidence."""
+    ctx = _depth_zero_audit(db, settings, tmp_path, engine_id, DEPTH_ZERO_SCOPE)
+    assert ctx.stats["unfollowed_assets"] == 0
+    assert ctx.stats["missing_assets"] == 2
+
+
+def test_at_any_other_depth_the_same_miss_is_a_gap(
+    db: Session, settings: Settings, tmp_path: Path
+) -> None:
+    ctx = _depth_zero_audit(db, settings, tmp_path, "wget-warc", BLOG_SCOPE)
+    assert ctx.stats["unfollowed_assets"] == 0
+    assert ctx.stats["missing_assets"] == 2
+    assert not any("only the pages it was given" in w for w in ctx.warnings)
+
+
 # ── turned away at the door ──────────────────────────────────────────────
 #
 # Reported from a real run against a gated Blogger blog. The seed answered 302

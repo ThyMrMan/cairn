@@ -98,11 +98,10 @@ A feed-triggered capture is a normal capture with a different seed set and a sma
 {
   "kind": "feed",
   "seeds": ["https://example.blogspot.com/2026/08/new-post.html"],
-  "scope": { "…": "the site's existing scope, unchanged" },
+  "scope": { "…": "the site's existing scope, at depth 0" },
   "incremental": {
     "dedup_cdx": "…/captures/20260809T142530Z-full-wget/wget.cdx"
-  },
-  "config": {"max_depth": 1}
+  }
 }
 ```
 
@@ -118,13 +117,30 @@ Three properties that make this work well:
 
 > **This clause is wget's, not every engine's.** browsertrix declares `incremental: false` — its own dedup is Redis-backed within a crawl and does not read a CDX — so on that engine a feed capture re-stores the theme every time and costs roughly a full page render rather than 100–500 KB. `dedup_cdx` is now omitted from the job spec for any engine that declares it cannot use one ([05](05-capture-engines.md#in--the-job-spec)), which saves merging a CDX nothing will read. The saving is invisible on a browsertrix-only site — it writes no `part.cdx`, so there is nothing to merge — and real on one that switched engines with a wget history on disk. The engine picker states the cost before the choice is made.
 
-**Depth 1, page requisites on.** Capture the post and everything it needs to render, but don't re-crawl the whole site because the new post links to the archive index.
+**Depth 0: the post, what it shows, and what it links to — and no other page.** The post's own images, its stylesheet and scripts, and the files it links to directly. On Blogger that last group is every full-size image, because a post shows a thumbnail and links the original. Not the pages in its sidebar, and not what those pages show.
 
-> `--level=1` reads ambiguously, so it was measured: given a seed linking to an index which links to an old post, wget 1.25.0 fetches the seed, its requisites, and the index — and stops. Not the seed alone, and not the archive behind the index. The number matches the intent.
+> **Corrected: depth 1 stopped at the index, after fetching everything on it.** This used to say depth 1, on a measurement that was right about what it measured — given a seed linking to an index which links to an old post, `--level=1` fetches the seed, its requisites and the index, and stops — and silent about the cost, because that index had no images. `--page-requisites` takes one level past the limit to finish a page, so every page one link from the post arrives with its images, and a Blogger post links every monthly archive and label in its sidebar. On a live instance that was sixteen feed captures of one blog at 42 minutes each: 83 pages and about 1,560 images a capture, 1,580 of its 1,723 URLs stored as revisits, to add one post.
+>
+> The obvious fix is wrong twice. `--level=0` is not "the seed only" — wget reads it as no limit. And dropping `--recursive` while keeping `--page-requisites`, which is wget's own spelling of "this page and what it needs", loses the full-size images, because those are links rather than requisites. Measured on wget 1.25.0 against a Blogger-shaped site — a post whose sidebar links five monthly archives, five labels and the home page, twenty images on each, and whose own image is linked in full size:
+>
+> | wget flags | Requests | Full-size image |
+> |---|---:|---|
+> | `-r --level=1 -p`, what feed captures ran | 250 | yes |
+> | `-p` alone | 12 | **no** |
+> | `-r --level=1 -p`, every page on the blog fenced | 11 | yes |
+>
+> The fence is the one assets-only hosts already have: on the blog's own hosts, refuse every URL without an asset extension. wget never tests a start URL against the reject regex, so the posts themselves pass, and a post whose feed entry redirects still gets its files — the debug log says so in as many words, *"excluded/not-included through regex. Ignoring decision for redirects, decided to load it"*, on 1.21.4 and 1.25.0 alike. The level stays at one because a host allowed extension-less URLs can serve a page no pattern can see. What the fence costs, and why browsertrix is not handed it, is in [04](04-discovery-and-scoping.md#depth-0-is-not---level0).
 >
 > The seed set matters as much as the depth. A capture's seeds normally include every URL discovery found, which is what makes a *full* capture complete; handing that to an incremental run turns "archive this new post" back into "archive the site" regardless of depth. A feed capture is seeded with its own items and nothing else — not even the site's seed URL.
 
-**`config.max_depth` is not where depth lives.** The example above shows it under `config`, but the engine's config schema declares `additionalProperties: false` and knows nothing about depth; `max_depth` is a scope field, and the job spec overrides the site's scope for that run.
+**Depth is decided when the job runs, not when it is queued.** `only_extra_seeds` — "archive these URLs" — is read as depth 0 by the job runner, whatever else the job says, and `config.max_depth` was never where depth lived: the engine's config schema declares `additionalProperties: false`, and `max_depth` is a scope field. Two things made the rule necessary rather than tidy:
+
+- **A feed job queued before the fix says `max_depth: 1`**, and one still in the queue when the container is replaced is exactly the job that must not be believed.
+- **Bulk URL import sets the same flag and never set a depth at all**, so its "archive only these pages" ran `--level=inf` from every URL on the list — the crawl it was designed not to start ([13](13-feature-backlog.md#bulk-url-import)).
+
+The manifest records the scope that ran, depth included. It had not been: post-processing re-read the site's scope when the crawl ended, so a companion pass was recorded, and its asset audit run, as though the site's own boundary had applied.
+
+**What depth 0 gives up is the neighbourhood.** The archived home page, labels and monthly archives no longer change with each feed capture. Replay shows them as of the last capture that fetched them, and a new post is reached from the capture list and search rather than by browsing to it from the front page. That freshness was what the 40 minutes were buying; a full capture still buys it.
 
 ### Dispatch is guarded, and failures back off
 

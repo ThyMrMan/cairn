@@ -1507,18 +1507,21 @@ class JobSupervisor:
             else:
                 engine = self._registry.get(site.engine_id)
                 config = engine.validate_config(dict(site.engine_config or {}))
-            # A feed capture is about the posts it was given, not about the
-            # site. Left at the site's depth it would follow the new post's
-            # link to the archive index and re-crawl everything, which is
-            # exactly the cost this is meant to avoid (docs/08).
+            # A capture of listed URLs — a feed's new posts, a pasted list of
+            # bookmarks — is about those pages, not about the site. Left at the
+            # site's depth it follows their links into the archive and crawls
+            # it again, which is exactly the cost it exists to avoid (docs/08).
             #
-            # `--level=1` reads ambiguously, so it was measured against wget
-            # 1.25.0: a seed linking to an index which links to an old post
-            # fetches the seed, its requisites and the index — and stops. Not
-            # the seed alone, and not the archive behind the index. That is
-            # what docs/08's prose asks for, so the number matches the intent.
-            if job.spec.get("max_depth") is not None:
-                scope.max_depth = int(job.spec["max_depth"])
+            # Depth 0, decided here rather than read from the job. Feed jobs
+            # were queued with `max_depth: 1`, measured to stop at the archive
+            # index — which it does, after fetching every image on every page
+            # it stopped at: 83 pages and ~1,560 images a capture on a real
+            # blog, to add one post. A job queued before that was found still
+            # says 1, and is the one this must not believe. A bulk import said
+            # nothing at all, so its "archive only these" ran `--level=inf`
+            # from every URL on the list.
+            if job.spec.get("only_extra_seeds"):
+                scope.max_depth = 0
 
             warnings: list[str] = []
             if sites.scope_is_unindexed(session, site):
@@ -1629,6 +1632,7 @@ class JobSupervisor:
                     )
                 )
 
+            boundary = scope.to_dict()
             spec = {
                 "protocol": PROTOCOL_VERSION,
                 "job_id": job.id,
@@ -1638,7 +1642,7 @@ class JobSupervisor:
                 "temp_dir": str(temp_dir),
                 "seeds": seeds,
                 "seed_file": SEED_FILE,
-                "scope": scope.to_dict(),
+                "scope": boundary,
                 "auth": auth,
                 "incremental": {
                     "dedup_cdx": _dedup_cdx(self._settings, session, site, kind, temp_dir, engine)
@@ -1676,6 +1680,7 @@ class JobSupervisor:
                 runtime=dict(engine.runtime),
                 feed_id=job.spec.get("feed_id"),
                 item_ids=[int(i) for i in (job.spec.get("item_ids") or [])],
+                scope=boundary,
             )
 
     async def _execute(self, running: RunningJob, prepared: _Prepared) -> None:
@@ -2117,7 +2122,7 @@ class JobSupervisor:
                     output_dir=prepared.output_dir,
                     tool_version=collector.tool_version,
                     stats=collector.stats,
-                    scope=sites.resolved_scope(session, site).to_dict(),
+                    scope=prepared.scope or sites.resolved_scope(session, site).to_dict(),
                     seeds=prepared.seeds or [site.seed_url],
                     seed_source=prepared.seed_source,
                     warnings=[*prepared.warnings, *collector.report()],
@@ -2189,6 +2194,11 @@ class _Prepared:
     # crawl begins, and repeated in the capture's gap report so they survive
     # past the moment the log scrolls away.
     warnings: list[str] = field(default_factory=list)
+    # The boundary the engine was handed, as written into its job spec. The
+    # post-processor re-read the site's instead, so a capture whose scope was
+    # narrowed for the run — a companion pass, a depth-0 capture of listed
+    # pages — was recorded in its manifest, and audited, as the site's.
+    scope: dict[str, Any] = field(default_factory=dict)
 
 
 class _Collector:

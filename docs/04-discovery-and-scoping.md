@@ -338,6 +338,8 @@ Three limits, each deliberate:
 | `accept_patterns` | `--accept-regex` |
 | `reject_patterns` + `global_reject_patterns` | `--reject-regex` |
 | `max_depth` (null) | `--level=inf` |
+| `max_depth: 0` | `--level=1`, and every crawled host's page URLs added to `--reject-regex` — never `--level=0` ([below](#depth-0-is-not---level0)) |
+| `max_depth: n` | `--level=n` |
 | `max_bytes` | `--quota=` |
 | `obey_robots: false` | `-e robots=off` |
 | `politeness` | `--wait`, `--random-wait`, `--limit-rate`, `--tries`, `--waitretry` |
@@ -374,6 +376,22 @@ Both readings cost something. Rejecting extension-less URLs loses images with no
 
   `themes.googleusercontent.com` was missing from that list until a live capture exposed it, and it is the instructive case: **every** URL on that host is `image?id=…`, so the flag is not an edge case there, it is the whole host. Listing a host under `assets_on` without also listing it under `extensionless_ok` puts it inside `--domains` and then rejects every URL it serves — in scope, and reachable by nothing. When adding a host to a preset, check what its URLs actually look like before assuming the default is safe.
 
+### Depth 0 is not `--level=0`
+
+Depth 0 means the seeds as pages and nothing else that is a page: what they need to display comes with them, and so do the files they link to. It is what a capture of listed URLs runs at — a feed's new posts, a pasted list of bookmarks ([08](08-feeds-and-scheduling.md#incremental-captures)) — and what a site's own scope may be set to.
+
+wget has no flag for it, and two more findings, from a Blogger-shaped fixture on 1.25.0, say why the obvious ones will not do:
+
+**4. `--level=0` is no limit at all.** 252 requests where `--level=1` made 250, the extra two being files two links from the seed. The scope schema has always accepted 0, so a site set to it was a site set to crawl everything.
+
+**5. The reject regex applies to page requisites as well as to links.** An extension-less image and an iframe the page itself embedded were refused along with the pages the pattern was written for.
+
+What is generated is `--level=1` plus, for every crawled host, the same fence an assets-only host gets: refuse any URL without an asset extension. The seeds pass because wget never tests a start URL against the reject regex, and a seed that redirects keeps its files because wget ignores a regex refusal when choosing whether to read a redirect's target — its debug log: *"Ignoring decision for redirects, decided to load it."* `allow_extensionless` is not consulted for this fence; on a host whose pages are crawled, an extension-less URL is a page. The level is still doing work behind it: a host allowed extension-less URLs can serve a page no pattern can see, and one level is where a chain of those stops.
+
+**What it costs is finding 5.** An image or iframe the crawled host serves at a URL without an asset extension is refused too, and the audit reports it in its own bucket rather than as a gap ([below](#an-exclusion-is-not-a-gap)). How often that bites was counted rather than guessed: across one instance's 24 sites and 908,802 recorded URLs, what the fence would have refused on a crawled host was pages, feeds, Blogger's share widget, four widget-feed scripts and `robots.txt` — not one image or stylesheet. Favicons and SVG sprites have extensions.
+
+**browsertrix is not handed the fence.** It reads the same generated reject list as wget and applies it to network requests as well as to pages (`--blockRules`), where a rule refusing every page on the host refuses the page being captured. It has a real depth 0, `--depth 0`, and a browser loads what a page displays whatever its URL looks like. The two engines differ at this depth in one respect: a browser does not follow a link to a full-size image, because displaying the page does not load it.
+
 ### Assets the crawler cannot reach at all
 
 Some references never become a URL the crawler can see. A Blogger skin writes its theme images as `url(https\:\/\/themes.googleusercontent.com\/image?id=…)`; wget does not decode CSS escapes, so it requests the escaped text against the blog itself, 404s, and never learns the real URL exists. No scope setting reaches these — the host can be perfectly in scope and the asset is still lost.
@@ -384,10 +402,11 @@ This is the general shape for a whole class of problem: **where discovery can se
 
 ### An exclusion is not a gap
 
-The audit splits what a page asked for and did not get into two lists that read very differently:
+The audit splits what a page asked for and did not get into lists that read very differently:
 
 - **In scope and still absent** — `missing_assets`. Something went wrong, or a flag is set wrong. This is the number worth acting on.
 - **Outside the scope** — `excluded_assets`. A host with its boxes unticked, or a URL a reject pattern covers. This is a setting, and the report says so and names the host.
+- **Not followed** — `unfollowed_assets`. A capture at [depth 0](#depth-0-is-not---level0), made by an engine on record as not running scripts, refused a file on the site's own host whose URL has no asset extension, because it could not tell it from a page. Nothing went wrong and no setting is off; the report says a full capture fetches it. A browser engine, or one with no record, gets no such explanation — its misses are counted as gaps.
 
 Keeping them in one number is what makes a report worth ignoring. On a Blogger blog the second list is never empty — the preset deliberately drops `www.blogger.com`, whose contribution is the owner's admin-bar CSS and a comment iframe that cannot work offline — so every capture would open with "3 referenced assets were not captured" forever. Three rounds of live testing were spent chasing exactly that, while it was working as designed.
 

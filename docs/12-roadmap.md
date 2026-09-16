@@ -485,6 +485,29 @@ Also worth doing: run `--warc-dedup` against a second capture and verify you get
 
 ---
 
+## After M8 — a capture of listed pages that stays on them ✅
+
+**Ships:** feed captures and pasted URL lists that fetch the pages they were given, what those pages display and the files they link to — and no other page.
+
+- [x] Depth 0 for wget: `--level=1` with every crawled host's page URLs fenced, never `--level=0`, which wget reads as no limit ([04](04-discovery-and-scoping.md#depth-0-is-not---level0))
+- [x] `only_extra_seeds` read as depth 0 when the job runs, so a feed job queued with the old depth, and a bulk import that never set one, both stop at their pages ([08](08-feeds-and-scheduling.md#incremental-captures))
+- [x] The manifest and the asset audit see the scope the capture ran with, not the site's
+- [x] What depth 0 refuses on the site's own host is reported as that, not as a gap ([04](04-discovery-and-scoping.md#an-exclusion-is-not-a-gap))
+
+**Done when:** a feed capture of a Blogger post costs the post. *Measured on wget 1.25.0 against a Blogger-shaped site — a post whose sidebar links five monthly archives, five labels and the home page, twenty images on each — 250 requests became 11, with the full-size image a thumbnail links to still among them. The live blog it models spent 42 minutes a capture on 83 sidebar pages and about 1,560 images, 1,580 of its 1,723 URLs revisits. Asserted end to end in `test_capture_depth_e2e.py` on wget 1.25.0 and 1.21.4, with fourteen properties reverted in turn to confirm a test fails without each.*
+
+**The number was measured, and the cost was not.** Depth 1 had been checked against a seed that links to an index: wget fetched the index and stopped, as documented. That index had no images. `--page-requisites` takes one level past the limit to finish a page, so what depth 1 really fetched was every page one link from the post and everything on each of them — and a Blogger post links its whole sidebar.
+
+**Found on the way:**
+
+- **A pasted list crawled every site on it.** Bulk import's "archive only these pages" set where the crawl started and nothing else, and the site's depth was unlimited. Its test asserted the flag, not the crawl.
+- **The manifest recorded the site's scope, not the capture's.** Post-processing re-read the site's boundary when the crawl ended, so a companion pass was written down, and audited, as though it had crawled the whole site.
+- **`max_depth: 0` was always accepted, and always meant "crawl everything"** on wget.
+
+**Not changed, and worth knowing:** the archived front page, labels and monthly archives no longer move with each new post; a full capture refreshes them. A browsertrix capture that is paused and resumed does not carry its URL list or its depth into the resuming job, which is then prepared as a capture of the whole site — so a paused feed capture on that engine is not resumed as one.
+
+---
+
 ## Sequencing notes
 
 **Why discovery before replay.** Discovery determines *what gets captured*; getting it wrong means recapturing everything later. Replay is read-only over whatever exists and can be built against any archive.

@@ -18,9 +18,11 @@ from cairn.services.scope import (
     Scope,
     ScopeError,
     asset_only_reject_pattern,
+    build_reject_patterns,
     combine_patterns,
     default_scope,
     scheme_twin_reject_pattern,
+    seed_only_fences,
     to_wget_args,
 )
 
@@ -241,6 +243,81 @@ def test_unlimited_depth_is_the_default() -> None:
     """ArchiveBox's depth ceiling is the failure this avoids; nothing should
     quietly reintroduce one."""
     assert "--level=inf" in to_wget_args(blog_scope()).args
+
+
+# ── depth 0: the listed pages, and no other page ─────────────────────────
+
+
+def _reject_regex(scope: Scope) -> re.Pattern[str]:
+    flag = next(a for a in to_wget_args(scope).args if a.startswith("--reject-regex="))
+    return re.compile(flag.split("=", 1)[1])
+
+
+def test_depth_zero_is_never_wget_level_zero() -> None:
+    """wget reads `--level=0` as no limit at all. Measured on 1.25.0 against a
+    Blogger-shaped site: 252 requests where `--level=1` made 250, the extra
+    two being files two links from the seed."""
+    args = to_wget_args(blog_scope(max_depth=0)).args
+    assert "--level=1" in args
+    assert "--level=0" not in args
+    assert "--level=inf" not in args
+
+
+def test_depth_zero_fences_every_page_on_a_crawled_host() -> None:
+    """One level is still one level: every sidebar link on a Blogger post, and
+    then every image on each of those pages. The fence is what keeps depth 0
+    from being depth 1 — while leaving the files a post links to fetchable,
+    because on Blogger that is where the full-size images are."""
+    reject = _reject_regex(blog_scope(max_depth=0))
+    for page in (
+        "https://example.blogspot.com/",
+        "https://example.blogspot.com/2026/09/older-post.html",
+        "https://example.blogspot.com/2026/09/",
+        "https://example.blogspot.com/search/label/magic",
+        "https://example.blogspot.com/search?updated-max=2026-09-01T00:00:00Z",
+        "https://example.blogspot.com/feeds/posts/default",
+    ):
+        assert reject.search(page), page
+    for wanted in (
+        "https://example.blogspot.com/favicon.ico",
+        "https://example.blogspot.com/files/story.pdf",
+        "https://example.blogspot.com/theme.css?v=3",
+        "https://1.bp.blogspot.com/-abc/s1600/cover.jpg",
+    ):
+        assert not reject.search(wanted), wanted
+
+
+def test_the_fence_treats_extensionless_urls_as_pages_whatever_the_host_says() -> None:
+    """`allow_extensionless` widens an assets-only host to image-proxy URLs.
+    On a host whose pages are crawled, an extension-less URL is a page, and
+    honouring the flag there would let every one of them through."""
+    scope = blog_scope(max_depth=0)
+    scope.hosts[0].allow_extensionless = True
+    fence = re.compile(combine_patterns(seed_only_fences(scope)))
+    assert fence.search("https://example.blogspot.com/search/label/magic")
+    assert not fence.search("https://example.blogspot.com/favicon.ico")
+
+
+def test_only_depth_zero_is_fenced() -> None:
+    for depth in (None, 1, 3):
+        scope = blog_scope(max_depth=depth)
+        assert seed_only_fences(scope) == [], depth
+        assert _reject_regex(scope).pattern == combine_patterns(build_reject_patterns(scope))
+
+
+def test_the_fence_is_not_in_the_list_every_engine_reads() -> None:
+    """browsertrix reads `build_reject_patterns` and applies it to network
+    requests as well as pages, where a rule refusing every page on the host
+    refuses the page being captured. It has a real depth 0 of its own."""
+    scope = blog_scope(max_depth=0)
+    assert seed_only_fences(scope)
+    assert not set(seed_only_fences(scope)) & set(build_reject_patterns(scope))
+
+
+def test_depth_zero_says_what_it_skips() -> None:
+    notes = " ".join(to_wget_args(blog_scope(max_depth=0)).notes)
+    assert "Only the pages the capture starts from are fetched" in notes
+    assert "On example.blogspot.com, a URL that does not end in a file type" in notes
 
 
 def test_notes_warn_about_dropped_extensionless_assets() -> None:

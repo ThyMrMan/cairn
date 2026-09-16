@@ -26,6 +26,16 @@ module may generate:
      the Blogger preset turns it on for the hosts where it is known safe —
      and `missing_assets` reporting after a capture catches whatever slips
      through either way.
+
+Two more were measured later, against a Blogger-shaped site, and constrain
+what depth may mean (see `seed_only_fences`):
+
+  4. `--level=0` is not "the seed only". wget reads it as no limit at all:
+     252 requests where `--level=1` made 250, the extra two being files two
+     links from the seed.
+  5. The reject regex applies to page requisites as well as to links. A
+     fence over a host's pages also refused an extension-less image and an
+     iframe that the page itself embedded.
 """
 
 from __future__ import annotations
@@ -128,6 +138,9 @@ class Scope:
         default_factory=lambda: {"sitemap": True, "feeds": True}
     )
     path_prefix: str | None = None
+    # None is no limit. 0 is the seeds as pages and nothing else that is a
+    # page: what they need to display and the files they link to still come,
+    # which on wget is not what `--level=0` means (`seed_only_fences`).
     max_depth: int | None = None
     max_pages: int | None = None
     max_bytes: int | None = None
@@ -395,6 +408,51 @@ def build_reject_patterns(scope: Scope) -> list[str]:
     return patterns
 
 
+def seed_only_fences(scope: Scope) -> list[str]:
+    """At depth 0, fence the crawled hosts the way assets-only hosts are fenced.
+
+    **Depth 0 is the seeds as pages, and nothing else that is a page.** What
+    they need to display comes with them, and so do the files they link to —
+    on Blogger that is every full-size image, since a post shows a thumbnail
+    and links the original. wget has no flag for that, and the two that come
+    closest were measured against a Blogger-shaped site: a post whose sidebar
+    links five monthly archives, five labels and the home page, twenty images
+    on each, and its own image linked in full size.
+
+        --recursive --level=1 --page-requisites     250 requests
+        --page-requisites                            12, no full-size image
+        --level=1 as above, plus this fence          11, full-size image kept
+
+    `--level=1` alone is what feed captures ran, on the reading that it stops
+    at the archive index. It does stop there — and then fetches every
+    requisite of every page it stopped at, because `--page-requisites` takes
+    one level past the limit to finish a page. On a real blog that was 83
+    pages and about 1,560 images, 42 minutes a capture, to add one post.
+
+    The fence refuses every URL on a crawled host that has no asset
+    extension, which is how an assets-only host is already kept from being
+    crawled. The seeds pass because wget never tests a start URL against the
+    reject regex, and a seed that redirects still gets its files — wget
+    ignores a regex refusal when deciding whether to read a redirect target.
+    `allow_extensionless` is not consulted: on a host whose pages are
+    crawled, an extension-less URL is a page.
+
+    **The cost is finding 5.** An image or iframe the crawled host serves at
+    a URL without an asset extension is refused too, and the asset audit says
+    so in a bucket of its own. Across one instance's 24 sites and 908,802 recorded
+    URLs, what it would have refused on a crawled host was pages, feeds,
+    Blogger's share widget, four widget-feed scripts and robots.txt — not
+    one image or stylesheet.
+
+    Not part of `build_reject_patterns`, because browsertrix reads that list
+    too, and passes it to `--blockRules`: a network rule refusing every page
+    on the host refuses the seed. browsertrix has a real depth 0.
+    """
+    if scope.max_depth != 0:
+        return []
+    return [asset_only_reject_pattern(HostRule(host=rule.host)) for rule in scope.crawl_hosts]
+
+
 def combine_patterns(patterns: list[str]) -> str:
     """Join alternatives into one regex.
 
@@ -429,7 +487,7 @@ def to_wget_args(scope: Scope, *, regex_type: Literal["pcre", "posix"] = "pcre")
     if scope.exclude_hosts:
         args.append(f"--exclude-domains={','.join(scope.exclude_hosts)}")
 
-    rejects = build_reject_patterns(scope)
+    rejects = build_reject_patterns(scope) + seed_only_fences(scope)
     if rejects:
         if regex_type == "posix":
             raise ScopeError(
@@ -449,7 +507,24 @@ def to_wget_args(scope: Scope, *, regex_type: Literal["pcre", "posix"] = "pcre")
         args.append("--no-parent")
         notes.append(f"Restricted to paths under {scope.path_prefix}.")
 
-    args.append("--level=inf" if scope.max_depth is None else f"--level={scope.max_depth}")
+    if scope.max_depth is None:
+        args.append("--level=inf")
+    elif scope.max_depth == 0:
+        # Never `--level=0`, which wget reads as no limit. One level, with
+        # every page past the seeds fenced off above: see `seed_only_fences`.
+        # The level still has work to do behind the fence. A host allowed
+        # extension-less URLs can serve a page no pattern can see, and one
+        # level is where a chain of those stops.
+        args.append("--level=1")
+        notes.append(
+            "Only the pages the capture starts from are fetched, with what they need to "
+            "display and the files they link to. On "
+            + ", ".join(rule.host for rule in scope.crawl_hosts)
+            + ", a URL that does not end in a file type like .jpg or .css counts as a page "
+            "and is skipped."
+        )
+    else:
+        args.append(f"--level={scope.max_depth}")
 
     if scope.max_bytes:
         args.append(f"--quota={scope.max_bytes}")

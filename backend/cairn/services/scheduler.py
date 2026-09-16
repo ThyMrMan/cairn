@@ -563,9 +563,10 @@ class Scheduler:
                     "item_ids": [item.id for item in batch],
                     "extra_seeds": [item.url for item in batch],
                     # The whole point of an incremental capture: this run is
-                    # about these posts, not about re-enumerating the site.
+                    # about these posts, not about re-enumerating the site —
+                    # nor about following them into it, which is what this
+                    # flag also decides when the job runs (depth 0, docs/08).
                     "only_extra_seeds": True,
-                    "max_depth": 1,
                 },
                 # Behind a user-initiated capture. A scheduled poll must never
                 # make somebody wait for something they asked for.

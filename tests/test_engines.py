@@ -24,7 +24,7 @@ from cairn.engines.protocol import (
 )
 from cairn.engines.wget import build_argv, parse_cdx_line, parse_log_error
 from cairn.services import storage
-from cairn.services.scope import CSS_ESCAPE_REJECT
+from cairn.services.scope import CSS_ESCAPE_REJECT, Scope, combine_patterns, seed_only_fences
 
 GOOD_MANIFEST = {
     "apiVersion": "cairn.engine/v1",
@@ -673,6 +673,40 @@ def test_both_engines_enforce_the_same_reject_set(tmp_path: Path) -> None:
         "https://www.blogger.com/img/logo.png",
     ):
         assert not compiled.search(url), url
+
+
+def test_depth_zero_is_where_the_engines_part_ways(tmp_path: Path) -> None:
+    """Both stop at the listed pages; they get there differently, on purpose.
+
+    wget has no depth 0 — `--level=0` is unlimited — so it takes one level and
+    fences every page past the seeds, which it never tests against the regex.
+    browsertrix has a real one, and must not be handed that fence: it applies
+    the list to network requests too, and a rule refusing every page on the
+    host refuses the page being captured. This is the one place the reject
+    sets above are allowed to differ, and the difference is the fence alone.
+    """
+    from cairn.engines.browsertrix import Runner
+    from cairn.engines.protocol import EventWriter
+
+    seed = "https://b.blogspot.com/2026/09/new-post.html"
+    scope_dict = {
+        "seeds": [seed],
+        "hosts": [{"host": "b.blogspot.com", "crawl_pages": True, "fetch_assets": True}],
+        "max_depth": 0,
+    }
+    spec = wget_spec(tmp_path, seeds=[seed], scope=scope_dict, config={})
+
+    bt = Runner(spec, EventWriter())._argv()
+    assert bt[bt.index("--depth") + 1] == "0"
+    browsertrix_regex = bt[bt.index("--blockRules") + 1]
+    assert not re.search(browsertrix_regex, seed), "browsertrix would block its own seed"
+
+    wget = build_argv(spec, tmp_path / "out", tmp_path / "tmp", tmp_path / "tmp")
+    assert {"--recursive", "--level=1", "--page-requisites"} <= set(wget)
+    wget_regex = next(a.split("=", 1)[1] for a in wget if a.startswith("--reject-regex="))
+    assert re.search(wget_regex, seed), "the fence covers the seed's shape; wget never asks"
+    fence = combine_patterns(seed_only_fences(Scope.from_dict(scope_dict)))
+    assert wget_regex == f"{browsertrix_regex}|{fence}"
 
 
 def test_browsertrix_progress_says_it_is_counting_pages(tmp_path: Path) -> None:

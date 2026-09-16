@@ -332,7 +332,7 @@ argv = [
     f"http-header-user-agent: {ua}",
     # ── recursion & scope ──────────────────────────────────────────
     "--recursive",
-    "--level=inf",
+    "--level=inf",  # from max_depth; depth 0 is --level=1 plus a page fence (04)
     "--page-requisites",
     "--span-hosts",
     f"--domains={','.join(allowed_hosts)}",

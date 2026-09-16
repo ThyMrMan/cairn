@@ -13,7 +13,10 @@ the *origin*, and the pasted URLs become the capture's seeds.
 domains, each triggering a full crawl of somebody's site, is a plausible way
 to get an IP address blocked and a certain way to fill a disk. The default is
 `only_extra_seeds` — archive exactly the pages that were listed and nothing
-else — with crawling available per group and never assumed.
+else — with crawling available per group and never assumed. The flag limited
+where the crawl *started* and nothing more, so each listed page was followed
+into its site with no depth limit; the job runner now reads it as depth 0 as
+well (docs/08).
 
 **Grouping by registrable domain means a group can span hosts.** `example.com`
 and `www.example.com` are one site and two hosts; a scope built from the first

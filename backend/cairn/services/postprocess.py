@@ -35,7 +35,7 @@ from cairn.db.models import Capture, CaptureUrl, EngineRecord, Site
 from cairn.db.types import utcnow
 from cairn.logging import get_logger
 from cairn.services import htmlrefs, interstitial, replay, storage
-from cairn.services.scope import Scope, ScopeError, build_reject_patterns
+from cairn.services.scope import Scope, ScopeError, build_reject_patterns, seed_only_fences
 
 log = get_logger(__name__)
 
@@ -491,6 +491,7 @@ def step_asset_audit(ctx: Context) -> None:
 
     missing = sorted(u for u in referenced if u not in captured)
     absent, excluded = _partition_missing(ctx, missing)
+    absent, unfollowed = _split_unfollowed(ctx, absent)
     if absent:
         ctx.warnings.append(
             f"{len(absent)} referenced asset(s) were not captured (e.g. {', '.join(absent[:3])})."
@@ -501,6 +502,14 @@ def step_asset_audit(ctx: Context) -> None:
             f"{len(excluded)} referenced asset(s) are outside this site's scope, so they "
             f"were not fetched: {', '.join(hosts[:4])}. That is what the domain picker is "
             "currently set to, not a failure — turn the host on if you want them."
+        )
+    if unfollowed:
+        ctx.warnings.append(
+            f"{len(unfollowed)} referenced file(s) on this site's own host were not fetched "
+            f"(e.g. {', '.join(unfollowed[:3])}). This capture takes only the pages it was "
+            "given, and a URL that does not end in a file type like .jpg or .css reads to the "
+            "crawler as one more page, so these were skipped with the rest. A full capture of "
+            "the site fetches them."
         )
     if lazy_hits:
         ctx.warnings.append(_lazy_image_warning(ctx, lazy_hits, scanned))
@@ -601,6 +610,7 @@ def step_asset_audit(ctx: Context) -> None:
     # exclusions are counted separately so neither one dilutes the other.
     ctx.stats["missing_assets"] = len(absent)
     ctx.stats["excluded_assets"] = len(excluded)
+    ctx.stats["unfollowed_assets"] = len(unfollowed)
     ctx.stats["lazy_image_hints"] = lazy_hits
     ctx.stats["css_escaped_failures"] = len(mangled)
 
@@ -1051,6 +1061,49 @@ def _partition_missing(ctx: Context, missing: list[str]) -> tuple[list[str], lis
         else:
             absent.append(url)
     return absent, excluded
+
+
+def _split_unfollowed(ctx: Context, absent: list[str]) -> tuple[list[str], list[str]]:
+    """Take out of `absent` what a depth-0 capture refused on purpose.
+
+    A capture of listed pages fences every URL on the site's own hosts that
+    has no asset extension, because to a crawler that decides by URL that is a
+    page (`scope.seed_only_fences`). An image or iframe the site serves at such
+    a URL is refused along with the pages. It is not in the archive, and saying
+    so is right; saying it the way a real gap is said — "something went wrong,
+    or a flag is set wrong" — is not, because nothing did and no flag is.
+
+    Only for an engine that is on record as not running scripts. A browser
+    fetches what a page displays whatever its URL looks like, so a miss there
+    is a real one; and an engine with no record gets the cautious reading, as
+    everywhere else in this audit.
+    """
+    if not absent or not _engine_decides_by_url(ctx):
+        return absent, []
+    try:
+        fences = [re.compile(p) for p in seed_only_fences(Scope.from_dict(ctx.scope))]
+    except (ScopeError, re.error, TypeError, ValueError):
+        return absent, []
+    kept: list[str] = []
+    unfollowed: list[str] = []
+    for url in absent:
+        (unfollowed if any(fence.search(url) for fence in fences) else kept).append(url)
+    return kept, unfollowed
+
+
+def _engine_decides_by_url(ctx: Context) -> bool:
+    """Whether the capture's engine is on record as not running page scripts.
+
+    Unlike `_engine_runs_javascript`, an engine with no record is not assumed
+    either way: this one is used to explain a gap, and explaining one needs
+    evidence.
+    """
+    engine_id = ctx.capture.engine_id
+    if not engine_id:
+        return False
+    record = ctx.session.get(EngineRecord, engine_id)
+    capabilities = (record.manifest or {}).get("capabilities") if record else None
+    return isinstance(capabilities, dict) and capabilities.get("javascript") is False
 
 
 def _css_escaped_requests(ctx: Context) -> list[str]:
