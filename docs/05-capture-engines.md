@@ -597,7 +597,7 @@ everything else is best-effort and reports into the manifest.
 | 20 | `checksum` | SHA-256 every artifact | ✓ |
 | 30 | `stats` | Roll up counts and sizes onto the site row | ✓ |
 | 35 | `manifest` | Write `manifest.json` | ✓ |
-| 40 | `cdxj-index` | Build `index/site.cdxj` across every WARC the site has | |
+| 40 | `cdxj-index` | Bring `index/site.cdxj` up to date across every WARC the site has, reading only the ones it has not indexed | |
 | 50 | `text-extract` | Extract readable text into `derived/text/` and index it for search | |
 | 60 | `asset-audit` | Report referenced-but-uncaptured assets and lazy-load hints | |
 | 65 | `screenshot` | Thumbnail of the archived front page, for the site card | |
@@ -613,6 +613,11 @@ post-processor endpoint ([09](09-api.md#engines--post-processors)).
 **Indexing is not required, and that is deliberate.** A capture whose index
 fails is still a capture — the WARCs are on disk, checksummed, and the index
 can be rebuilt from them at any time with `POST /api/sites/{id}/reindex`.
+It is also no longer a rebuild: a site's index used to be re-read from every
+WARC after every capture, which on tens of gigabytes was minutes per feed
+capture. It is now updated from the new capture's WARCs alone, and the
+result is the file a rebuild would write
+([07](07-replay.md#indexing)).
 Failing the capture would throw away good bytes over a derived file.
 
 **Three rows this table used to carry are not post-processors.**

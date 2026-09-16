@@ -37,6 +37,7 @@
               …
           index/
             site.cdxj                 # merged across all captures — what pywb reads
+            site.cdxj.json            # which WARCs it holds, so a capture adds only its own
           derived/
             text/                     # <capture>.jsonl — extracted text for search
             screenshots/              # home.jpg + home.json — the site card's thumbnail
@@ -558,7 +559,8 @@ Everything below is regenerable and safe to delete:
 
 | Artifact | Rebuilt by | When |
 |---|---|---|
-| `index/site.cdxj` | `cdxj-indexer` over the site's WARCs | After every capture; on demand |
+| `index/site.cdxj` | `cdxj-indexer` over the WARCs it has not indexed yet; all of them on a rebuild | Updated after every capture and when one is deleted; rebuilt on demand |
+| `index/site.cdxj.json` | Written with every index | Alongside it. Deleting it costs one rebuild, never a wrong index |
 | `/data/by-tag/**` | Symlink tree rebuild | After any tag, folder or site change; at boot |
 | `/data/replay/config.yaml` and `collections/**` | `cairn replay-init` | At boot; on demand |
 | `derived/text/**` | Text extraction post-processor | After capture (M8) |

@@ -12,8 +12,11 @@ from cairn.api.deps import AppSettings, ClientIp, Csrf, CurrentUser, DbSession
 from cairn.api.errors import ApiError
 from cairn.api.schemas import CaptureDetail, CaptureUrlEntry, JobAccepted, Ok, Page
 from cairn.db.models import Capture, CaptureUrl, Job, Site
-from cairn.services import audit, search, storage, textextract, urlshapes
+from cairn.logging import get_logger
+from cairn.services import audit, replay, search, storage, textextract, urlshapes
 from cairn.services.filters import LIKE_ESCAPE, like_contains
+
+log = get_logger(__name__)
 
 router = APIRouter(tags=["captures"], dependencies=[Csrf])
 
@@ -274,6 +277,7 @@ def delete_capture(
         )
 
     directory = _capture_dir(settings, db, capture)
+    dir_name = capture.dir_name
     site = db.get(Site, capture.site_id)
     # Explicitly, before the row goes: the FTS index has no foreign key to
     # cascade through, so its rows would outlive the capture that put them
@@ -294,6 +298,19 @@ def delete_capture(
             raise ApiError(
                 "io_error", f"Removed the record but not the files: {exc}", status_code=500
             ) from exc
+
+    # After the files, not before: if they could not be removed, the index
+    # still describing them is the truth. This is the reindex docs/09 always
+    # said a delete triggered, and never did — the index kept naming the
+    # capture until the site's next one, and replay answered 503 for it.
+    if site is not None:
+        try:
+            replay.forget_capture(settings, site.archive_path, dir_name)
+        except (OSError, ValueError) as exc:
+            log.warning(
+                "the capture is gone but its records are still in the replay index",
+                extra={"capture": capture_id, "err": str(exc)},
+            )
 
     audit.record(
         db,

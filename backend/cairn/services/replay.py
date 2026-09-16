@@ -33,15 +33,20 @@ assumed, and each one changed the design:
 
 from __future__ import annotations
 
+import dataclasses
+import functools
+import heapq
 import io
 import json
 import os
 import re
 import shutil
+import threading
 from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 import yaml
 from sqlalchemy import select
@@ -53,6 +58,16 @@ from cairn.services import storage
 log = get_logger(__name__)
 
 INDEX_FILE = "site.cdxj"
+# What the index holds, WARC by WARC, so a capture can add its own records
+# without re-reading everybody else's (`update_index`). Beside the index
+# because it describes that file and nothing else. pywb loads only names
+# ending in .cdx, .cdxj, .idx or .summary from an index directory — read off
+# 2.9.1's `BaseDirectoryIndexSource` — so this one is invisible to it.
+INDEX_STATE_FILE = "site.cdxj.json"
+# Bumped whenever the lines an index holds for a given WARC would change — a
+# new filter here, a different way of calling the indexer — so that every
+# index is rebuilt once rather than keeping lines a rebuild would not write.
+INDEX_FORMAT = 1
 CONFIG_FILE = "config.yaml"
 # pywb's own names for the two directories it looks for inside a collection.
 INDEXES_LINK = "indexes"
@@ -88,6 +103,11 @@ class IndexResult:
     #: Records present in the WARCs and deliberately left out of the index.
     #: See `build_index`.
     withheld: int = 0
+    #: WARCs read to produce this index: every one for a rebuild, only the
+    #: new or changed ones for an update.
+    read: int = 0
+    #: Why the index was rebuilt from scratch; None when it was updated.
+    rebuilt: str | None = None
 
 
 def collection_name(site_id: int) -> str:
@@ -118,12 +138,12 @@ def site_warcs(settings: Settings, archive_path: str) -> list[Path]:
 def build_index(
     settings: Settings, archive_path: str, *, withhold: list[str] | None = None
 ) -> IndexResult:
-    """Rebuild a site's CDXJ across all of its captures.
+    """Rebuild a site's CDXJ from every WARC it has.
 
-    Always a full rebuild, never an append: rebuilds are fast and appending
-    invites a whole class of drift bugs where the index and the WARCs disagree
-    about a capture that was deleted. Written to a temp file and renamed, so
-    replay never reads a half-written index.
+    The repair: what Rebuild index and `cairn reindex` do, and what
+    `update_index` falls back to whenever it cannot vouch for its own record
+    of what the index holds. Written to a temp file and renamed, so replay
+    never reads a half-written index.
 
     **`withhold` keeps a recorded URL out of replay without touching the
     archive.** Some things get into a WARC despite the scope rejecting them,
@@ -146,20 +166,100 @@ def build_index(
     An export is the archive, and withholding is a statement about *this
     instance's replay* rather than about what was captured.
     """
-    site_root = storage.site_dir(settings, archive_path)
-    warcs = site_warcs(settings, archive_path)
+    patterns = _normalised(withhold)
     target = index_path(settings, archive_path)
+    with _exclusive(target):
+        return _rebuild(settings, archive_path, target, patterns, "a rebuild was asked for")
+
+
+def update_index(
+    settings: Settings, archive_path: str, *, withhold: list[str] | None = None
+) -> IndexResult:
+    """Bring a site's CDXJ up to date, reading only the WARCs it has not seen.
+
+    What post-processing does after every capture. It used to rebuild from
+    every WARC the site had: seconds for a small blog, minutes for a large
+    one. The indexer reads about 323 MB/s on a fast local disk, so a site with
+    50 GB of WARCs re-read all of it to add a feed capture of fifteen
+    megabytes — twice a day, for every blog on a feed.
+
+    `index/site.cdxj.json` records, for each WARC the index covers, its size,
+    its mtime and what it contributed. An update compares that with the WARCs
+    on disk: new ones are read, changed ones re-read, missing ones dropped,
+    and the fresh lines merged into the existing sorted file. The result is
+    byte-identical to `build_index` over the same tree. That is what answers
+    the argument this function used to be written against — that an index
+    which is appended to drifts from the archive it describes.
+
+    Whatever it cannot vouch for is a full rebuild instead: no record, a
+    record from another format or indexer version, different skip patterns,
+    or an index whose size and mtime are not the ones recorded when it was
+    written.
+    """
+    patterns = _normalised(withhold)
+    target = index_path(settings, archive_path)
+    with _exclusive(target):
+        state = _read_state(target)
+        reason = _why_rebuild(state, target, patterns)
+        if reason is not None or state is None:
+            return _rebuild(settings, archive_path, target, patterns, reason or "no record")
+        return _update(settings, archive_path, target, state, patterns)
+
+
+def forget_capture(settings: Settings, archive_path: str, dir_name: str) -> int:
+    """Take a deleted capture's records out of the index; return how many.
+
+    Reads no WARC — every record names its file, and a capture's files all
+    live under one directory — so this is cheap enough to run inside the
+    request that deleted the capture. Without it the index went on naming
+    files that were gone until the site's next capture, and replay answered
+    503 for every one of them.
+    """
+    target = index_path(settings, archive_path)
+    prefix = f"{storage.CAPTURES_DIR}/{dir_name}/"
+    with _exclusive(target):
+        if not target.is_file():
+            return 0
+        state = _read_state(target)
+        trusted = state is not None and _why_rebuild(state, target, None) is None
+        # The prefix as the indexer wrote it: opening quote, JSON escaping, no
+        # closing quote. Only a line containing that is worth parsing.
+        marker = json.dumps(prefix)[:-1]
+        dropped = 0
+        # The reader is closed before the writer renames over it; see
+        # `storage.atomic_writer`.
+        with storage.atomic_writer(target) as out, open(target, "rb") as current:
+            for raw in current:
+                line = raw.decode("utf-8")
+                if marker in line and _filename_of(line).startswith(prefix):
+                    dropped += 1
+                    continue
+                out.write(raw)
+        if trusted and state is not None:
+            files = {n: w for n, w in _recorded(state).items() if not n.startswith(prefix)}
+            _write_state(target, list(state.get("withhold") or []), files)
+        return dropped
+
+
+def _rebuild(
+    settings: Settings, archive_path: str, target: Path, patterns: list[str], reason: str
+) -> IndexResult:
+    log.info("rebuilding a replay index", extra={"index": str(target), "why": reason})
+    site_root = storage.site_dir(settings, archive_path)
     target.parent.mkdir(parents=True, exist_ok=True)
+    compiled = _compile(patterns)
 
-    if not warcs:
-        storage.write_atomic(target, b"")
-        return IndexResult(path=target, records=0, warcs=0)
+    lines: list[str] = []
+    files: dict[str, _Warc] = {}
+    warcs = site_warcs(settings, archive_path)
+    for warc in warcs:
+        # Before reading, so a WARC still growing is recorded smaller than it
+        # ends up, and the next update reads it again.
+        size, mtime_ns = _stat(warc)
+        kept, withheld = _index_warc(site_root, warc, compiled)
+        lines.extend(kept)
+        files[_relative(site_root, warc)] = _Warc(size, mtime_ns, len(kept), withheld)
 
-    lines = cdxj_lines(site_root, warcs)
-    withheld = 0
-    if withhold:
-        keep, withheld = _without(lines, withhold)
-        lines = keep
     # A CDXJ line is `<surt> <timestamp> <json>`, and the timestamp is a
     # fixed-width 14 digits, so ordinary string sort is SURT-then-time order —
     # which is what makes "every capture of this URL" a range scan.
@@ -169,7 +269,215 @@ def build_index(
     # copy written on Windows must be byte-identical to one written in the
     # container, or "rebuild and compare" stops meaning anything.
     storage.write_atomic(target, "".join(lines).encode("utf-8"))
-    return IndexResult(path=target, records=len(lines), warcs=len(warcs), withheld=withheld)
+    _write_state(target, patterns, files)
+    return _result(target, files, len(warcs), read=len(warcs), rebuilt=reason)
+
+
+def _update(
+    settings: Settings,
+    archive_path: str,
+    target: Path,
+    state: dict[str, Any],
+    patterns: list[str],
+) -> IndexResult:
+    site_root = storage.site_dir(settings, archive_path)
+    recorded = _recorded(state)
+    on_disk = {_relative(site_root, warc): warc for warc in site_warcs(settings, archive_path)}
+    seen = {name: _stat(warc) for name, warc in on_disk.items()}
+
+    gone = recorded.keys() - on_disk.keys()
+    changed = {
+        name
+        for name in recorded.keys() & on_disk.keys()
+        if seen[name] != (recorded[name].size, recorded[name].mtime_ns)
+    }
+    new = on_disk.keys() - recorded.keys()
+    files = {name: w for name, w in recorded.items() if name not in gone and name not in changed}
+    if not (gone or changed or new):
+        return _result(target, files, len(on_disk), read=0)
+
+    compiled = _compile(patterns)
+    fresh: list[str] = []
+    for name in sorted(new | changed):
+        kept, withheld = _index_warc(site_root, on_disk[name], compiled)
+        fresh.extend(kept)
+        files[name] = _Warc(*seen[name], records=len(kept), withheld=withheld)
+    fresh.sort()
+
+    # Both inputs are in plain string order, so a merge of the two is the
+    # order a rebuild's single sort produces — and the bytes are the same.
+    with storage.atomic_writer(target) as out, open(target, "rb") as current:
+        for line in heapq.merge(_lines_except(current, gone | changed), fresh):
+            out.write(line.encode("utf-8"))
+    _write_state(target, patterns, files)
+    return _result(target, files, len(on_disk), read=len(new | changed))
+
+
+def _result(
+    target: Path, files: dict[str, _Warc], warcs: int, *, read: int, rebuilt: str | None = None
+) -> IndexResult:
+    return IndexResult(
+        path=target,
+        records=sum(w.records for w in files.values()),
+        warcs=warcs,
+        withheld=sum(w.withheld for w in files.values()),
+        read=read,
+        rebuilt=rebuilt,
+    )
+
+
+def _index_warc(
+    site_root: Path, warc: Path, compiled: list[re.Pattern[str]]
+) -> tuple[list[str], int]:
+    """One WARC's lines, and how many of its records were withheld.
+
+    One WARC at a time, including in a rebuild. cdxj-indexer keeps no state
+    from one input file to the next — each gets its own record iterator — so
+    a file's lines are the same whatever else is indexed beside it, which is
+    the property an update depends on.
+    """
+    lines = cdxj_lines(site_root, [warc])
+    if not compiled:
+        return lines, 0
+    return _drop_matching(lines, compiled)
+
+
+def _lines_except(current: BinaryIO, files: set[str]) -> Iterator[str]:
+    """An index's lines, minus those naming any of `files`."""
+    # Each filename as the indexer wrote it, quotes and escaping included, so
+    # most lines are ruled out without parsing any JSON.
+    markers = [json.dumps(name) for name in files]
+    for raw in current:
+        line = raw.decode("utf-8")
+        if markers and any(m in line for m in markers) and _filename_of(line) in files:
+            continue
+        yield line
+
+
+def _filename_of(line: str) -> str:
+    try:
+        return str(json.loads(line.split(" ", 2)[2]).get("filename") or "")
+    except (IndexError, ValueError, AttributeError):
+        return ""
+
+
+# ── what the index holds ─────────────────────────────────────────────────
+
+
+@dataclass(frozen=True, slots=True)
+class _Warc:
+    """One WARC as the index holds it."""
+
+    size: int
+    mtime_ns: int
+    records: int
+    withheld: int
+
+
+_EXCLUSIVE: dict[str, threading.Lock] = {}
+_EXCLUSIVE_GUARD = threading.Lock()
+
+
+@contextmanager
+def _exclusive(index: Path) -> Iterator[None]:
+    """One writer per index in this process.
+
+    Post-processing runs in a worker thread and Rebuild index in a request
+    thread, and an update that read the index while a rebuild replaced it
+    would merge into a file that no longer exists. `cairn reindex` runs in a
+    process of its own and is not covered — it is a repair somebody starts by
+    hand, and the worst it can race into is a record that no longer matches,
+    which the next update treats as a reason to rebuild.
+    """
+    with _EXCLUSIVE_GUARD:
+        lock = _EXCLUSIVE.setdefault(str(index), threading.Lock())
+    with lock:
+        yield
+
+
+def _normalised(withhold: list[str] | None) -> list[str]:
+    # The filter drops a line if any pattern matches, so order and repeats
+    # mean nothing — and must not read as a change.
+    return sorted(set(withhold or []))
+
+
+@functools.cache
+def _indexer_version() -> str:
+    from importlib import metadata
+
+    try:
+        return metadata.version("cdxj-indexer")
+    except metadata.PackageNotFoundError:  # pragma: no cover — declared in pyproject
+        return "unknown"
+
+
+def _stat(path: Path) -> tuple[int, int]:
+    stat = path.stat()
+    return stat.st_size, stat.st_mtime_ns
+
+
+def _state_path(index: Path) -> Path:
+    return index.with_name(INDEX_STATE_FILE)
+
+
+def _read_state(index: Path) -> dict[str, Any] | None:
+    try:
+        state = json.loads(_state_path(index).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return state if isinstance(state, dict) else None
+
+
+def _recorded(state: dict[str, Any]) -> dict[str, _Warc]:
+    return {str(name): _Warc(**entry) for name, entry in state["warcs"].items()}
+
+
+def _write_state(index: Path, patterns: list[str], files: dict[str, _Warc]) -> None:
+    """Record what `index` holds.
+
+    Written after the index and describing it by size and mtime, so a crash
+    between the two leaves a record that no longer matches the file — which
+    is a rebuild, never an update against the wrong one.
+    """
+    size, mtime_ns = _stat(index)
+    payload = {
+        "format": INDEX_FORMAT,
+        "indexer": _indexer_version(),
+        "withhold": patterns,
+        "index": {"size": size, "mtime_ns": mtime_ns},
+        "warcs": {name: dataclasses.asdict(files[name]) for name in sorted(files)},
+    }
+    storage.write_atomic(_state_path(index), (json.dumps(payload, indent=1) + "\n").encode("utf-8"))
+
+
+def _why_rebuild(
+    state: dict[str, Any] | None, index: Path, patterns: list[str] | None
+) -> str | None:
+    """Why the record cannot be trusted to update `index`, or None.
+
+    `patterns` None skips the skip-pattern check, for callers that only ever
+    take records out.
+    """
+    if not index.is_file():
+        return "there was no index"
+    if state is None:
+        return "nothing recorded which WARCs the index holds"
+    if state.get("format") != INDEX_FORMAT:
+        return "the index format changed"
+    if state.get("indexer") != _indexer_version():
+        return "cdxj-indexer changed"
+    if patterns is not None and state.get("withhold") != patterns:
+        return "the skip patterns changed"
+    described = state.get("index")
+    if not isinstance(described, dict):
+        return "the record does not describe an index"
+    if (described.get("size"), described.get("mtime_ns")) != _stat(index):
+        return "the index was rewritten by something that did not record it"
+    try:
+        _recorded(state)
+    except (AttributeError, KeyError, TypeError):
+        return "the record of indexed WARCs is unreadable"
+    return None
 
 
 def withheld_patterns(session: Any, site: Any) -> list[str]:
@@ -226,10 +534,15 @@ def _without(lines: list[str], patterns: list[str]) -> tuple[list[str], int]:
     the line. The SURT is canonicalised — host reversed, case folded, some
     parameters reordered — so a pattern a person wrote against the URL they
     saw in a fetch list would match it only by accident.
+    """
+    return _drop_matching(lines, _compile(patterns))
 
-    A pattern that will not compile is skipped rather than fatal. These come
-    from a scope somebody typed into, and one bad character should not cost
-    the site its whole replay index.
+
+def _compile(patterns: list[str]) -> list[re.Pattern[str]]:
+    """A pattern that will not compile is skipped rather than fatal.
+
+    These come from a scope somebody typed into, and one bad character should
+    not cost the site its whole replay index.
     """
     compiled = []
     for pattern in patterns:
@@ -237,9 +550,12 @@ def _without(lines: list[str], patterns: list[str]) -> tuple[list[str], int]:
             compiled.append(re.compile(pattern))
         except re.error as exc:
             log.warning("skipping an unusable withhold pattern", extra={"err": str(exc)})
+    return compiled
+
+
+def _drop_matching(lines: list[str], compiled: list[re.Pattern[str]]) -> tuple[list[str], int]:
     if not compiled:
         return lines, 0
-
     keep: list[str] = []
     dropped = 0
     for line in lines:
@@ -284,7 +600,8 @@ def cdxj_lines(site_root: Path, warcs: list[Path]) -> list[str]:
     # whatever warcio felt like raising, and none of it should escape as
     # something the caller has to know the indexer's internals to catch.
     except Exception as exc:
-        raise ReplayError(f"could not index {len(warcs)} WARC(s): {exc}") from exc
+        what = relative[0] if len(relative) == 1 else f"{len(warcs)} WARC(s)"
+        raise ReplayError(f"could not index {what}: {exc}") from exc
 
     lines = [
         line + "\n"

@@ -178,24 +178,31 @@ def step_manifest(ctx: Context) -> None:
 
 
 def step_cdxj_index(ctx: Context) -> None:
-    """Rebuild the site's replay index across every capture it has.
+    """Bring the site's replay index up to date with every capture it has.
 
     Across all captures, not just this one: the index is what gives replay its
     time dimension, so a page captured five times has five versions to switch
-    between. Rebuilding the lot is fast and removes any chance of the index
-    disagreeing with the archive about a capture that was deleted.
+    between. But only this capture's WARCs are read. Rebuilding the lot was
+    minutes on a large site after every feed capture, and `update_index`
+    produces the same bytes from the WARCs it has not seen yet.
 
     Not required. A capture whose index failed is still a complete, valid
     archive — the index is derived data, regenerable at any time from the
     Rebuild index action, and failing the capture over it would be a lie
     about what is on disk.
     """
-    result = replay.build_index(
+    result = replay.update_index(
         ctx.settings,
         ctx.site.archive_path,
         withhold=replay.withheld_patterns(ctx.session, ctx.site),
     )
     ctx.stats["index_records"] = result.records
+    # What this capture's post-processing had to read to get there — the one
+    # number that says whether the update did its job — and, when it could
+    # not update, why it rebuilt instead.
+    ctx.stats["index_warcs_read"] = result.read
+    if result.rebuilt:
+        ctx.stats["index_rebuilt"] = result.rebuilt
     # Declared, never silent. The bytes are in the WARC and replay will not
     # serve them, and a future reader has to be able to tell that apart from
     # "it was never captured" — otherwise the archive is quietly lying about

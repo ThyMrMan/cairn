@@ -216,7 +216,7 @@ cannot be deleted until that is done.
 **A capture stranded before that change** reads `interrupted` with no URLs,
 but its WARCs are whole and on disk under `captures/<dir>/warc/`. Rebuilding
 the site's index makes them replayable, and so does the site's next capture,
-whose post-processing re-indexes every WARC the site has. **Rebuild index** on
+whose post-processing indexes every WARC the index has not seen yet. **Rebuild index** on
 the Replay tab does it inside a web request, which on a site with tens of
 gigabytes of WARCs outlasts any browser's patience; run it in the container
 instead:

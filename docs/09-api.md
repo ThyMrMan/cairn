@@ -180,7 +180,7 @@ for why it is merged at resolve time rather than copied into sites.
 | `POST` | `/api/sites/{id}/capture` | `{kind: full\|incremental, extra_seeds?}` → `202 {job_id}`. The engine and its config come from the site, not from here — see below |
 | `GET` | `/api/sites/{id}/captures` | List |
 | `GET` | `/api/captures/{id}` | Manifest, WARC files, stats |
-| `DELETE` | `/api/captures/{id}` | `409` if it's the only capture unless `?force=true`; triggers reindex. `409 capture_running` while its job is still running — including after the crawl, while the capture is post-processed |
+| `DELETE` | `/api/captures/{id}` | `409` if it's the only capture unless `?force=true`. Takes the capture's records out of the replay index — without reading any WARC, so it is quick on any size of site — which this row always promised and the endpoint did not do until the index learned to update. `409 capture_running` while its job is still running — including after the crawl, while the capture is post-processed |
 | `GET` | `/api/captures/{id}/log` | Plain text; `?tail=500` |
 | `GET` | `/api/captures/{id}/urls` | With `?errors_only=true`, `?host=`, `?q=` |
 | `GET` | `/api/captures/{id}/url-shapes` | What the capture is fetching, grouped by URL shape, biggest first. Works mid-crawl. Each row carries a `pattern` — the reject regex meaning what that row means, or `null` |

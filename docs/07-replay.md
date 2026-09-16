@@ -33,7 +33,7 @@ The two origins are a **security boundary**, not a deployment detail — see [be
 
 ## Indexing
 
-After each capture, the `cdxj-index` post-processor rebuilds the site's index across **all** of its WARCs:
+The index spans **all** of a site's WARCs. After each capture the `cdxj-index` post-processor brings it up to date, reading only the WARCs it has not indexed yet; **Rebuild index** and `cairn reindex` rebuild it from every one of them. A rebuild is the equivalent of:
 
 ```bash
 cdxj-indexer --sort \
@@ -51,7 +51,12 @@ com,blogspot,example)/2019/04/post.html 20260809142612 {"url": "https://example.
 The key is a SURT (sort-friendly reversed URL) plus a timestamp, which is what makes "all captures of this URL, chronologically" a range scan rather than a search.
 
 **Rules.**
-- The index is always fully rebuilt, never appended. Full rebuilds are fast (a few seconds for tens of thousands of records) and eliminate a whole class of drift bugs.
+- **An update writes what a rebuild would, byte for byte.** This rule used to read "always fully rebuilt, never appended": rebuilds are fast, and appending invites drift. The first half stopped being true at scale. The indexer reads roughly 300 MB of WARC a second on a fast disk, so a site with tens of gigabytes re-read all of it after every feed capture of a few megabytes. The second half is kept by construction:
+  - `index/site.cdxj.json` records every WARC the index holds — its size, its mtime, the records it contributed and the records withheld — and the index file's own size and mtime.
+  - An update reads only the WARCs that are new or whose size or mtime changed, drops the lines of any that changed or disappeared, and merges the fresh lines into the sorted file. cdxj-indexer keeps no state from one input file to the next, and the index is in plain string order, so the merge produces exactly the order a rebuild's single sort does.
+  - Anything the record cannot vouch for is a rebuild instead: no record, a different record format or cdxj-indexer version, different skip patterns — a withheld record is not in the file, so bringing one back means reading its WARC — or an index whose size and mtime are not the ones recorded, whatever rewrote it. The record is written after the index, so a crash between the two is one of those cases.
+  - Deleting a capture takes its lines out without reading any WARC, because every line names its file.
+  - pywb loads only `.cdx`, `.cdxj`, `.idx` and `.summary` files from an index directory (read off 2.9.1's `BaseDirectoryIndexSource`), so the record beside the index is invisible to it.
 - Written to a temp file and renamed, as bytes rather than text so the line endings are identical on every platform. A half-written index is a broken site; a rebuild that differs only in newlines makes "did the index change?" unanswerable.
 - `filename` is stored **relative to the site directory**, so moving a site between folders doesn't invalidate the index. Get this wrong and every folder move silently breaks replay.
 

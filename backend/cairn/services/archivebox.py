@@ -375,7 +375,7 @@ def _import_host(
         tag_service.add_to_sites(session, [site.id], names)
 
     try:
-        index = replay.build_index(
+        index = replay.update_index(
             settings,
             site.archive_path,
             withhold=replay.withheld_patterns(session, site),

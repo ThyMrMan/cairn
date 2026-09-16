@@ -468,6 +468,23 @@ Also worth doing: run `--warc-dedup` against a second capture and verify you get
 
 ---
 
+## After M8 — an index that is updated, not rebuilt ✅
+
+**Ships:** post-processing that reads the WARCs a capture wrote rather than every WARC the site has.
+
+- [x] `update_index`: new and changed WARCs read, missing ones dropped, the rest merged, and the result byte-identical to a rebuild ([07](07-replay.md#indexing))
+- [x] A record beside the index (`site.cdxj.json`) and a full rebuild whenever it cannot vouch for the file
+- [x] Deleting a capture takes it out of the index — which docs/09 had promised all along — without reading a WARC
+- [x] Retention and ArchiveBox import update rather than rebuild
+
+**Done when:** a feed capture of a large site indexes in the time its own WARCs take to read. *Measured on a local SSD: a 1 GB site rebuilds in 2.76 s and updates after a 15 MB capture in 0.10 s; an update of a 540,000-line index — erica's size — takes 0.60 s, almost all of it the merge. A rebuild of erica's ~50 GB is minutes on a spinning array, and it was running after every feed poll. Asserted in `test_replay_incremental.py` against a rebuild of the same tree, byte for byte, with each property reverted in turn to confirm its test fails.*
+
+**The rule it replaced was "always rebuild, never append", and its reason was drift.** That reason is kept by construction rather than by cost: the index is in plain string order and cdxj-indexer keeps nothing from one input file to the next, so a merge of a file's lines lands exactly where a rebuild's sort puts them. Everything that could make the two differ — skip patterns, the indexer version, an index rewritten by something else, a crash between writing the index and its record — is a reason to rebuild.
+
+**Found on the way:** deleting a capture never touched the index. docs/09 said it triggered a reindex; nothing did, and replay went on answering 503 for the deleted capture's pages until the site was next captured.
+
+---
+
 ## Sequencing notes
 
 **Why discovery before replay.** Discovery determines *what gets captured*; getting it wrong means recapturing everything later. Replay is read-only over whatever exists and can be built against any archive.

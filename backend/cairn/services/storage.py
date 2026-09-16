@@ -18,9 +18,11 @@ import re
 import shutil
 import tempfile
 import unicodedata
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 import yaml
 
@@ -181,6 +183,29 @@ def write_atomic(path: Path, data: str | bytes, *, mode: int | None = None) -> N
             os.fsync(fh.fileno())
         if mode is not None:
             tmp.chmod(mode)
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
+@contextmanager
+def atomic_writer(path: Path) -> Iterator[BinaryIO]:
+    """`write_atomic` for output too large to hold in memory.
+
+    Yields a binary file in the same directory as `path`, renamed over it when
+    the block finishes and deleted if it raises. A caller reading `path` while
+    writing must close it before the block ends: Windows will not rename over
+    a file that is still open.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            yield fh
+            fh.flush()
+            os.fsync(fh.fileno())
         os.replace(tmp, path)
     except BaseException:
         tmp.unlink(missing_ok=True)
