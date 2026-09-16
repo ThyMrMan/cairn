@@ -320,9 +320,12 @@ class Runner:
             return
         self.terminating = True
         # wget first, the log line second. The log line is a write to stdout,
-        # and if the supervisor has stopped reading, that write blocks forever
-        # — inside this handler, before it ever reached wget. Measured on a
-        # live instance: an engine in that state outlived its crawl by days.
+        # and if the supervisor has stopped reading, that write never
+        # completes: it blocks, or — when the signal arrived inside another
+        # write to stdout, which CPython runs this handler in the middle of —
+        # it raises "reentrant call". Either way wget, asked second, was never
+        # asked, and on a live instance an engine in that state outlived its
+        # crawl by days.
         if self.proc and self.proc.poll() is None:
             with contextlib.suppress(OSError):
                 self.proc.terminate()

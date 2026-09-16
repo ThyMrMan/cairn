@@ -283,7 +283,7 @@ The chain:
 1. `_finalize` flushed the job's row before running the post-processors — which takes the write lock — and committed after all of them: a checksum of every WARC, a walk of the site's directory, a rebuild of its replay index, text extraction, a browser for the thumbnail. On a 4.7 GB capture that held the lock for about four minutes.
 2. The capture beside it tried to record its next batch of URL rows, waited five seconds, and raised. The batch had already been swapped out of the pending list, so it went with the exception.
 3. The exception unwound the task reading the engine's stdout. The engine leads a session of its own, so nothing else signals it, and it kept running with nobody reading its output.
-4. Its next writes filled the pipe and blocked. So did its SIGTERM handler, whose first act was to log.
+4. Its next writes filled the pipe and blocked. A SIGTERM would not have helped: the handler's first act was to log — another write to the same stdout, which blocks, or raises when it lands in the middle of the blocked one — before it ever told wget to stop.
 5. The failure path tried to mark the job failed — another write, with the lock still held — and raised again, leaving the row at `running`.
 
 What holds now:

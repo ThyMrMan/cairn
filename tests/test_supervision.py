@@ -608,28 +608,33 @@ async def test_failing_to_record_the_pid_does_not_abandon_the_crawl(
     assert world.url_rows() == 3
 
 
+# Raw writes on purpose. A Python engine blocked inside a *buffered* write
+# does not reach a handler that writes to the same stream: CPython runs the
+# handler inside that write, the handler's write re-enters the same buffer,
+# and the process dies of "reentrant call" with exit status 1 — which is how
+# this test's first version failed on Linux, where it is the only test here
+# that runs at all.
 ENGINE_STUCK = """
-import signal, sys, time
+import os, signal, time
 
 def on_term(signum, frame):
-    # What the wget engine's handler did first: log. With the pipe full, that
-    # write blocks unless somebody is reading.
-    sys.stdout.write("x" * 200_000 + "\\n")
-    sys.stdout.flush()
-    sys.exit(0)
+    # An engine on its way out still has things to say; this is more than a
+    # pipe holds, so it finishes only if somebody reads.
+    os.write(1, b"x" * 200_000)
+    os._exit(0)
 
 signal.signal(signal.SIGTERM, on_term)
-sys.stdout.write("y" * 1_000_000)
-sys.stdout.flush()
+os.write(1, b"y" * 1_000_000)
 time.sleep(60)
 """
 
 
 @pytest.mark.skipif(os.name == "nt", reason="needs POSIX signal handlers and process groups")
 async def test_an_engine_stuck_on_a_full_pipe_is_still_stopped() -> None:
-    """Exactly the state the stranded engines were found in: blocked writing
-    to a pipe nobody reads. SIGTERM alone cannot help — its handler blocks on
-    the same pipe — so the output is drained while it stops."""
+    """The state the stranded engines were found in — blocked writing to a
+    pipe nobody reads — and an engine whose way out writes more than the pipe
+    holds, as the wget engine's does when it reports every revisit. Without
+    the output drained it sits there until it is killed."""
     proc = await asyncio.create_subprocess_exec(
         sys.executable,
         "-c",
@@ -650,8 +655,10 @@ async def test_an_engine_stuck_on_a_full_pipe_is_still_stopped() -> None:
 
 
 def test_the_wget_engine_stops_wget_before_it_says_so() -> None:
-    """The handler's log line is a write to stdout. When nobody is reading,
-    that write never returns — and wget, asked second, was never asked."""
+    """The handler's log line is a write to stdout. With nobody reading, that
+    write never completes — it blocks, or raises if the signal landed inside
+    another write to the same stream — and wget, asked second, was never
+    asked."""
     from cairn.engines.wget import Runner
 
     runner = Runner.__new__(Runner)

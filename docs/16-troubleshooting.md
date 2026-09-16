@@ -214,11 +214,19 @@ too. While a capture is being post-processed the job list says so, and its row
 cannot be deleted until that is done.
 
 **A capture stranded before that change** reads `interrupted` with no URLs,
-but its WARCs are whole and on disk under `captures/<dir>/warc/`. **Rebuild
-index** on the site's Replay tab makes them replayable, and so does the site's
-next capture, whose post-processing re-indexes every WARC the site has. The
-capture's URL list and counts do not come back: they were the rows that were
-never written.
+but its WARCs are whole and on disk under `captures/<dir>/warc/`. Rebuilding
+the site's index makes them replayable, and so does the site's next capture,
+whose post-processing re-indexes every WARC the site has. **Rebuild index** on
+the Replay tab does it inside a web request, which on a site with tens of
+gigabytes of WARCs outlasts any browser's patience; run it in the container
+instead:
+
+```bash
+docker exec cairn cairn reindex <site-slug>
+```
+
+The capture's URL list and counts do not come back: they were the rows that
+were never written.
 
 ## A skip pattern is saved but nothing was skipped
 

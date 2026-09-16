@@ -3074,9 +3074,10 @@ async def _halt(proc: asyncio.subprocess.Process, *, grace_s: float = HALT_GRACE
     """Stop an engine this process is about to stop watching.
 
     The whole group, because wget is the engine's child and carries on without
-    it. And with the engine's output drained while it goes: an engine blocked
-    on a full pipe cannot exit, and cannot even finish its own SIGTERM
-    handler, whose first act is to log — another write to the same pipe.
+    it. And with the engine's output drained while it goes, because an engine
+    on its way out still writes — the wget engine reports every revisit and
+    its result as it finishes — and one that fills the pipe doing so would sit
+    there until it was killed.
     """
     if proc.returncode is not None:
         return
