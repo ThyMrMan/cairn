@@ -639,6 +639,16 @@ class FeedSummary(BaseModel):
     next_capture_at: datetime | None = None
 
 
+class FeedsCleared(BaseModel):
+    """What stopping every watcher on a site took away.
+
+    `removed` is feeds, not items: the items and poll history go with them,
+    and nothing that was captured does.
+    """
+
+    removed: int
+
+
 class FeedPollEntry(BaseModel):
     id: int
     ts: datetime

@@ -527,6 +527,22 @@ Also worth doing: run `--warc-dedup` against a second capture and verify you get
 
 ---
 
+## After M8 — unwatching what indexing attached ✅
+
+**Ships:** one press stops watching every feed on a site.
+
+- [x] *Unwatch all* in the feeds panel, and `DELETE /api/sites/{id}/feeds` behind it: the site's feeds go, their items and poll history with them, and nothing captured is touched ([09](09-api.md#feeds))
+- [x] The dialog names how many of them are actually being polled, and says that indexing will re-attach ([08](08-feeds-and-scheduling.md#auto-discovery))
+- [x] One audit entry for the lot, with the count ([16](16-troubleshooting.md#the-feeds-panel-is-full-of-feeds-nobody-asked-for))
+
+**Done when:** a site indexed into dozens of watchers is back to none without opening a single feed's settings. *Reported from a WordPress site that came back watching dozens of them. Measured on the instance it was reported from: 422 feeds across 24 sites, 369 of them per-post comment feeds, and not one of those 369 had ever been polled — 47 feeds on the worst site, 43 of them comment feeds. Asserted in `tests/test_feeds.py`, with seven properties reverted in turn to confirm a test fails without each.*
+
+**Removed, not switched off.** A disabled feed is still a row, and the row is the complaint: the two feeds that work were at the bottom of forty that never run. `enabled` already means "polled or not", so borrowing it for "and also hidden" would leave no way to tell which kind of grey row you are looking at. What a feed row holds that is worth keeping — the capture — is not in the row: it is in the archive, and stays there.
+
+**Indexing still re-attaches, on purpose.** Discovery has no memory of what somebody removed, and giving it one means a tombstone per URL, a rule for when it expires, and somewhere to clear it — all so that an emptied panel survives a re-index somebody chose to run. The dialog says so instead, and the empty panel repeats it. If a later index undoes this often enough to be a complaint of its own, the tombstone is the fix, and it belongs next to the scope's existing "a re-run does not silently undo what you picked".
+
+---
+
 ## Sequencing notes
 
 **Why discovery before replay.** Discovery determines *what gets captured*; getting it wrong means recapturing everything later. Replay is read-only over whatever exists and can be built against any archive.

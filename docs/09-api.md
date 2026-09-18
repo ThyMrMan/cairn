@@ -345,6 +345,7 @@ The interactive session is a **CDP screencast over a WebSocket**, not the `vnc_u
 |---|---|---|
 | `GET` | `/api/sites/{id}/feeds` | Each row carries its poll state and its item counts. `held` is pending items a paused capture will capture when resumed, and is not included in `pending` |
 | `POST` | `/api/sites/{id}/feeds` | `{url, kind?, title?, interval_min?, enabled?, auto_capture?}` |
+| `DELETE` | `/api/sites/{id}/feeds` | Stop watching every feed on the site at once. Their items and poll history go with them; captures do not. Returns `{removed}` |
 | `POST` | `/api/sites/{id}/feeds/discover` | Everything worth watching, probed live. Saves nothing |
 | `POST` | `/api/sites/{id}/feeds/test` | `{url, kind?}` — parse without saving; returns format, entry count, recent titles, scope check |
 | `PATCH` | `/api/feeds/{id}` | Interval, enabled, auto-capture, title |

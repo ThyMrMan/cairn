@@ -23,12 +23,19 @@ import { Alert, PanelHeader, Spinner, useCollapsible } from "./ui";
  * fact and a trivial thing to catch at the moment somebody pastes the URL.
  */
 export function Feeds({ siteId }: { siteId: number }) {
+  const client = useQueryClient();
   const [adding, setAdding] = useState(false);
   const { open, toggle } = useCollapsible("feeds", true);
   const feeds = useQuery({ queryKey: ["feeds", siteId], queryFn: () => endpoints.feeds(siteId) });
 
   const rows = feeds.data ?? [];
   const pending = rows.reduce((total, feed) => total + feed.counts.pending, 0);
+  const polling = rows.filter((feed) => feed.enabled).length;
+
+  const unwatchAll = useMutation({
+    mutationFn: () => endpoints.unwatchAllFeeds(siteId),
+    onSuccess: () => client.invalidateQueries({ queryKey: ["feeds", siteId] }),
+  });
 
   return (
     <section className="card p-5">
@@ -44,11 +51,36 @@ export function Feeds({ siteId }: { siteId: number }) {
         open={open}
         onToggle={toggle}
         extra={
-          <button className="btn-ghost text-xs" onClick={() => setAdding((v) => !v)}>
-            {adding ? "Cancel" : "+ Add a feed"}
-          </button>
+          <div className="flex shrink-0 gap-2">
+            {/* Indexing attaches a feed per post's comments — 47 rows on one
+                blog, 43 of them that — and removing them meant opening each
+                row's settings and pressing Remove. The dialog carries the
+                counts, because this is the one control in the panel that can
+                throw away a feed that is working. */}
+            {rows.length > 0 && (
+              <button
+                className="btn-ghost text-xs text-danger"
+                disabled={unwatchAll.isPending}
+                onClick={() => {
+                  if (confirm(unwatchPrompt(rows.length, polling))) unwatchAll.mutate();
+                }}
+              >
+                {unwatchAll.isPending && <Spinner className="mr-1 h-3 w-3" />}
+                Unwatch all
+              </button>
+            )}
+            <button className="btn-ghost text-xs" onClick={() => setAdding((v) => !v)}>
+              {adding ? "Cancel" : "+ Add a feed"}
+            </button>
+          </div>
         }
       />
+
+      {open && unwatchAll.error && (
+        <div className="mt-4">
+          <Alert kind="error">{(unwatchAll.error as ApiError).message}</Alert>
+        </div>
+      )}
 
       {open && adding && (
         <div className="mt-4">
@@ -482,6 +514,25 @@ function Candidate({ candidate, onAdd }: { candidate: FeedCandidate; onAdd: () =
         </>
       )}
     </div>
+  );
+}
+
+/**
+ * What "Unwatch all" is about to do, in the dialog that can stop it.
+ *
+ * The number that is polling is the one worth naming: the reason to press this
+ * is a list full of comment feeds that never run, and the cost of pressing it
+ * is the two or three that do. The re-attach sentence is there because
+ * indexing adds feeds on every run — an emptied panel that fills up again
+ * looks like the button did not work.
+ */
+function unwatchPrompt(total: number, polling: number): string {
+  const plural = total === 1 ? "feed" : "feeds";
+  const running =
+    polling > 0 ? ` ${polling} of them ${polling === 1 ? "is" : "are"} being polled.` : "";
+  return (
+    `Stop watching all ${total} ${plural} on this site?${running}` +
+    " Captures already made are kept. Indexing this site again re-attaches whatever it finds."
   );
 }
 

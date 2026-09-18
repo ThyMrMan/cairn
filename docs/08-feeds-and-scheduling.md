@@ -44,6 +44,10 @@ Discovered feeds are presented as a checklist, not added silently. Comment feeds
 
 > **Corrected in part.** *Find feeds* in the add dialog is the checklist: it probes live, shows what each candidate contains, and saves nothing. But a discovery run still attaches what it finds, with the comment feed switched **off** and the posts feed **on**. The doc is right about comment feeds — hundreds of entries pointing at fragments of pages the posts feed already covers, which after M6 means real requests and real captures — and wrong about the posts feed, which is the reason the site is being archived. Making somebody tick a box to get the obvious thing is friction, not consent. Either way the list is the same and visible; the difference is only what happens if nobody looks at it.
 >
+> **What silent adoption costs, measured.** Reported from a WordPress site that came back watching dozens of feeds. The same thing happens on Blogger, and the numbers are from an instance full of it: **422 feeds across 24 sites, 369 of them per-post comment feeds** — `/feeds/<post id>/comments/default`, the WordPress equivalent being `/<post>/feed/` — **and not one of the 369 had ever been polled.** One blog carried 47 feeds, 43 of them those. Switched off, they cost nothing to run; what they cost is the panel, which is the place you go to find out whether the watching is working, and which the useful two rows were at the bottom of.
+>
+> So the panel has *Unwatch all* (`DELETE /api/sites/{id}/feeds`), which is the per-feed **Remove** for the lot: the feeds go, their items and poll history go with them, and nothing captured is touched. It deletes rather than disables, because a disabled feed is still a row and the row is the complaint — and because `enabled` already means "polled or not", so a second meaning would leave no way to say which kind of grey row this is. Indexing the site again re-attaches what it finds, so the dialog says so before it empties anything: a panel that fills up again reads as a button that did not work.
+>
 > Sitemaps are *offered* rather than attached, as specified. A sitemap watcher is a different bargain — completeness rather than latency — and it is the only thing that can tell you a page disappeared.
 
 ---
@@ -235,7 +239,7 @@ Global settings for when scheduled work may run: quiet hours, and a per-host ser
 **Site → Feeds tab**
 
 ```
-┌─ Feeds ────────────────────────────────────────────── [+ Add feed] ─┐
+┌─ Feeds ───────────────────────────── [Unwatch all] [+ Add feed] ─┐
 │                                                                     │
 │ ● Posts (Atom)                                    every 6h    [⋯]  │
 │   /feeds/posts/default                                              │

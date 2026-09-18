@@ -1620,6 +1620,11 @@ export const endpoints = {
       auto_capture?: boolean;
     },
   ) => api.post<Feed>(`/sites/${siteId}/feeds`, body),
+  /** Every watcher on the site at once. Indexing attaches one feed per post's
+   *  comments on some platforms, and removing dozens one at a time is the
+   *  only thing the panel used to offer. */
+  unwatchAllFeeds: (siteId: number) =>
+    api.del<{ removed: number }>(`/sites/${siteId}/feeds`),
   discoverFeeds: (siteId: number) =>
     api.post<FeedCandidate[]>(`/sites/${siteId}/feeds/discover`),
   testFeed: (siteId: number, url: string, kind = "auto") =>

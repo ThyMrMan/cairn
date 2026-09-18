@@ -138,8 +138,15 @@ def test_an_entry_with_no_guid_falls_back_to_its_canonical_url() -> None:
 # ── merging, deduplication and the baseline ──────────────────────────────
 
 
-def _feed_for(db: Session, site: Site, *, kind: str = "atom", **kwargs: object) -> Feed:
-    feed = Feed(site_id=site.id, url="https://blog.example/feed", kind=kind, **kwargs)
+def _feed_for(
+    db: Session,
+    site: Site,
+    *,
+    kind: str = "atom",
+    url: str = "https://blog.example/feed",
+    **kwargs: object,
+) -> Feed:
+    feed = Feed(site_id=site.id, url=url, kind=kind, **kwargs)
     db.add(feed)
     db.flush()
     return feed
@@ -570,9 +577,7 @@ def test_a_paused_capture_of_another_feed_holds_nothing_here(db: Session, site: 
     assert feeds.held_item_ids(db, other.id) == {items[0].id}
 
 
-def _capture_row(db: Session, site: Site) -> object:
-    from cairn.db.models import Capture
-
+def _capture_row(db: Session, site: Site) -> Capture:
     capture = Capture(
         site_id=site.id,
         kind="feed",
@@ -853,6 +858,127 @@ def test_discovery_offers_feeds_and_sitemaps_without_adding_them(
     assert authed.get(f"/api/sites/{site_id}/feeds", headers=XHR).json() == [], (
         "discovering must not attach anything"
     )
+
+
+# ── unwatching the lot ───────────────────────────────────────────────────
+#
+# Indexing *does* attach what it finds, and on a platform that publishes a
+# feed per post's comments that is dozens of rows. On the instance this was
+# reported from: 422 feeds across 24 sites, 369 of them per-post comment
+# feeds, not one of which had ever been polled; one blog carried 47 feeds of
+# which 43 were those. The panel offered Remove, one feed at a time, behind
+# each feed's own settings.
+
+
+def test_every_feed_on_a_site_is_unwatched_at_once(
+    authed: TestClient, db: Session, site: Site
+) -> None:
+    posts = _feed_for(db, site, url="https://blog.example/feeds/posts/default")
+    _pending(db, posts, 2)
+    db.add(
+        FeedPoll(
+            feed_id=posts.id,
+            ts=utcnow(),
+            status=200,
+            duration_ms=7,
+            entries_seen=2,
+            new_items=2,
+            gone_items=0,
+            action="2 new",
+        )
+    )
+    for n in range(3):
+        _feed_for(db, site, url=f"https://blog.example/feeds/{n}/comments/default", enabled=False)
+    capture_id = _capture_row(db, site).id
+    db.commit()
+
+    res = authed.delete(f"/api/sites/{site.id}/feeds", headers=XHR)
+
+    assert res.status_code == 200, res.text
+    assert res.json() == {"removed": 4}
+    assert authed.get(f"/api/sites/{site.id}/feeds", headers=XHR).json() == []
+    db.expire_all()
+    assert db.scalar(select(func.count(FeedItem.id))) == 0, "the items go with the feed"
+    assert db.scalar(select(func.count(FeedPoll.id))) == 0, "and so does the poll history"
+    assert db.get(Capture, capture_id) is not None, (
+        "a feed row is the schedule, not the archive — what was captured stays"
+    )
+
+
+def test_unwatching_one_site_leaves_the_others_watching(
+    authed: TestClient, db: Session, site: Site
+) -> None:
+    """The button is in a site's panel and means that site. There is no page
+    on which "all feeds" could reasonably mean every site's."""
+    other_id = authed.post(
+        "/api/sites", json={"seed_url": "https://other.example/", "title": "Other"}, headers=XHR
+    ).json()["id"]
+    other = db.get(Site, other_id)
+    assert other is not None
+    _feed_for(db, site, url="https://blog.example/feed.xml")
+    kept = _feed_for(db, other, url="https://other.example/feed.xml")
+    kept_id = kept.id
+    db.commit()
+
+    assert authed.delete(f"/api/sites/{site.id}/feeds", headers=XHR).json() == {"removed": 1}
+
+    rows = authed.get(f"/api/sites/{other_id}/feeds", headers=XHR).json()
+    assert [row["id"] for row in rows] == [kept_id]
+
+
+def test_unwatching_a_site_that_watches_nothing_is_not_an_error(
+    authed: TestClient, site: Site
+) -> None:
+    """The button is offered only when there is something to remove, so this
+    is a stale page or a second click — neither of which is a failure."""
+    assert authed.delete(f"/api/sites/{site.id}/feeds", headers=XHR).json() == {"removed": 0}
+    assert authed.delete("/api/sites/9999/feeds", headers=XHR).status_code == 404
+
+
+def test_unwatching_every_feed_is_recorded_with_its_count(
+    authed: TestClient, db: Session, site: Site
+) -> None:
+    """One entry for the lot. Without it, a panel that is empty because
+    somebody emptied it reads exactly like one that never filled."""
+    from cairn.db.models import AuditLog
+
+    _feed_for(db, site, url="https://blog.example/a.xml")
+    _feed_for(db, site, url="https://blog.example/b.xml")
+    db.commit()
+
+    authed.delete(f"/api/sites/{site.id}/feeds", headers=XHR)
+
+    db.expire_all()
+    entry = db.scalars(select(AuditLog).where(AuditLog.action == "feed.clear")).one()
+    assert entry.detail == {"count": 2, "site_id": site.id}
+    assert entry.target == site.primary_host
+
+
+def test_a_capture_already_queued_keeps_the_posts_it_was_given(
+    authed: TestClient, db: Session, site: Site
+) -> None:
+    """Unwatching mid-capture loses the record of which post was which, not
+    the capture: the job was handed URLs, and settling items that are gone is
+    a no-op rather than the crash that would fail the whole job."""
+    from cairn.services.jobs import _settle_feed_items
+
+    sched = authed.app.state.scheduler  # type: ignore[attr-defined]
+    feed = _feed_for(db, site, auto_capture=True)
+    feed_id = feed.id
+    item_ids = [item.id for item in _pending(db, feed, 2)]
+    db.commit()
+    sched._dispatch_pending(utcnow())
+    db.expire_all()
+    seeds = list(db.scalars(select(Job).where(Job.site_id == site.id)).one().spec["extra_seeds"])
+    assert len(seeds) == 2
+
+    authed.delete(f"/api/sites/{site.id}/feeds", headers=XHR)
+
+    db.expire_all()
+    job = db.scalars(select(Job).where(Job.site_id == site.id)).one()
+    assert job.status == "queued"
+    assert job.spec["extra_seeds"] == seeds
+    _settle_feed_items(db, item_ids, _capture_row(db, site), "ok", feed_id)
 
 
 def test_a_comment_feed_arrives_switched_off(db: Session, site: Site) -> None:

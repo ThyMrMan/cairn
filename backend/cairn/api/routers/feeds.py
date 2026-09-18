@@ -23,6 +23,7 @@ from cairn.api.schemas import (
     FeedItemEntry,
     FeedPollEntry,
     FeedPollResult,
+    FeedsCleared,
     FeedSummary,
     FeedTestRequest,
     FeedUpdate,
@@ -114,6 +115,44 @@ def add_feed(
         raise ApiError("invalid_feed", str(exc), status_code=400) from exc
     audit.record(db, "feed.add", actor=user.username, target=feed.url, ip=ip)
     return _summary(db, feed)
+
+
+@router.delete("/sites/{site_id}/feeds", response_model=FeedsCleared)
+def unwatch_all_feeds(site_id: int, db: DbSession, user: CurrentUser, ip: ClientIp) -> FeedsCleared:
+    """Stop watching every feed on this site.
+
+    Indexing attaches what it finds, and a platform that publishes a feed per
+    post's comments makes that dozens of rows: on this instance 369 of 422
+    feeds are per-post comment feeds, none of which has ever been polled, and
+    one blog carries 47 feeds of which 43 are those. Removing them one at a
+    time, through the settings panel of each, is what the UI offered.
+
+    Deleting rather than disabling, because the panel lists a disabled feed
+    too — and the complaint is the list. `enabled` already means "polled or
+    not", so a second meaning for it would leave no way to say which one a
+    grey row is.
+
+    Captures already made are kept. What goes with the feed is its schedule
+    and its memory of what it has seen: a capture holds its own files, and
+    what it archived is in the archive whether or not a feed row remembers
+    asking for it.
+    """
+    site = _site(db, site_id)
+    feeds = sorted(site.feeds, key=lambda f: f.id)
+    audit.record(
+        db,
+        "feed.clear",
+        actor=user.username,
+        target=site.primary_host or site.seed_url,
+        ip=ip,
+        detail={"count": len(feeds), "site_id": site.id},
+    )
+    for feed in feeds:
+        # Items and poll history go with it, as they do for one feed. A
+        # capture already queued for those items settles nothing and carries
+        # on: it was given the URLs, not the item rows.
+        db.delete(feed)
+    return FeedsCleared(removed=len(feeds))
 
 
 @router.post("/sites/{site_id}/feeds/discover", response_model=list[FeedCandidateModel])

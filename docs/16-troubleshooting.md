@@ -270,6 +270,27 @@ gone, and the next scheduled pass captures them; or press **Capture pending**
 on the feed. A capture paused from now on keeps the note with it, and clearing
 the job list no longer matters.
 
+## The feeds panel is full of feeds nobody asked for
+
+Indexing attaches every feed it finds, and a blog platform publishes one per
+post's comments: Blogger as `/feeds/<post id>/comments/default`, WordPress as
+`/<post>/feed/`. A site indexed once can come back watching dozens. They arrive
+switched off, so they poll nothing and capture nothing — the cost is the panel,
+with the two rows that matter at the bottom of forty that do not.
+
+**Unwatch all**, in the panel header, removes the lot in one press. Captures
+already made are kept: what goes is the schedule and each feed's memory of
+which entries it has seen. Then add back the one you want with **+ Add a feed
+→ Find feeds**, which probes live and saves nothing until you press *Watch it*.
+
+The first poll of a re-added feed is a baseline, not a backlog: it records what
+the feed holds today and captures none of it, so putting the posts feed back
+does not re-fetch the archive.
+
+**Indexing again re-attaches them.** Discovery has no memory of what you
+removed, so a later index brings back whatever the site still publishes. Unwatch
+after indexing, not before.
+
 ## A skip pattern is saved but nothing was skipped
 
 Look at the count beside it. **matches nothing** means it is inert.

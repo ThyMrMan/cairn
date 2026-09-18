@@ -260,6 +260,12 @@ The first poll is deliberately a baseline: it records what the blog already has
 and captures none of it, because watching a blog should not mean re-fetching
 its archive one post at a time.
 
+Indexing attaches the feeds it finds, and a blog platform publishes one per
+post's comments — they arrive switched off, but forty dead rows still sit in
+front of the two that matter. **Unwatch all** empties the panel in one press
+and keeps everything already captured; the baseline rule above is what makes
+putting the posts feed back afterwards cost nothing.
+
 A **sitemap** can be watched too, and it is the only thing that will tell you a
 page *disappeared* — the moment the archive paid for itself, and the one
 notification on by default. Absence means opposite things in the two: a feed
