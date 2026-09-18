@@ -513,6 +513,17 @@ WORDPRESS_PRESET = Preset(
     name="WordPress",
     assets_on=["*.wp.com", "secure.gravatar.com", "*.gravatar.com", "fonts.gstatic.com"],
     hosts_off=["*.google-analytics.com", "*.googletagmanager.com", "stats.wp.com"],
+    # Two whole classes of asset that the assets-only fence drops otherwise,
+    # both counted on a real capture of a WordPress.com blog: the theme's
+    # fonts arrive as `/css?family=…` and every commenter's avatar as
+    # `/avatar/<hash>?s=50`, neither with a file extension anywhere in the
+    # URL. 339 refused requests in one crawl, and the only symptom is a page
+    # that renders in the wrong font with blank avatars.
+    #
+    # Narrow on purpose. `*.wp.com` would also cover s0/s1/s2 and i0, which
+    # serve `.js`, `.css` and `.jpg` and so need nothing — and widening the
+    # image CDN is how a crawl starts following HTML on it.
+    extensionless_ok=["fonts-api.wp.com", "*.gravatar.com"],
     reject_patterns=[
         (r"[?&]replytocom=", "one permutation per comment reply"),
         (r"/wp-json/", "the REST API duplicates every post as JSON"),
@@ -531,6 +542,9 @@ GHOST_PRESET = Preset(
     name="Ghost",
     assets_on=["*.gravatar.com", "fonts.gstatic.com"],
     hosts_off=["*.google-analytics.com"],
+    # The same avatars against the same fence — gravatar is gravatar whoever
+    # embeds it. Found on WordPress; this preset had it too.
+    extensionless_ok=["*.gravatar.com"],
     sitemap_paths=("/sitemap.xml",),
     feed_paths=("/rss/",),
 )

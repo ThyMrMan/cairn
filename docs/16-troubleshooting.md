@@ -270,6 +270,40 @@ gone, and the next scheduled pass captures them; or press **Capture pending**
 on the feed. A capture paused from now on keeps the note with it, and clearing
 the job list no longer matters.
 
+## An infinite-scroll page spins forever in replay
+
+The page replays, you reach the bottom, and a loading wheel turns and never
+stops. Two different things cause it, and they can both be true at once.
+
+**The next page was never captured.** browsertrix only runs its autoscroll
+behaviour if the page passes a test first: it smooth-scrolls to 98% of the page
+and gives it 500 ms to grow. On a long page the smooth scroll has barely
+started by then, so the page cannot have grown, and the behaviour reports
+*"page seems to not be responsive to scrolling events"* and skips — it does not
+check again. Nothing was scrolled, so the request the spinner waits for was
+never made. Look for that line in the capture's log.
+
+Nothing in the crawl's settings changes this; waiting longer does not help,
+because the test is not racing the page's scripts. What usually saves you is
+that the same posts are reachable another way: WordPress and Blogger both put a
+real *Older posts* link in the HTML and the crawler follows it, so `/page/2/`
+and `/page/3/` are in the archive even when the scroll is not. Turn **Scripts**
+off in the replay viewer: the infinite scroll never initialises, so it never
+hides that link.
+
+**The request was captured but cannot be looked up.** An infinite scroll is
+usually a `POST`, and a POST replays only if the index was built with
+`post_append` ([07](07-replay.md#indexing)). Indexes written before Cairn
+passed it hold that record under a key pywb never asks for. **Rebuild index**
+on the site, or `cairn reindex <slug>`, writes it under the right one — and any
+capture taken since then is indexed that way already.
+
+**If instead it scrolls and repeats itself**, the capture holds some of the
+scroll and not all of it. pywb does not answer 404 for a request body it has no
+record of; it falls back to the nearest record it holds, so the same posts
+arrive again each time. The pages themselves are usually still there under
+`/page/2/` and so on — turn **Scripts** off and use the links.
+
 ## The feeds panel is full of feeds nobody asked for
 
 Indexing attaches every feed it finds, and a blog platform publishes one per

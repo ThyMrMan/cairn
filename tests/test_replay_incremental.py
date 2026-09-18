@@ -311,6 +311,26 @@ def test_a_record_it_cannot_vouch_for_means_a_rebuild(
     assert update(site_tree).rebuilt == reason
 
 
+def test_the_index_format_was_bumped_for_post_keys() -> None:
+    """A pin, not a tautology: this number is the only thing that sends an
+    index written by an older Cairn back to its WARCs.
+
+    Format 1 indexed a POST under its plain URL, which is not the key pywb
+    looks one up by, so the record was there and unreachable. Nothing about
+    the WARCs changes when Cairn is upgraded, so without the bump an update
+    would keep those lines forever.
+    """
+    assert replay.INDEX_FORMAT == 2
+
+
+def test_an_index_from_the_previous_format_is_rebuilt(site_tree: Settings) -> None:
+    add_capture(site_tree, 1)
+    update(site_tree)
+    edit_state(site_tree, lambda s: s.update(format=replay.INDEX_FORMAT - 1))
+
+    assert update(site_tree).rebuilt == "the index format changed"
+
+
 def test_a_record_that_is_not_json_means_a_rebuild(site_tree: Settings) -> None:
     add_capture(site_tree, 1)
     update(site_tree)

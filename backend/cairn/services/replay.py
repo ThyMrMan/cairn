@@ -29,6 +29,35 @@ assumed, and each one changed the design:
 
   4. pywb 2.9.1 imports `pkg_resources`, which setuptools 81 removed. The
      image pins below that; see the Dockerfile.
+
+  5. **A POST replays only if the index was built with `post_append`.** pywb
+     looks a non-GET request up under `<url>?__wb_method=POST&<body as query
+     parameters>`, unconditionally and with no setting that turns it off, and
+     cdxj-indexer writes that key only when asked to. Without it the request
+     404s — which on a page whose infinite scroll is a POST is a loading
+     spinner that never stops, because the script removes it on a response or
+     a network error and a 404 is neither.
+
+     It costs nothing to a GET. Measured over a WARC holding both: every GET
+     line is byte-identical either way, and only the POST's key changes. What
+     it costs is index time, because pairing a request with its response means
+     buffering every record's content — 2.5x on a 180 MB WARC, about 3.4
+     seconds per gigabyte, once per WARC.
+
+     The pairing is also the limit: cdxj-indexer joins two adjacent records
+     only when the second carries `WARC-Concurrent-To` naming the first.
+     browsertrix writes the response and then the request with exactly that
+     header, so its POSTs pair; a WARC without it indexes as though this were
+     off, and nothing says so.
+
+     One measured side effect, and the reason to state it is that it looks
+     alarming and is not: buffering consumes a record's stream, so
+     cdxj-indexer's *fallback* digest — computed only for a record that
+     carries no `WARC-Payload-Digest` of its own — comes out as the digest of
+     nothing. Both engines write that header on every response. The records
+     without one are wget's three `metadata://gnu.org/...` entries, which
+     `_is_engine_bookkeeping` drops before the index is written. Checked
+     against a real wget capture: what Cairn keeps is byte-identical.
 """
 
 from __future__ import annotations
@@ -67,7 +96,11 @@ INDEX_STATE_FILE = "site.cdxj.json"
 # Bumped whenever the lines an index holds for a given WARC would change — a
 # new filter here, a different way of calling the indexer — so that every
 # index is rebuilt once rather than keeping lines a rebuild would not write.
-INDEX_FORMAT = 1
+#
+# 2: `post_append` (finding 5). Only a POST's line changes, but an index
+# written before it has that record under a key pywb never asks for, and
+# nothing else would ever go back for it.
+INDEX_FORMAT = 2
 CONFIG_FILE = "config.yaml"
 # pywb's own names for the two directories it looks for inside a collection.
 INDEXES_LINK = "indexes"
@@ -595,7 +628,14 @@ def cdxj_lines(site_root: Path, warcs: list[Path]) -> list[str]:
     # directory, and this runs inside the web app, so the paths handed over
     # stay absolute while `dir_root` does the relativising.
     try:
-        write_cdx_index(buffer, [str(w) for w in warcs], {"dir_root": str(site_root)})
+        write_cdx_index(
+            buffer,
+            [str(w) for w in warcs],
+            # `post_append` is what makes a POST replayable at all — see
+            # finding 5. A GET's line is the same with it as without, so this
+            # is not a choice between two kinds of index.
+            {"dir_root": str(site_root), "post_append": True},
+        )
     # Broad on purpose: a truncated or malformed WARC surfaces here as
     # whatever warcio felt like raising, and none of it should escape as
     # something the caller has to know the indexer's internals to catch.

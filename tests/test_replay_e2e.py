@@ -12,7 +12,9 @@ elsewhere for the same MAX_PATH reason as the capture e2e.
 from __future__ import annotations
 
 import contextlib
+import io
 import os
+import pathlib
 import re
 import shutil
 import subprocess
@@ -67,6 +69,23 @@ def pywb(settings: Settings) -> Iterator[str]:
         proc.terminate()
         with contextlib.suppress(subprocess.TimeoutExpired):
             proc.communicate(timeout=15)
+
+
+def post(url: str, body: bytes) -> tuple[int, bytes]:
+    """A real POST, because that is the request that was failing."""
+    request = urllib.request.Request(
+        url,
+        data=body,
+        method="POST",
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            return response.status, response.read()
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.read()
+    except OSError:
+        return 0, b""
 
 
 def fetch(url: str) -> tuple[int, bytes]:
@@ -239,3 +258,107 @@ def test_the_bare_form_stands_alone_without_javascript(
         sub_code, sub_body = fetch(absolute)
         assert sub_code == 200, f"{absolute} returned {sub_code}"
         assert sub_body, "the archived subresource came back empty"
+
+
+# ── an infinite scroll, replayed ─────────────────────────────────────
+#
+# Reported as a WordPress blog whose infinite scroll spins forever in replay.
+# Everything between the index and the browser is the point here: the key
+# cdxj-indexer writes for a POST has to be the key pywb computes for one, and
+# the only way to know is to ask a real pywb with a real POST.
+
+SCROLL_PATH = "?infinity=scrolling"
+SCROLL_BODY = b"action=infinite_scroll&page=2&order=DESC"
+SCROLL_JSON = b'{"html":"<article>the eleventh post</article>"}'
+SCROLL_STAMP = "20260918031900"
+
+
+def write_scroll_warc(path: pathlib.Path, url: str) -> None:
+    """A POST and its response, in the shape browsertrix writes them."""
+    from warcio.statusandheaders import StatusAndHeaders
+    from warcio.warcwriter import WARCWriter
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "wb") as fh:
+        writer = WARCWriter(fh, gzip=True)
+        response = writer.create_warc_record(
+            url,
+            "response",
+            payload=io.BytesIO(SCROLL_JSON),
+            http_headers=StatusAndHeaders(
+                "200 OK",
+                [("Content-Type", "application/json"), ("Content-Length", str(len(SCROLL_JSON)))],
+                protocol="HTTP/1.1",
+            ),
+            warc_headers_dict={"WARC-Date": "2026-09-18T03:19:00Z"},
+        )
+        request = writer.create_warc_record(
+            url,
+            "request",
+            payload=io.BytesIO(SCROLL_BODY),
+            length=len(SCROLL_BODY),
+            http_headers=StatusAndHeaders(
+                f"POST /{SCROLL_PATH} HTTP/1.1",
+                [
+                    ("Content-Type", "application/x-www-form-urlencoded"),
+                    ("Content-Length", str(len(SCROLL_BODY))),
+                ],
+                protocol="POST",
+            ),
+            warc_headers_dict={
+                "WARC-Date": "2026-09-18T03:19:00Z",
+                # The only thing that makes cdxj-indexer treat the two as a
+                # pair, and therefore the only reason the body reaches the key.
+                "WARC-Concurrent-To": response.rec_headers.get_header("WARC-Record-ID"),
+            },
+        )
+        writer.write_record(response)
+        writer.write_record(request)
+
+
+def test_an_infinite_scrolls_post_replays_out_of_the_archive(
+    authed: TestClient, settings: Settings, pywb: str
+) -> None:
+    """The reported failure, end to end against a real pywb.
+
+    Jetpack asks for the next page with `XMLHttpRequest.open("POST", "/?infinity
+    =scrolling")` and takes its spinner down on a response or on a network
+    error. A 404 is neither, so the wheel turns until the tab is closed — and
+    a 404 is what pywb returned, because it looks a POST up under
+    `<url>?__wb_method=POST&<body>` and the index had no such key.
+    """
+    from cairn.services import storage
+
+    site = authed.post(
+        "/api/sites",
+        json={"seed_url": "https://scrolled.example/", "title": "Scrolled"},
+        headers=XHR,
+    ).json()
+    url = f"https://scrolled.example/{SCROLL_PATH}"
+
+    out = storage.ensure_capture_dirs(
+        settings, site["archive_path"], "20260918T031900Z-full-browsertrix"
+    )
+    write_scroll_warc(out / storage.WARC_DIR / "part-00000.warc.gz", url)
+
+    indexed = authed.post(f"/api/sites/{site['id']}/reindex", headers=XHR)
+    assert indexed.status_code == 200, indexed.text
+    assert indexed.json()["records"] == 1
+
+    collection = authed.get(f"/api/sites/{site['id']}/replay", headers=XHR).json()["collection"]
+    target = f"{pywb}/{collection}/{SCROLL_STAMP}mp_/{url}"
+
+    code, body = post(target, SCROLL_BODY)
+
+    assert code == 200, f"pywb answered {code} — the spinner would still be turning"
+    assert b"the eleventh post" in body
+
+    # And it is keyed by the body, not just the URL: another page is another
+    # request, and answering it with page 2 would be a quietly wrong archive.
+    # And what a body nobody captured does, which is not a 404: pywb falls
+    # back to a fuzzy match and serves the nearest record it has. Worth
+    # knowing, because it means a scroll that was captured for two pages and
+    # then stopped repeats its last page rather than ending — the archive
+    # looks complete and is not.
+    other_code, other = post(target, b"action=infinite_scroll&page=3&order=DESC")
+    assert (other_code, other) == (200, body)

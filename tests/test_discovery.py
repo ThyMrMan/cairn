@@ -30,12 +30,14 @@ from cairn.discovery.platform import (
     BLOGGER_PRESET,
     DISCOURSE,
     DISCOURSE_PRESET,
+    GHOST_PRESET,
     MEDIAWIKI,
     MEDIAWIKI_PRESET,
     PRESETS,
     SQUARESPACE,
     SQUARESPACE_PRESET,
     WORDPRESS,
+    WORDPRESS_PRESET,
     Preset,
     fingerprint,
     matches_host_pattern,
@@ -627,6 +629,61 @@ def test_blogger_skin_images_survive_the_assets_only_reject() -> None:
     assert not re.search(pattern, "https://themes.googleusercontent.com/image?id=L1lcAxxz")
 
 
+def test_wordpress_fonts_and_avatars_survive_the_assets_only_reject() -> None:
+    """The same trap as the Blogger skin images, on a different platform.
+
+    Counted on one crawl of a WordPress.com blog: 339 refused requests, all of
+    them the theme's two font stylesheets at `/css?family=...` and every
+    commenter's avatar at `/avatar/<hash>?s=50`. Neither has a file extension
+    anywhere in the URL, so the assets-only fence reads both as pages. The
+    only symptom is a page in the wrong font with blank avatars.
+    """
+    hosts = classify(
+        seed_host="blog.wordpress.com",
+        link_refs={"blog.wordpress.com": 5},
+        asset_refs={"fonts-api.wp.com": 2, "0.gravatar.com": 16, "i0.wp.com": 40},
+        urls_by_host={},
+    )
+    apply_defaults(hosts, WORDPRESS_PRESET)
+    by_host = {h.host: h for h in hosts}
+
+    for host, url in (
+        ("fonts-api.wp.com", "https://fonts-api.wp.com/css?family=Open+Sans%3A400%2C600"),
+        ("0.gravatar.com", "https://0.gravatar.com/avatar/c57fc931956fd76c?s=50&d=identicon"),
+    ):
+        stat = by_host[host]
+        assert stat.fetch_assets
+        assert stat.allow_extensionless, host
+        rule = HostRule(host=host, fetch_assets=True, allow_extensionless=True)
+        assert not re.search(asset_only_reject_pattern(rule), url)
+
+
+def test_the_wordpress_image_cdn_is_left_fenced() -> None:
+    """Narrow on purpose. i0.wp.com keeps the source file's extension ahead of
+    its query string, so it needs nothing — and opening an image CDN to
+    extension-less URLs is how a crawl starts following HTML on it."""
+    hosts = classify(
+        seed_host="blog.wordpress.com",
+        link_refs={"blog.wordpress.com": 5},
+        asset_refs={"i0.wp.com": 40},
+        urls_by_host={},
+    )
+    apply_defaults(hosts, WORDPRESS_PRESET)
+    cdn = next(h for h in hosts if h.host == "i0.wp.com")
+
+    assert cdn.fetch_assets
+    assert not cdn.allow_extensionless
+    rule = HostRule(host=cdn.host, fetch_assets=True)
+    pattern = asset_only_reject_pattern(rule)
+    assert not re.search(pattern, "https://i0.wp.com/blog.files.wordpress.com/a.jpg?w=450")
+    assert re.search(pattern, "https://i0.wp.com/some/page")
+
+
+def test_a_ghost_blogs_avatars_are_let_through_too() -> None:
+    """Gravatar is gravatar whoever embeds it; this preset had the same gap."""
+    assert any(matches_host_pattern(p, "0.gravatar.com") for p in GHOST_PRESET.extensionless_ok)
+
+
 def test_blogger_com_is_split_rather_than_dropped_wholesale() -> None:
     """It serves the theme's own widgets.js, whose absence shows up as console
     errors in replay, alongside two things worth nothing. Turning the whole
@@ -823,6 +880,34 @@ def test_retiring_is_idempotent_and_quiet_when_there_is_nothing_to_retire() -> N
         reject_patterns=[p for p, _ in BLOGGER_PRESET.reject_patterns],
     )
     assert apply_preset_to_scope(scope, BLOGGER_PRESET, ["b.blogspot.com"]) == []
+
+
+def test_re_applying_the_wordpress_preset_opens_the_hosts_it_fenced_by_mistake() -> None:
+    """The path for a site captured before this was fixed.
+
+    Its scope already lists the hosts as assets-only, so nothing is added —
+    what changes is the one flag, and it has to be reported, because a scope
+    edit nobody is told about is one nobody can undo.
+    """
+    from cairn.services.discovery_service import apply_preset_to_scope
+
+    scope = Scope(
+        seeds=["https://blog.wordpress.com/"],
+        hosts=[
+            HostRule("blog.wordpress.com", crawl_pages=True, fetch_assets=True),
+            HostRule("0.gravatar.com", crawl_pages=False, fetch_assets=True),
+            HostRule("fonts-api.wp.com", crawl_pages=False, fetch_assets=True),
+        ],
+    )
+
+    changes = apply_preset_to_scope(
+        scope, WORDPRESS_PRESET, ["blog.wordpress.com", "0.gravatar.com", "fonts-api.wp.com"]
+    )
+
+    by_host = {rule.host: rule for rule in scope.hosts}
+    assert by_host["0.gravatar.com"].allow_extensionless
+    assert by_host["fonts-api.wp.com"].allow_extensionless
+    assert sum("allowed extension-less URLs" in c for c in changes) == 2
 
 
 # ── the lean Blogger variant ─────────────────────────────────────────────

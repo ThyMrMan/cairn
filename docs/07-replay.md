@@ -36,7 +36,7 @@ The two origins are a **security boundary**, not a deployment detail — see [be
 The index spans **all** of a site's WARCs. After each capture the `cdxj-index` post-processor brings it up to date, reading only the WARCs it has not indexed yet; **Rebuild index** and `cairn reindex` rebuild it from every one of them. A rebuild is the equivalent of:
 
 ```bash
-cdxj-indexer --sort \
+cdxj-indexer --sort --post-append \
   /data/archives/Blogs/Photography/example-blog/captures/*/warc/*.warc.gz \
   > /data/archives/Blogs/Photography/example-blog/index/site.cdxj.tmp
 mv site.cdxj.tmp site.cdxj      # atomic; replay never sees a partial index
@@ -57,6 +57,14 @@ The key is a SURT (sort-friendly reversed URL) plus a timestamp, which is what m
   - Anything the record cannot vouch for is a rebuild instead: no record, a different record format or cdxj-indexer version, different skip patterns — a withheld record is not in the file, so bringing one back means reading its WARC — or an index whose size and mtime are not the ones recorded, whatever rewrote it. The record is written after the index, so a crash between the two is one of those cases.
   - Deleting a capture takes its lines out without reading any WARC, because every line names its file.
   - pywb loads only `.cdx`, `.cdxj`, `.idx` and `.summary` files from an index directory (read off 2.9.1's `BaseDirectoryIndexSource`), so the record beside the index is invisible to it.
+- **A POST is keyed by its body, or it cannot be replayed at all.** pywb looks a non-GET request up under `<url>?__wb_method=POST&<body as query parameters>` — unconditionally, with no setting that turns it off — and cdxj-indexer writes that key only when passed `post_append`. Without it the request 404s. On a page whose infinite scroll is a POST that is not a visible error but a loading spinner that never stops: the script takes its spinner down on a response or on a network error, and a 404 is neither.
+
+  It costs a GET nothing. Measured over a WARC holding both, every GET line is byte-identical either way and only the POST's key changes. What it costs is index time — pairing a request with its response means buffering each record's content — measured at **2.5x, about 3.4 seconds per gigabyte**, once per WARC.
+
+  **The pairing is the limit.** cdxj-indexer joins two adjacent records only when the second carries `WARC-Concurrent-To` naming the first. browsertrix writes the response and then the request with exactly that header, so its POSTs pair. A WARC without it indexes as though this were off, and nothing says so — which is also why wget captures are unaffected either way: wget issues no POSTs.
+
+  It fixes a second thing on the way. Keyed by URL alone, a POST's response sat under the same key as the page at that URL, so navigating to the page could resolve to the JSON a scroll handler had asked for.
+
 - Written to a temp file and renamed, as bytes rather than text so the line endings are identical on every platform. A half-written index is a broken site; a rebuild that differs only in newlines makes "did the index change?" unanswerable.
 - `filename` is stored **relative to the site directory**, so moving a site between folders doesn't invalidate the index. Get this wrong and every folder move silently breaks replay.
 

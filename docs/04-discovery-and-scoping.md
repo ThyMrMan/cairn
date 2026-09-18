@@ -374,6 +374,8 @@ Both readings cost something. Rejecting extension-less URLs loses images with no
 - `allow_extensionless: false` (default) — safe, and the scope preview says plainly that extension-less URLs on that host will be skipped.
 - `allow_extensionless: true` — set by the Blogger preset for `blogger.googleusercontent.com`, `lh3.googleusercontent.com` and `themes.googleusercontent.com`, which serve images through extension-less URLs and do not serve linked HTML.
 
+  The WordPress and Ghost presets were missing it in the same way, and one crawl of a WordPress.com blog counted the cost: **339 refused requests**, every one of them the theme's two font stylesheets at `fonts-api.wp.com/css?family=…` or a commenter's avatar at `0.gravatar.com/avatar/<hash>?s=50`. Both presets now list what they need — `fonts-api.wp.com` and `*.gravatar.com` — and nothing more. `*.wp.com` as a whole is deliberately *not* on it: `s0`–`s2` and the `i0` image CDN serve `.js`, `.css` and `.jpg`, so they need nothing, and opening an image CDN to extension-less URLs is exactly how a crawl starts following HTML on it.
+
   `themes.googleusercontent.com` was missing from that list until a live capture exposed it, and it is the instructive case: **every** URL on that host is `image?id=…`, so the flag is not an edge case there, it is the whole host. Listing a host under `assets_on` without also listing it under `extensionless_ok` puts it inside `--domains` and then rejects every URL it serves — in scope, and reachable by nothing. When adding a host to a preset, check what its URLs actually look like before assuming the default is safe.
 
 ### Depth 0 is not `--level=0`

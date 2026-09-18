@@ -696,3 +696,181 @@ def test_a_site_with_no_companion_pass_withholds_everything_it_rejects(db, setti
         ),
     )
     assert withheld_patterns(db, site) == [r"[?&]m=1", r"/search\?[^#]*updated-(max|min)="]
+
+
+# ── a POST that can be replayed ──────────────────────────────────────────
+#
+# Reported as a WordPress blog whose infinite scroll spins forever in replay.
+# Jetpack asks for the next page with `XMLHttpRequest.open("POST", "/?infinity=
+# scrolling")` and takes its spinner down on a response or a network error; a
+# 404 is neither, so the wheel turns until the tab is closed. pywb looks a POST
+# up under `<url>?__wb_method=POST&<body>`, and nothing but `post_append` puts
+# that key in the index.
+
+
+def write_post_warc(
+    path: Path, url: str, body: bytes, payload: bytes, *, linked: bool = True
+) -> None:
+    """A POST and its response, in the shape browsertrix writes them.
+
+    Response first, then the request naming it in `WARC-Concurrent-To` — which
+    is the only thing that makes cdxj-indexer treat the two as a pair.
+    `linked=False` writes the same records without that header.
+    """
+    from warcio.statusandheaders import StatusAndHeaders
+    from warcio.warcwriter import WARCWriter
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "wb") as fh:
+        writer = WARCWriter(fh, gzip=True)
+        response = writer.create_warc_record(
+            url,
+            "response",
+            payload=io.BytesIO(payload),
+            http_headers=StatusAndHeaders(
+                "200 OK", [("Content-Type", "application/json")], protocol="HTTP/1.1"
+            ),
+        )
+        request = writer.create_warc_record(
+            url,
+            "request",
+            payload=io.BytesIO(body),
+            length=len(body),
+            http_headers=StatusAndHeaders(
+                "POST /?infinity=scrolling HTTP/1.1",
+                [
+                    ("Content-Type", "application/x-www-form-urlencoded"),
+                    ("Content-Length", str(len(body))),
+                ],
+                protocol="POST",
+            ),
+        )
+        if linked:
+            request.rec_headers.replace_header(
+                "WARC-Concurrent-To", response.rec_headers.get_header("WARC-Record-ID")
+            )
+        writer.write_record(response)
+        writer.write_record(request)
+
+
+SCROLL_URL = f"{URL}?infinity=scrolling"
+SCROLL_BODY = b"action=infinite_scroll&page=2&order=DESC"
+
+
+def scroll_capture(settings: Settings, *, linked: bool = True) -> Path:
+    out = storage.ensure_capture_dirs(settings, ARCHIVE_PATH, "20260918T031900Z-full-browsertrix")
+    warc = out / storage.WARC_DIR / "part-00000.warc.gz"
+    write_post_warc(
+        warc, SCROLL_URL, SCROLL_BODY, b'{"html":"<article>post 11</article>"}', linked=linked
+    )
+    return warc
+
+
+def key_of(line: str) -> str:
+    return line.split(" ", 1)[0]
+
+
+def entry_of(line: str) -> dict[str, object]:
+    return json.loads(line.split(" ", 2)[2])
+
+
+def test_a_post_is_keyed_the_way_pywb_looks_it_up(site_tree: Settings) -> None:
+    """The body becomes part of the key, sorted, under `__wb_method`.
+
+    Exactly `MethodQueryCanonicalizer.append_query` in pywb, which does this
+    for every non-GET request with no setting that turns it off — so an index
+    without it answers 404 to a request pywb is certain it should serve.
+    """
+    root = storage.site_dir(site_tree, ARCHIVE_PATH)
+    line = replay.cdxj_lines(root, [scroll_capture(site_tree)])[0]
+
+    assert "__wb_method=post" in key_of(line)
+    assert "action=infinite_scroll" in key_of(line)
+    assert "page=2" in key_of(line)
+    entry = entry_of(line)
+    assert entry["method"] == "POST"
+    assert entry["requestBody"] == SCROLL_BODY.decode()
+    assert entry["url"] == SCROLL_URL, "the recorded URL is still the one that was asked for"
+
+
+def test_a_get_is_indexed_exactly_as_it_was(site_tree: Settings) -> None:
+    """Not a second kind of index. Only a POST's line may differ, because
+    every GET already in every index has to keep resolving."""
+    from cdxj_indexer.main import write_cdx_index
+
+    root = storage.site_dir(site_tree, ARCHIVE_PATH)
+    warc = make_capture(
+        site_tree,
+        "20260818T120000Z-full-wget",
+        [(URL, "2026-08-18T12:00:00Z", b"<html>home</html>")],
+    )
+    plain = io.StringIO()
+    write_cdx_index(plain, [str(warc)], {"dir_root": str(root)})
+
+    assert replay.cdxj_lines(root, [warc]) == [
+        line + "\n" for line in plain.getvalue().splitlines() if line.strip()
+    ]
+
+
+def test_indexing_a_post_does_not_index_its_request_record(site_tree: Settings) -> None:
+    """Pairing means the indexer now reads request records. Writing one out
+    would put a second line under the same key, and pywb serves the first
+    thing it finds — which would be a record with no payload."""
+    root = storage.site_dir(site_tree, ARCHIVE_PATH)
+    lines = replay.cdxj_lines(root, [scroll_capture(site_tree)])
+
+    assert len(lines) == 1
+    assert entry_of(lines[0])["mime"] == "application/json"
+
+
+def test_a_post_whose_records_are_not_linked_keeps_its_plain_key(site_tree: Settings) -> None:
+    """The limit of the mechanism, pinned so it is not mistaken for a bug.
+
+    cdxj-indexer pairs two adjacent records only when the second carries
+    `WARC-Concurrent-To` naming the first. browsertrix writes that header; a
+    WARC that does not indexes as though `post_append` were off.
+    """
+    root = storage.site_dir(site_tree, ARCHIVE_PATH)
+    line = replay.cdxj_lines(root, [scroll_capture(site_tree, linked=False)])[0]
+
+    assert "__wb_method" not in key_of(line)
+    assert "requestBody" not in entry_of(line)
+
+
+def test_a_posts_response_no_longer_answers_a_get_of_the_same_url(site_tree: Settings) -> None:
+    """A second thing this fixes, found while pinning the first.
+
+    Keyed by URL alone, a POST's response sits under the same key as the page
+    at that URL, and pywb serves whichever it resolves to — so navigating to
+    the page could hand you the JSON the scroll handler asked for. With the
+    method and body in the key they are two different records, which is what
+    they always were.
+    """
+    from warcio.statusandheaders import StatusAndHeaders
+    from warcio.warcwriter import WARCWriter
+
+    root = storage.site_dir(site_tree, ARCHIVE_PATH)
+    out = storage.ensure_capture_dirs(site_tree, ARCHIVE_PATH, "20260918T040000Z-full-browsertrix")
+    warc = out / storage.WARC_DIR / "part-00000.warc.gz"
+    warc.parent.mkdir(parents=True, exist_ok=True)
+    with open(warc, "wb") as fh:
+        writer = WARCWriter(fh, gzip=True)
+        writer.write_record(
+            writer.create_warc_record(
+                URL,
+                "response",
+                payload=io.BytesIO(b"<html>the page itself</html>"),
+                http_headers=StatusAndHeaders(
+                    "200 OK", [("Content-Type", "text/html")], protocol="HTTP/1.1"
+                ),
+            )
+        )
+    write_post_warc(
+        out / storage.WARC_DIR / "part-00001.warc.gz", URL, b"page=2", b'{"html":"more"}'
+    )
+
+    keys = [key_of(line) for line in replay.cdxj_lines(root, sorted(warc.parent.iterdir()))]
+
+    assert len(keys) == 2
+    assert len(set(keys)) == 2, "the page and the POST are not the same record"
+    assert any("__wb_method" not in k for k in keys)

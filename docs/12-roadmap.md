@@ -543,6 +543,27 @@ Also worth doing: run `--warc-dedup` against a second capture and verify you get
 
 ---
 
+## After M8 — a POST that replays, and two hosts that were fenced by mistake ✅
+
+**Ships:** an infinite scroll that was captured can be replayed, and a WordPress capture keeps its fonts and avatars.
+
+- [x] The index is built with `post_append`, so a POST is keyed under `__wb_method=POST&<body>` — which is what pywb looks one up by, unconditionally and with no setting that turns it off ([07](07-replay.md#indexing))
+- [x] `INDEX_FORMAT` bumped, so every index written before this is rebuilt once rather than keeping a record under a key nothing asks for
+- [x] The WordPress and Ghost presets allow extension-less URLs on `fonts-api.wp.com` and `*.gravatar.com`, and on nothing else ([04](04-discovery-and-scoping.md#what-running-it-actually-established))
+- [x] A POST's response no longer shares a key with the page at the same URL
+
+**Done when:** a real pywb answers a real POST out of the archive. *Asserted in `tests/test_replay_e2e.py` against pywb 2.9.1 in the shipped image: the archived JSON comes back, where before it was a 404. Seven properties were reverted in turn to confirm a test fails without each.*
+
+**Reported, not found.** A WordPress blog replayed, and scrolling to the bottom reached a loading wheel that never stopped. Jetpack asks for the next page with `XMLHttpRequest.open("POST", "/?infinity=scrolling")` and takes its spinner down on a response or on a network error — a 404 is neither, so the wheel turns until the tab is closed. Two separate things were wrong, and both had to be true for it to fail that way.
+
+**What it costs.** Pairing a request with its response means the indexer buffers every record's content, measured at 2.5x — about 3.4 seconds per gigabyte, once per WARC. A GET's line is byte-identical either way; checked against a real wget capture as well as a synthetic one, because a shifted offset would have stopped every archive resolving.
+
+**What is still not fixed, and is not fixable here.** The capture this was reported from has no POST in it at all. browsertrix runs its autoscroll behaviour only if the page passes a test first — it smooth-scrolls to 98% of the page and gives it 500 ms to grow — and on a long page the smooth scroll has barely started by then, so it reports *"page seems to not be responsive to scrolling events"* and skips, without checking again. That happened on 107 of 109 pages, including the front page; the only two it scrolled were `#comment-N` anchors, which take a different branch. Nothing in the crawl's settings changes it, and waiting longer does not help — the scroller had already bound its handler at the two-second mark. What saves the archive is that the platform also emits a real *Older posts* link, which the crawler follows: `/page/2/` and `/page/3/` were captured. Turning **Scripts** off in the replay viewer stops the infinite scroll hiding that link ([16](16-troubleshooting.md#an-infinite-scroll-page-spins-forever-in-replay)).
+
+**Also measured:** pywb does not 404 a POST body it has no record for — it falls back to a fuzzy match and serves the nearest record it holds. So a scroll captured for two pages and then stopped repeats its last page rather than ending, which looks like a complete archive and is not.
+
+---
+
 ## Sequencing notes
 
 **Why discovery before replay.** Discovery determines *what gets captured*; getting it wrong means recapturing everything later. Replay is read-only over whatever exists and can be built against any archive.
