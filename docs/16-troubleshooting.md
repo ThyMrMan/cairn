@@ -325,6 +325,53 @@ does not re-fetch the archive.
 removed, so a later index brings back whatever the site still publishes. Unwatch
 after indexing, not before.
 
+## A crawl runs for hours and never finishes
+
+Open the capture and read *what it fetched*. A crawl that will not end is
+almost always spending itself on one of two things, and both are named there.
+
+**URLs that are not URLs.** A widget that builds its links in JavaScript —
+Blogger's random-posts one is the common case — leaves the unevaluated text in
+the markup: `'<a href="' + randompostsurl + '">'`. wget reads script text for
+anything shaped like a link, so `' + randompostsurl + '` becomes a *relative*
+URL and resolves against every folder it is seen in. Measured on one reported
+crawl: 160 such URLs, asked for 21,758 times, 61.5% of everything the crawl
+did in thirteen hours, every one a 404.
+
+Those rows now offer **"wherever it appears"** beside the ordinary Skip, and
+that box is what you want. The row's own pattern is anchored to the row's own
+path, which is right for a real place and wrong here: the same widget string
+turns up under `/`, `/p/`, `/2026/` and `/2026/08/`, so the report shows four
+rows and skipping all four still leaves two fetching.
+
+**The pagination trail.** On Blogger, `/search?updated-max=…` is one chain per
+arrival context, and the count per post *rises* with the post count — 71.9 per
+post on a 2,855-post blog. The standard preset keeps it; the **lean Blogger
+preset** rejects it. That was a third of the same reported crawl.
+
+**Check the pattern actually saved.** A site's *Domains and crawl scope* panel
+has its own **Save scope** button and says *Unsaved changes* until you press
+it — and the match count beside a pattern is computed from the draft, so a
+pattern can show thousands of matches and never have been saved.
+*Settings → Skip these URLs everywhere* saves the moment you add. Either way a
+pattern added while a crawl is running does nothing to that crawl.
+
+## The same page is fetched over and over
+
+The capture warns when it happens: *"fetched N distinct URLs M times"*. wget
+remembers what it has already fetched by **the files it left on disk**, so
+anything that writes no file gets asked for again every time something links
+it. A 404 writes no file, which is why the widget URLs above are re-requested
+rather than remembered.
+
+It is also why `--delete-after` is never used, even though the WARC already
+holds everything: measured on a six-seed site whose ideal result is eight
+records, deleting each file as it arrived gave 38 records from 8 distinct URLs.
+
+Nothing is wrong with the archive when this happens — the bytes are right, and
+a repeated fetch of a page that *does* exist is deduplicated in the WARC. What
+it costs is the crawl's time and the origin's patience.
+
 ## A skip pattern is saved but nothing was skipped
 
 Look at the count beside it. **matches nothing** means it is inert.

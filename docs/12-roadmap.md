@@ -564,6 +564,24 @@ Also worth doing: run `--warc-dedup` against a second capture and verify you get
 
 ---
 
+## After M8 — the loop that nothing named ✅
+
+**Ships:** a crawl that spends itself on nothing says so, and the report offers a pattern that actually covers it.
+
+- [x] A capture counts what it bought nothing with — `dead_requests`, `dead_urls`, `repeated_requests` — on every capture, and says so when it is worth acting on ([16](16-troubleshooting.md#a-crawl-runs-for-hours-and-never-finishes))
+- [x] A report row that is template text a page never ran offers *wherever it appears*, beside the row's own pattern ([09](09-api.md#captures))
+- [x] The wider pattern is the default in the dialog, because the narrow one is wrong in exactly the case that produces it
+
+**Done when:** one press on any of the eight rows stops all of them. *Measured against the reported crawl's own log: 8 of 741 rows are offered the wider pattern, they generate two patterns between them, and those two cover 160 of 160 distinct widget URLs — 21,486 of 35,394 requests. Confirmed against wget 1.21.4 on a Blogger-shaped fixture: the four patterns the user had written left two shapes fetching; these leave none.*
+
+**Reported as "this crawl keeps getting stuck in a loop".** Blogger's random-posts widget builds its links in JavaScript, and wget reads script text for anything shaped like a link — so `' + randompostsurl + '` becomes a *relative* URL and resolves against every folder it is seen in. 160 of them, asked for 21,758 times in thirteen hours, 61.5% of the crawl, every one a 404. The user had already written four skip patterns; they were correct, wget enforces them, and they covered 154 of the 158 shapes in that log. The report had shown the junk as four rows anchored to four different depths, and there were six.
+
+**Why the markers are compounds.** The first rule tried was "a literal leaf segment under several prefixes", which on this instance offered to skip `/feeds/posts/default` — the posts feed — at 39% of one capture. The second was "contains a quote or an encoded space", which offered to skip `it's%20a%20deal.png` and `madame%20clairmont's-1.png`, real images on a real blog. Only the compound holds: `'%20+%20`, `${`, `{{`, `<%`. Checked against every capture on that instance, 908,802 recorded URLs — it fires on the widget and on nothing else.
+
+**Found while measuring it.** One capture on the same instance fetched 4,011 distinct URLs **381,126 times**, and nothing reported that either. wget remembers what it has fetched by the files it left on disk, so anything writing no file is asked for again every time it is linked — the same fact that makes `--delete-after` unusable here, in a form nobody had looked for. The repeat count is now recorded on every capture and narrated past 2x, which is where the instance's healthy captures (1.0–1.3x) stop and its unhealthy ones (2.1, 5.0, 7.2, 95.0x) start.
+
+---
+
 ## Sequencing notes
 
 **Why discovery before replay.** Discovery determines *what gets captured*; getting it wrong means recapturing everything later. Replay is read-only over whatever exists and can be built against any archive.

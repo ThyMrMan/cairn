@@ -1179,6 +1179,13 @@ export type UrlShape = {
    * fix, not a smaller version of it.
    */
   pattern: string | null;
+  /**
+   * The same junk wherever it appears, rather than only at this depth. Present
+   * only when the row is template text a page never evaluated — a widget's
+   * `' + url + '` resolves against every directory it is seen in, so anchoring
+   * to one path means one pattern per depth and still missing some.
+   */
+  wide_pattern: string | null;
 };
 
 /** What a set of patterns matches among recently-fetched URLs. */

@@ -19,6 +19,8 @@ from cairn.db.types import utcnow
 from cairn.services import interstitial, postprocess, sites, storage
 from cairn.services.htmlrefs import parse_page
 from cairn.services.postprocess import (
+    DEAD_FLOOR,
+    REPEAT_FLOOR,
     Context,
     _escaped_target_host,
     _is_success,
@@ -27,6 +29,7 @@ from cairn.services.postprocess import (
     _unescape_css,
     run_chain,
     step_asset_audit,
+    step_request_audit,
 )
 
 # The exact shape a real Blogger skin produces, from a live capture's log.
@@ -1281,3 +1284,168 @@ def test_a_redirect_beside_real_pages_is_not_a_failure(
     assert ctx.capture.status == "ok"
     assert ctx.stats["redirects"] == 1
     assert not any("archived no pages" in w for w in ctx.warnings)
+
+
+# ── what the crawl spent on nothing ──────────────────────────────────
+#
+# Reported as "this crawl keeps getting stuck in a loop", and nothing said so.
+# The capture card counts requests, and asking for the same dead URL a hundred
+# and thirty-five times counts as a hundred and thirty-five. On the crawl that
+# was reported, 61.5% of 35,394 requests were 160 URLs that do not exist.
+
+
+def _urls_ctx(db: Session, settings: Settings, rows: list[tuple[str, int | None]]) -> Context:
+    from cairn.db.models import CaptureUrl
+
+    site = Site(
+        slug="loop",
+        title="Loop",
+        seed_url="https://b.blogspot.com/",
+        primary_host="b.blogspot.com",
+        archive_path="Unfiled/loop",
+        folder_id=1,
+    )
+    db.add(site)
+    db.flush()
+    capture = Capture(
+        site_id=site.id,
+        kind="full",
+        engine_id="wget-warc",
+        dir_name="20260918T000000Z-full-wget",
+        status="ok",
+        started_at=utcnow(),
+    )
+    db.add(capture)
+    db.flush()
+    db.add_all(
+        CaptureUrl(
+            capture_id=capture.id,
+            url=url,
+            host="b.blogspot.com",
+            status_code=status,
+        )
+        for url, status in rows
+    )
+    db.flush()
+    return Context(
+        session=db,
+        settings=settings,
+        capture=capture,
+        site=site,
+        output_dir=settings.data_dir,
+        tool_version=None,
+        stats={},
+        scope={},
+        seeds=[],
+        seed_source={},
+        artifacts=[],
+        warnings=[],
+    )
+
+
+def _dead_crawl(count: int) -> list[tuple[str, int | None]]:
+    """One dead URL asked for over and over, beside a handful of real pages."""
+    rows: list[tuple[str, int | None]] = [
+        ("https://b.blogspot.com/2019/05/post.html", 200) for _ in range(20)
+    ]
+    rows += [("https://b.blogspot.com/2019/05/' + url + '", 404) for _ in range(count)]
+    return rows
+
+
+def test_a_crawl_spent_on_urls_that_do_not_exist_says_so(db: Session, settings: Settings) -> None:
+    ctx = _urls_ctx(db, settings, _dead_crawl(DEAD_FLOOR))
+
+    step_request_audit(ctx)
+
+    assert ctx.stats["dead_requests"] == DEAD_FLOOR
+    assert ctx.stats["dead_urls"] == 1
+    assert ctx.stats["requests_recorded"] == DEAD_FLOOR + 20
+    warning = "\n".join(ctx.warnings)
+    assert "do not exist" in warning
+    # The URL itself, because the next step is writing a pattern for it.
+    assert "' + url + '" in warning
+    assert "Nothing is missing from the archive" in warning
+
+
+def test_a_healthy_crawl_is_counted_and_left_alone(db: Session, settings: Settings) -> None:
+    """The numbers are recorded on every capture; only a bad one is narrated.
+    A warning that fires on every capture is how the next real one is ignored.
+    """
+    rows = [(f"https://b.blogspot.com/2019/05/post-{n}.html", 200) for n in range(400)]
+    rows += [("https://b.blogspot.com/missing.png", 404)]
+    ctx = _urls_ctx(db, settings, rows)
+
+    step_request_audit(ctx)
+
+    assert ctx.stats["requests_recorded"] == 401
+    assert ctx.stats["distinct_urls"] == 401
+    assert ctx.stats["repeated_requests"] == 0
+    assert ctx.stats["dead_requests"] == 1
+    assert ctx.warnings == []
+
+
+def test_a_few_dead_urls_are_not_worth_saying(db: Session, settings: Settings) -> None:
+    """Under the floor. browsertrix records a blocked host as a failure, so a
+    healthy capture on that engine runs at about 6% dead."""
+    rows = [(f"https://b.blogspot.com/p-{n}.html", 200) for n in range(4000)]
+    rows += [(f"https://b.blogspot.com/gone-{n}.png", 404) for n in range(240)]
+    ctx = _urls_ctx(db, settings, rows)
+
+    step_request_audit(ctx)
+
+    assert ctx.stats["dead_requests"] == 240
+    assert ctx.warnings == [], "6% dead is ordinary and must stay quiet"
+
+
+def test_fetching_the_same_pages_over_and_over_says_so(db: Session, settings: Settings) -> None:
+    """Found while measuring the reported loop: one capture on that instance
+    fetched 4,011 distinct URLs 381,126 times. Nothing reported it."""
+    rows = [
+        (f"https://b.blogspot.com/p-{n}.html", 200) for _ in range(3) for n in range(REPEAT_FLOOR)
+    ]
+    ctx = _urls_ctx(db, settings, rows)
+
+    step_request_audit(ctx)
+
+    assert ctx.stats["distinct_urls"] == REPEAT_FLOOR
+    assert ctx.stats["repeated_requests"] == REPEAT_FLOOR * 2
+    warning = "\n".join(ctx.warnings)
+    assert "3.0 requests each" in warning
+    assert "remembers what it has fetched by the files it left on disk" in warning
+
+
+def test_a_capture_that_recorded_nothing_is_not_an_error(db: Session, settings: Settings) -> None:
+    ctx = _urls_ctx(db, settings, [])
+
+    step_request_audit(ctx)
+
+    assert ctx.stats == {}
+    assert ctx.warnings == []
+
+
+def test_a_handful_of_repeats_is_below_the_floor(db: Session, settings: Settings) -> None:
+    """A ratio on its own is not enough. A small capture that fetched a few
+    things three times is not a crawl in a loop."""
+    rows = [(f"https://b.blogspot.com/p-{n}.html", 200) for _ in range(3) for n in range(100)]
+    ctx = _urls_ctx(db, settings, rows)
+
+    step_request_audit(ctx)
+
+    assert ctx.stats["repeated_requests"] == 200
+    assert ctx.warnings == [], "200 repeats is under the floor, whatever the ratio"
+
+
+def test_many_repeats_at_an_ordinary_ratio_are_below_the_bar(
+    db: Session, settings: Settings
+) -> None:
+    """And a floor on its own is not enough either. The instance's healthy
+    captures sit at 1.0 to 1.3 requests per distinct URL; one of them has 789
+    repeats and is fine."""
+    rows = [(f"https://b.blogspot.com/p-{n}.html", 200) for n in range(4000)]
+    rows += [(f"https://b.blogspot.com/p-{n}.html", 200) for n in range(600)]
+    ctx = _urls_ctx(db, settings, rows)
+
+    step_request_audit(ctx)
+
+    assert ctx.stats["repeated_requests"] == 600
+    assert ctx.warnings == [], "1.15 requests each is ordinary"

@@ -938,9 +938,14 @@ function ShapeRow({ row, siteId, total }: { row: UrlShape; siteId: number; total
   const client = useQueryClient();
   const [asking, setAsking] = useState(false);
   const [added, setAdded] = useState<string | null>(null);
+  // Defaults to the wider one when there is one, because the narrow pattern is
+  // the wrong answer in exactly the case that produces it: the same widget
+  // string under four different prefixes, four rows, and skipping all four
+  // still left two shapes fetching.
+  const [wide, setWide] = useState(true);
+  const chosen = (wide && row.wide_pattern) || row.pattern || "";
   const add = useMutation({
-    mutationFn: (everywhere: boolean) =>
-      endpoints.addSkipPattern(siteId, row.pattern ?? "", everywhere),
+    mutationFn: (everywhere: boolean) => endpoints.addSkipPattern(siteId, chosen, everywhere),
     onSuccess: async (_data, everywhere) => {
       setAsking(false);
       setAdded(everywhere ? "every site" : "this site");
@@ -997,7 +1002,23 @@ function ShapeRow({ row, siteId, total }: { row: UrlShape; siteId: number; total
                   Skip <span className="tabular-nums">{row.count.toLocaleString()}</span> URLs
                   matching:
                 </p>
-                <code className="block break-all rounded bg-surface px-1.5 py-1">{row.pattern}</code>
+                <code className="block break-all rounded bg-surface px-1.5 py-1">{chosen}</code>
+                {row.wide_pattern && row.pattern && (
+                  <label className="flex items-start gap-1.5 text-[11px] text-muted">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5"
+                      checked={wide}
+                      onChange={(e) => setWide(e.target.checked)}
+                    />
+                    <span>
+                      Wherever it appears, not just under this path. This row is text a
+                      script never ran, so the crawler resolves it against every folder it
+                      sees it in — the same junk turns up at several depths, and a pattern
+                      for one of them leaves the rest fetching.
+                    </span>
+                  </label>
+                )}
                 <div className="flex flex-wrap items-center gap-2">
                   <button
                     className="btn-ghost text-[11px]"

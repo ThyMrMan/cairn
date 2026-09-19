@@ -153,7 +153,11 @@ own.
 read-modify-write of the whole scope, which would drop one of two patterns
 added in quick succession — exactly how that report gets used. Each shape row
 carries a `pattern` field: the regex meaning what the row means, or `null` when
-the generated one would not match the row's own example. See
+the generated one would not match the row's own example. A row may also carry
+`wide_pattern`, which is the same junk *wherever it appears* rather than only at
+this depth. It is non-null only for a segment nothing could legitimately be named
+— the literal text of a template expression — because that is the one case where
+anchoring to the row's own path is the wrong answer. See
 [04](04-discovery-and-scoping.md#a-shape-is-not-a-pattern) for why the
 notation and the pattern box being different languages was worth closing.
 
@@ -183,7 +187,7 @@ for why it is merged at resolve time rather than copied into sites.
 | `DELETE` | `/api/captures/{id}` | `409` if it's the only capture unless `?force=true`. Takes the capture's records out of the replay index — without reading any WARC, so it is quick on any size of site — which this row always promised and the endpoint did not do until the index learned to update. `409 capture_running` while its job is still running — including after the crawl, while the capture is post-processed |
 | `GET` | `/api/captures/{id}/log` | Plain text; `?tail=500` |
 | `GET` | `/api/captures/{id}/urls` | With `?errors_only=true`, `?host=`, `?q=` |
-| `GET` | `/api/captures/{id}/url-shapes` | What the capture is fetching, grouped by URL shape, biggest first. Works mid-crawl. Each row carries a `pattern` — the reject regex meaning what that row means, or `null` |
+| `GET` | `/api/captures/{id}/url-shapes` | What the capture is fetching, grouped by URL shape, biggest first. Works mid-crawl. Each row carries a `pattern` — the reject regex meaning what that row means, or `null` — and a `wide_pattern`, non-null only when the row is template text a page never evaluated |
 | `POST` | `/api/captures/{id}/resume` | Continue a `paused` capture into the same directory, asking for what the capture was asked for — the job's spec carries it as `request`. `409` unless it is paused *and* its engine's resume state is on disk; `409 resume_unknown` for a capture that is not a full crawl and has nothing recording what it was for |
 | `POST` | `/api/captures/{id}/export/wacz` | `202 {job_id}` — this capture alone |
 | `POST` | `/api/sites/{id}/capture/companion` | Run the cheap second pass this site's preset offers, if it has one ([04](04-discovery-and-scoping.md)) |

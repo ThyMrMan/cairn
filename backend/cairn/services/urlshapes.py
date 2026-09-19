@@ -85,6 +85,10 @@ class Shape:
             "bytes": self.bytes,
             "example": self.example,
             "pattern": pattern_for(self.shape, self.example),
+            # Present only when the row is template text the page never ran,
+            # which is the one case where anchoring to this path is the wrong
+            # answer. See `wide_pattern_for`.
+            "wide_pattern": wide_pattern_for(self.shape, self.example),
         }
 
 
@@ -264,6 +268,79 @@ def _segment_pattern(segment: str) -> str:
         # wildcard followed by a literal dot.
         return r"[^/?]+\." + _escape(segment[2:])
     return _escape(segment)
+
+
+# A path segment that is a fragment of source code rather than a name: the
+# literal text of a template expression the page never ran. Blogger's random
+# posts widget builds its links as `'<a href="' + randompostsurl + '">'`, and
+# wget reads script text for anything shaped like a link — so the unevaluated
+# string becomes a *relative* URL and resolves against every directory it is
+# seen in. One reported crawl asked for 160 of them 21,758 times, 61% of
+# everything it did, every one a 404.
+#
+# Every marker is a **compound**, and that is the whole of the design. A lone
+# quote or a lone `%20` is ordinary in a real filename — `it's%20a%20deal.png`
+# and `madame%20clairmont's-1.png` are real images on a real blog here — so a
+# rule keyed on either would offer to skip them. Checked against every capture
+# on that instance, 908,802 recorded URLs: these markers fire on nothing but
+# the widget.
+TEMPLATE_MARKERS = (
+    # `' + expr + '` as it arrives in a URL, in either quoting and with the
+    # plus encoded or not.
+    "'%20+%20",
+    '"%20+%20',
+    "%27%20+%20",
+    "%22%20+%20",
+    "'%20%2b%20",
+    "%20+%20'",
+    "%20+%20%27",
+    # The other template notations, which fail the same way.
+    "${",
+    "%24%7b",
+    "{{",
+    "%7b%7b",
+    "<%",
+    "%3c%25",
+)
+
+
+def looks_unevaluated(segment: str) -> bool:
+    """Whether a path segment is template text rather than a name."""
+    low = segment.lower()
+    return any(marker in low for marker in TEMPLATE_MARKERS)
+
+
+def wide_pattern_for(shape: str, example: str = "") -> str | None:
+    """A reject regex for this row's template text *wherever* it appears.
+
+    `pattern_for` anchors to the whole path, which is right when the row is a
+    place — `/feeds/#/comments/default` must not match halfway through
+    something longer. It is wrong when the row is one junk segment that shows
+    up at every depth: the same widget string appeared under `/`, `/p/`, `/#/`
+    and `/#/#/`, so the report offered four rows, and skipping four of them
+    still left the other two fetching.
+
+    So this is offered *beside* the row's own pattern rather than instead of
+    it, and only for a segment nothing could legitimately be named.
+    """
+    path, _, _query = shape.partition("?")
+    segments = _segments(path)
+    junk = next((s for s in segments if looks_unevaluated(s)), None)
+    if junk is None:
+        return None
+
+    # The junk as a whole path segment at any depth, with or without anything
+    # after it. Requiring it to be *last* would be wrong twice over: a widget
+    # that leaves its text mid-path would be missed, and the check below would
+    # then quietly withhold the offer rather than say so.
+    pattern = f"^https?://[^/]+/(?:[^/?]+/)*{_segment_pattern(junk)}(?:/|$|\\?)"
+    if example:
+        try:
+            if not re.search(pattern, example):
+                return None
+        except re.error:  # pragma: no cover — generated, so always compilable
+            return None
+    return pattern
 
 
 def pattern_for(shape: str, example: str = "") -> str | None:

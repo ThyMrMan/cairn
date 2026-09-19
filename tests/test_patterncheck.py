@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session
 
 from cairn.config import Settings
 from cairn.db.models import Capture, CaptureUrl
-from cairn.services import patterncheck, skiplist
+from cairn.services import patterncheck, skiplist, urlshapes
 from cairn.services import sites as site_service
 from cairn.services.scope import HostRule, Scope
 from cairn.services.urlshapes import pattern_for, summarize
@@ -312,3 +312,96 @@ def test_skipping_does_not_disturb_the_rest_of_the_scope(
     assert body["reject_patterns"] == [r"[?&]replytocom=", r"[?&]m=1"]
     assert [h["host"] for h in body["hosts"]] == ["b.blogspot.com", "1.bp.blogspot.com"]
     assert body["max_pages"] == 5000
+
+
+# ── one junk segment at every depth ──────────────────────────────────────
+#
+# Reported as a crawl stuck in a loop. Blogger's random-posts widget builds
+# its links in JavaScript — `'<a href="' + randompostsurl + '">'` — and wget
+# reads script text for anything shaped like a link, so the unevaluated string
+# becomes a relative URL and resolves against every directory it is seen in.
+# The report showed it as four rows, the user skipped all four, and the next
+# crawl still spent 61.5% of 35,394 requests on it: two shapes were left.
+
+WIDGET = "'%20+%20randompostsurl%20+%20'"
+
+
+def test_a_widget_string_is_offered_a_pattern_for_every_depth() -> None:
+    wide = urlshapes.wide_pattern_for(f"/#/#/{WIDGET}", f"{BLOG}/2018/06/{WIDGET}")
+    assert wide is not None
+    compiled = re.compile(wide)
+
+    # Every depth the real crawl produced, from one pattern.
+    for url in (
+        f"{BLOG}/{WIDGET}",
+        f"{BLOG}/p/{WIDGET}",
+        f"{BLOG}/2026/{WIDGET}",
+        f"{BLOG}/2018/06/{WIDGET}",
+        f"{BLOG}/search/label/{WIDGET}",
+        f"{BLOG}/2018/06/{WIDGET}?m=1",
+    ):
+        assert compiled.search(url), url
+
+    # And still nothing that is not it.
+    assert not compiled.search(f"{BLOG}/2019/05/a-post.html")
+    assert not compiled.search(f"{BLOG}/feeds/posts/default")
+
+
+def test_the_rows_own_pattern_is_the_one_that_was_too_narrow() -> None:
+    """Pinned so the pair stays honest: the wide pattern exists because this
+    one is right about the row and wrong about the problem."""
+    narrow = pattern_for(f"/#/#/{WIDGET}", f"{BLOG}/2018/06/{WIDGET}")
+    assert narrow is not None
+    assert re.search(narrow, f"{BLOG}/2018/06/{WIDGET}")
+    assert not re.search(narrow, f"{BLOG}/p/{WIDGET}")
+    assert not re.search(narrow, f"{BLOG}/{WIDGET}")
+
+
+@pytest.mark.parametrize(
+    "segment",
+    [
+        "'%20+%20randompoststhumb%20+%20'",
+        '"%20+%20postUrl%20+%20"',
+        "${postUrl}",
+        "{{title}}",
+        "%7B%7Bslug%7D%7D",
+    ],
+)
+def test_template_text_is_recognised_whatever_the_notation(segment: str) -> None:
+    assert urlshapes.looks_unevaluated(segment)
+
+
+@pytest.mark.parametrize(
+    "segment",
+    [
+        # Real images on a real blog. A rule keyed on a lone quote or a lone
+        # `%20` offers to skip these, which loses pictures — which is why the
+        # markers are compounds.
+        "it's%20a%20deal.png",
+        "madame%20clairmont's-1.png",
+        "vicki's+secret+1.png",
+        "until%20it's%20gone-2.png",
+        "in%27+youchuu.gif",
+        # And the ordinary furniture of a blog.
+        "default",
+        "posts",
+        "comments",
+        "*.html",
+    ],
+)
+def test_a_name_that_merely_contains_a_quote_or_a_space_is_left_alone(segment: str) -> None:
+    assert not urlshapes.looks_unevaluated(segment)
+
+
+def test_an_ordinary_row_is_offered_nothing_wider() -> None:
+    assert urlshapes.wide_pattern_for("/#/#/*.html", f"{BLOG}/2019/05/a-post.html") is None
+    feeds = urlshapes.wide_pattern_for(
+        "/feeds/#/comments/default", f"{BLOG}/feeds/1/comments/default"
+    )
+    assert feeds is None
+
+
+def test_the_wider_pattern_is_withheld_when_it_would_not_match_its_own_row() -> None:
+    """Same contract as `pattern_for`: a button that produces an inert pattern
+    is the bug, not a smaller version of it."""
+    assert urlshapes.wide_pattern_for(f"/#/#/{WIDGET}", f"{BLOG}/nothing/like/it") is None

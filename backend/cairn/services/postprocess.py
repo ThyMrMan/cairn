@@ -1144,6 +1144,82 @@ def _escaped_target_host(url: str) -> str | None:
     return None
 
 
+# ── what the crawl spent on nothing ──────────────────────────────────────
+#
+# Reported as "this crawl keeps getting stuck in a loop", and the loop was
+# invisible: the capture card said how many URLs were fetched, and fetching
+# the same dead URL a hundred and thirty-five times counts as a hundred and
+# thirty-five. Measured on the crawl that was reported — 35,394 requests over
+# thirteen hours — 61.5% of them were 160 URLs that do not exist.
+#
+# Both numbers are recorded on every capture and only *said* when they are
+# worth acting on. The thresholds come from the instance it was reported from,
+# where 18 captures separate cleanly: the healthy ones re-request between 1.0
+# and 1.3 times per distinct URL, and the four unhealthy ones sit at 2.1, 5.0,
+# 7.2 and 95.0. Dead requests are 0.0 to 0.3% on wget captures and about 6% on
+# browsertrix, whose blocked hosts are recorded as failures; the reported
+# crawl was 61%.
+REPEAT_RATIO = 2.0
+REPEAT_FLOOR = 500
+DEAD_SHARE = 0.20
+DEAD_FLOOR = 200
+
+
+def step_request_audit(ctx: Context) -> None:
+    """Count the requests that bought nothing, and say so when it is a lot."""
+    capture = ctx.capture
+    mine = CaptureUrl.capture_id == capture.id
+
+    recorded = int(ctx.session.scalar(select(func.count(CaptureUrl.id)).where(mine)) or 0)
+    if not recorded:
+        return
+    distinct = int(
+        ctx.session.scalar(select(func.count(func.distinct(CaptureUrl.url))).where(mine)) or 0
+    )
+    failed = CaptureUrl.status_code >= 400
+    dead_requests = int(
+        ctx.session.scalar(select(func.count(CaptureUrl.id)).where(mine, failed)) or 0
+    )
+    dead_urls = int(
+        ctx.session.scalar(select(func.count(func.distinct(CaptureUrl.url))).where(mine, failed))
+        or 0
+    )
+
+    repeated = max(recorded - distinct, 0)
+    ctx.stats["requests_recorded"] = recorded
+    ctx.stats["distinct_urls"] = distinct
+    ctx.stats["repeated_requests"] = repeated
+    ctx.stats["dead_requests"] = dead_requests
+    ctx.stats["dead_urls"] = dead_urls
+
+    if dead_requests >= DEAD_FLOOR and dead_requests >= recorded * DEAD_SHARE:
+        worst = ctx.session.execute(
+            select(CaptureUrl.url, func.count(CaptureUrl.id).label("n"))
+            .where(mine, failed)
+            .group_by(CaptureUrl.url)
+            .order_by(func.count(CaptureUrl.id).desc())
+            .limit(3)
+        ).all()
+        examples = "; ".join(f"{url} ({n}x)" for url, n in worst)
+        ctx.warnings.append(
+            f"{dead_requests:,} of this capture's {recorded:,} requests "
+            f"({dead_requests / recorded:.0%}) were for {dead_urls:,} URL(s) that do not "
+            f"exist. Nothing is missing from the archive — they were never pages — but the "
+            f"crawl spent most of itself on them, and it will again. The worst: "
+            f"{examples}. Add a skip pattern for them; the what-it-fetched list below "
+            f"offers one per row."
+        )
+
+    if repeated >= REPEAT_FLOOR and recorded >= distinct * REPEAT_RATIO:
+        ctx.warnings.append(
+            f"This capture fetched {distinct:,} distinct URL(s) {recorded:,} times — "
+            f"{recorded / max(distinct, 1):.1f} requests each. wget remembers what it has "
+            f"fetched by the files it left on disk, so anything that writes no file is "
+            f"asked for again every time it is linked. That is the archive paying for the "
+            f"same bytes repeatedly, and the origin being hit for them."
+        )
+
+
 CHAIN: list[Step] = [
     Step("checksum", 20, True, step_checksum),
     Step("stats", 30, True, step_stats),
@@ -1151,6 +1227,10 @@ CHAIN: list[Step] = [
     Step("cdxj-index", 40, False, step_cdxj_index),
     Step("text-extract", 50, False, step_text_extract),
     Step("asset-audit", 60, False, step_asset_audit),
+    # Beside the asset audit and after it: both answer "what did this crawl
+    # not get", and this one reads only `capture_urls`, so it costs a few
+    # aggregate queries rather than a pass over the WARCs.
+    Step("request-audit", 62, False, step_request_audit),
     # Before media rather than beside it, which is where docs/05 first put it:
     # media downloads video and can run for an hour, and the card should not
     # wait behind that for a picture that takes a second.
