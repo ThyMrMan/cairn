@@ -1153,30 +1153,38 @@ def _escaped_target_host(url: str) -> str | None:
 # thirteen hours — 61.5% of them were 160 URLs that do not exist.
 #
 # Both numbers are recorded on every capture and only *said* when they are
-# worth acting on. The thresholds come from the instance it was reported from,
-# where 18 captures separate cleanly: the healthy ones re-request between 1.0
-# and 1.3 times per distinct URL, and the four unhealthy ones sit at 2.1, 5.0,
-# 7.2 and 95.0. Dead requests are 0.0 to 0.3% on wget captures and about 6% on
-# browsertrix, whose blocked hosts are recorded as failures; the reported
-# crawl was 61%.
-REPEAT_RATIO = 2.0
-REPEAT_FLOOR = 500
+# worth acting on.
+#
+# **The going-round half is `crawlhealth`'s, not a second opinion.** That
+# module already answers "is this crawl converging", the job page polls it
+# while a crawl runs, and it chose 3.0x deliberately over 2.0x — two URLs that
+# map to one file on disk legitimately cost one extra fetch each, measured at
+# exactly 2.0x and flat. Calculating it again here with a threshold of my own
+# would have put "not looping" on the job page and "looping" on the capture it
+# produced, which is the disagreement this codebase keeps refusing to build.
+#
+# What *is* new is the dead half. 4xx is counted already — `capture.error_count`
+# — as a total; what nothing said is how few URLs that total is spread over.
+# On the reported crawl, 21,758 requests were 160 URLs, and one number without
+# the other reads as an unlucky site rather than a loop.
 DEAD_SHARE = 0.20
 DEAD_FLOOR = 200
 
 
 def step_request_audit(ctx: Context) -> None:
     """Count the requests that bought nothing, and say so when it is a lot."""
+    from cairn.services import crawlhealth
+
     capture = ctx.capture
     mine = CaptureUrl.capture_id == capture.id
 
     recorded = int(ctx.session.scalar(select(func.count(CaptureUrl.id)).where(mine)) or 0)
     if not recorded:
         return
-    distinct = int(
-        ctx.session.scalar(select(func.count(func.distinct(CaptureUrl.url))).where(mine)) or 0
-    )
-    failed = CaptureUrl.status_code >= 400
+
+    # The same predicate `step_stats` counts `error_count` with, so the two
+    # can never disagree about what failed.
+    failed = (CaptureUrl.status_code >= 400) | (CaptureUrl.error.isnot(None))
     dead_requests = int(
         ctx.session.scalar(select(func.count(CaptureUrl.id)).where(mine, failed)) or 0
     )
@@ -1184,20 +1192,20 @@ def step_request_audit(ctx: Context) -> None:
         ctx.session.scalar(select(func.count(func.distinct(CaptureUrl.url))).where(mine, failed))
         or 0
     )
+    loop = crawlhealth.repetition(ctx.session, capture.id)
 
-    repeated = max(recorded - distinct, 0)
     ctx.stats["requests_recorded"] = recorded
-    ctx.stats["distinct_urls"] = distinct
-    ctx.stats["repeated_requests"] = repeated
     ctx.stats["dead_requests"] = dead_requests
     ctx.stats["dead_urls"] = dead_urls
+    ctx.stats["repeat_ratio"] = loop.ratio
+    ctx.stats["repeated_requests"] = max(loop.checked - loop.distinct, 0)
 
     if dead_requests >= DEAD_FLOOR and dead_requests >= recorded * DEAD_SHARE:
         worst = ctx.session.execute(
             select(CaptureUrl.url, func.count(CaptureUrl.id).label("n"))
             .where(mine, failed)
             .group_by(CaptureUrl.url)
-            .order_by(func.count(CaptureUrl.id).desc())
+            .order_by(func.count(CaptureUrl.id).desc(), CaptureUrl.url)
             .limit(3)
         ).all()
         examples = "; ".join(f"{url} ({n}x)" for url, n in worst)
@@ -1210,13 +1218,13 @@ def step_request_audit(ctx: Context) -> None:
             f"offers one per row."
         )
 
-    if repeated >= REPEAT_FLOOR and recorded >= distinct * REPEAT_RATIO:
+    if loop.looping:
         ctx.warnings.append(
-            f"This capture fetched {distinct:,} distinct URL(s) {recorded:,} times — "
-            f"{recorded / max(distinct, 1):.1f} requests each. wget remembers what it has "
-            f"fetched by the files it left on disk, so anything that writes no file is "
-            f"asked for again every time it is linked. That is the archive paying for the "
-            f"same bytes repeatedly, and the origin being hit for them."
+            f"Of the last {loop.checked:,} fetches, {loop.distinct:,} were distinct URL(s) "
+            f"— {loop.ratio} requests each. wget remembers what it has fetched by the files "
+            f"it left on disk, so anything that writes no file is asked for again every "
+            f"time it is linked. That is the archive paying for the same bytes repeatedly, "
+            f"and the origin being hit for them."
         )
 
 

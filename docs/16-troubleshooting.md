@@ -358,11 +358,17 @@ pattern added while a crawl is running does nothing to that crawl.
 
 ## The same page is fetched over and over
 
-The capture warns when it happens: *"fetched N distinct URLs M times"*. wget
-remembers what it has already fetched by **the files it left on disk**, so
-anything that writes no file gets asked for again every time something links
-it. A 404 writes no file, which is why the widget URLs above are re-requested
-rather than remembered.
+The capture warns when it happens, and the job page says the same thing while
+the crawl is still running — both read `crawlhealth`, so they cannot disagree
+about one capture. wget remembers what it has already fetched by **the files
+it left on disk**, so anything that writes no file gets asked for again every
+time something links it. A 404 writes no file, which is why the widget URLs
+above are re-requested rather than remembered.
+
+The bar is **3.0 requests per distinct URL**, not 2.0, and the difference is
+deliberate: a site reachable under two names maps two URLs to one file on
+disk, which costs exactly one extra fetch each — measured flat at 2.0x on 6, 30
+and 90 pages. A warning that fires there is one nobody reads.
 
 It is also why `--delete-after` is never used, even though the WARC already
 holds everything: measured on a six-seed site whose ideal result is eight

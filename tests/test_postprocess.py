@@ -20,7 +20,6 @@ from cairn.services import interstitial, postprocess, sites, storage
 from cairn.services.htmlrefs import parse_page
 from cairn.services.postprocess import (
     DEAD_FLOOR,
-    REPEAT_FLOOR,
     Context,
     _escaped_target_host,
     _is_success,
@@ -1378,7 +1377,7 @@ def test_a_healthy_crawl_is_counted_and_left_alone(db: Session, settings: Settin
     step_request_audit(ctx)
 
     assert ctx.stats["requests_recorded"] == 401
-    assert ctx.stats["distinct_urls"] == 401
+    assert ctx.stats["repeat_ratio"] == 1.0
     assert ctx.stats["repeated_requests"] == 0
     assert ctx.stats["dead_requests"] == 1
     assert ctx.warnings == []
@@ -1399,19 +1398,51 @@ def test_a_few_dead_urls_are_not_worth_saying(db: Session, settings: Settings) -
 
 def test_fetching_the_same_pages_over_and_over_says_so(db: Session, settings: Settings) -> None:
     """Found while measuring the reported loop: one capture on that instance
-    fetched 4,011 distinct URLs 381,126 times. Nothing reported it."""
+    fetched 4,011 distinct URLs 381,126 times. Nothing reported it.
+
+    The verdict is `crawlhealth`'s, which the job page already polls while a
+    crawl runs. A second opinion here would let the two disagree about the
+    same capture.
+    """
+    from cairn.services import crawlhealth
+
     rows = [
-        (f"https://b.blogspot.com/p-{n}.html", 200) for _ in range(3) for n in range(REPEAT_FLOOR)
+        (f"https://b.blogspot.com/p-{n}.html", 200)
+        for _ in range(int(crawlhealth.LOOP_RATIO))
+        for n in range(crawlhealth.MIN_ROWS)
     ]
     ctx = _urls_ctx(db, settings, rows)
 
     step_request_audit(ctx)
 
-    assert ctx.stats["distinct_urls"] == REPEAT_FLOOR
-    assert ctx.stats["repeated_requests"] == REPEAT_FLOOR * 2
+    assert ctx.stats["repeat_ratio"] == crawlhealth.LOOP_RATIO
+    assert ctx.stats["repeated_requests"] == crawlhealth.MIN_ROWS * 2
     warning = "\n".join(ctx.warnings)
-    assert "3.0 requests each" in warning
+    assert f"{crawlhealth.LOOP_RATIO} requests each" in warning
     assert "remembers what it has fetched by the files it left on disk" in warning
+
+
+def test_the_capture_report_and_the_job_page_say_the_same_thing(
+    db: Session, settings: Settings
+) -> None:
+    """The reason this defers rather than counting again: one of them saying
+    "looping" while the other says "fine" about the same capture is worse than
+    neither saying anything."""
+    from cairn.services import crawlhealth
+
+    rows = [
+        (f"https://b.blogspot.com/p-{n}.html", 200)
+        for _ in range(4)
+        for n in range(crawlhealth.MIN_ROWS)
+    ]
+    ctx = _urls_ctx(db, settings, rows)
+
+    step_request_audit(ctx)
+    live = crawlhealth.repetition(db, ctx.capture.id)
+
+    assert live.looping
+    assert ctx.stats["repeat_ratio"] == live.ratio
+    assert any("requests each" in w for w in ctx.warnings)
 
 
 def test_a_capture_that_recorded_nothing_is_not_an_error(db: Session, settings: Settings) -> None:
@@ -1435,17 +1466,21 @@ def test_a_handful_of_repeats_is_below_the_floor(db: Session, settings: Settings
     assert ctx.warnings == [], "200 repeats is under the floor, whatever the ratio"
 
 
-def test_many_repeats_at_an_ordinary_ratio_are_below_the_bar(
-    db: Session, settings: Settings
-) -> None:
-    """And a floor on its own is not enough either. The instance's healthy
-    captures sit at 1.0 to 1.3 requests per distinct URL; one of them has 789
-    repeats and is fine."""
-    rows = [(f"https://b.blogspot.com/p-{n}.html", 200) for n in range(4000)]
-    rows += [(f"https://b.blogspot.com/p-{n}.html", 200) for n in range(600)]
+def test_a_site_served_under_two_names_is_not_a_loop(db: Session, settings: Settings) -> None:
+    """Exactly 2.0x, and deliberately quiet. Two URLs mapping to one file on
+    disk each cost one extra fetch, which `crawlhealth` measured as flat at
+    2.0x on 6, 30 and 90 pages — a threshold that fires there is one people
+    switch off."""
+    from cairn.services import crawlhealth
+
+    rows = [
+        (f"https://b.blogspot.com/p-{n}.html", 200)
+        for _ in range(2)
+        for n in range(crawlhealth.MIN_ROWS * 2)
+    ]
     ctx = _urls_ctx(db, settings, rows)
 
     step_request_audit(ctx)
 
-    assert ctx.stats["repeated_requests"] == 600
-    assert ctx.warnings == [], "1.15 requests each is ordinary"
+    assert ctx.stats["repeat_ratio"] == 2.0
+    assert ctx.warnings == [], "2.0x is the bounded, harmless case"
