@@ -347,6 +347,45 @@ def test_a_widget_string_is_offered_a_pattern_for_every_depth() -> None:
     assert not compiled.search(f"{BLOG}/feeds/posts/default")
 
 
+def test_a_doubled_slash_is_still_the_same_junk_segment() -> None:
+    """What the crawl requested is what the pattern has to match.
+
+    Reported from a Blogger capture whose log carried `//2017/10/<widget>`:
+    four URLs, a hundred requests each. The first version of this pattern
+    matched 18,896 of that crawl's 19,296 junk requests and left those 400
+    going out, because a chain of non-empty segments has nowhere to put an
+    empty one.
+    """
+    wide = urlshapes.wide_pattern_for(f"/#/#/{WIDGET}", f"{BLOG}/2018/06/{WIDGET}")
+    assert wide is not None
+    compiled = re.compile(wide)
+
+    for url in (
+        f"{BLOG}//2017/10/{WIDGET}",  # the four the capture actually asked for
+        f"{BLOG}//{WIDGET}",
+        f"{BLOG}/a//b/{WIDGET}",
+        f"{BLOG}//2017//10/{WIDGET}",
+        f"{BLOG}//2017/10/{WIDGET}?m=1",
+    ):
+        assert compiled.search(url), url
+
+
+def test_spanning_the_slashes_did_not_widen_what_counts_as_the_segment() -> None:
+    """The prefix runs across slashes now, so two things still hold the match
+    to a whole path segment: the `/` that closes the run, and the query fence.
+    Neither has a test of its own anywhere else."""
+    wide = urlshapes.wide_pattern_for(f"/#/#/{WIDGET}", f"{BLOG}/2018/06/{WIDGET}")
+    assert wide is not None
+    compiled = re.compile(wide)
+
+    # A name that merely starts or ends with the junk is a different name.
+    assert not compiled.search(f"{BLOG}/2018/06/x{WIDGET}")
+    assert not compiled.search(f"{BLOG}/2018/06/{WIDGET}x")
+    # And the query string is not the path, at either depth.
+    assert not compiled.search(f"{BLOG}/2018/06/?q=/{WIDGET}")
+    assert not compiled.search(f"{BLOG}/a?q=/{WIDGET}")
+
+
 def test_the_rows_own_pattern_is_the_one_that_was_too_narrow() -> None:
     """Pinned so the pair stays honest: the wide pattern exists because this
     one is right about the row and wrong about the problem."""

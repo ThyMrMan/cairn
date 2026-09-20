@@ -333,7 +333,29 @@ def wide_pattern_for(shape: str, example: str = "") -> str | None:
     # after it. Requiring it to be *last* would be wrong twice over: a widget
     # that leaves its text mid-path would be missed, and the check below would
     # then quietly withhold the offer rather than say so.
-    pattern = f"^https?://[^/]+/(?:[^/?]+/)*{_segment_pattern(junk)}(?:/|$|\\?)"
+    #
+    # **The prefix is one run, not a chain of segments.** A chain has to say
+    # what a segment is, and `(?:[^/?]+/)*` says a non-empty one — so a URL
+    # carrying a doubled slash falls straight out of it. One Blogger capture
+    # asked for `//2017/10/<widget>` and three siblings, a hundred requests
+    # each: the chain covered 18,896 of that crawl's 19,296 junk requests and
+    # left exactly those 400 going out. `[^?]*` spans the slashes instead of
+    # counting them, so an empty segment is just more prefix. `(?:[^/?]*/)*`
+    # was measured correct too, but a nested unbounded quantifier read by
+    # three engines — here, PCRE in wget, JavaScript when someone pastes it
+    # between the panels — is an argument the single run does not need.
+    #
+    # And it has to be matched here rather than waited out, because wget
+    # normalises the slash away only on the wire. Measured on 1.21.4 with
+    # `--regex-type=pcre`: given `host//2017/10/<widget>` it tests the reject
+    # pattern against the doubled form it stores and then sends `GET
+    # /2017/10/<widget>` — the same trap as `%5C` against a literal backslash
+    # in `scope.py`, and the reason the log shows a shape the server never saw.
+    #
+    # Widening a prefix is when a boundary goes missing quietly, so both that
+    # remain are pinned: `[^?]*` is what keeps `?q=/<widget>` out, and the `/`
+    # closing the run is what keeps this a *segment* rather than a substring.
+    pattern = f"^https?://[^/]+/(?:[^?]*/)?{_segment_pattern(junk)}(?:/|$|\\?)"
     if example:
         try:
             if not re.search(pattern, example):
