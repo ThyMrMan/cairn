@@ -1,0 +1,170 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cairn Archive</title>
+<style>
+:root {
+  --bg:#e7e5df; --surface:#f7f6f2; --surface-2:#efede6; --border:#d6d2c8; --border-2:#c8c3b6;
+  --text:#211f1a; --muted:#6d675b; --faint:#8f897c;
+  --accent:#a4611f; --accent-weak:rgba(164,97,31,.10);
+  --feed:#2f7268; --feed-weak:rgba(47,114,104,.12);
+  --shadow:0 1px 2px rgba(30,26,18,.06),0 6px 20px rgba(30,26,18,.06);
+  --shadow-lift:0 2px 6px rgba(30,26,18,.10),0 16px 40px rgba(30,26,18,.14);
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#151419; --surface:#1e1d23; --surface-2:#26242c; --border:#302e38; --border-2:#3b3945;
+  --text:#ece9e2; --muted:#9a9488; --faint:#6f6a60;
+  --accent:#e2a556; --accent-weak:rgba(226,165,86,.14);
+  --feed:#4bb5a4; --feed-weak:rgba(75,181,164,.14);
+  --shadow:0 1px 2px rgba(0,0,0,.4),0 8px 24px rgba(0,0,0,.34);
+  --shadow-lift:0 2px 6px rgba(0,0,0,.5),0 20px 48px rgba(0,0,0,.5);
+}}
+:root[data-theme="dark"]{
+  --bg:#151419; --surface:#1e1d23; --surface-2:#26242c; --border:#302e38; --border-2:#3b3945;
+  --text:#ece9e2; --muted:#9a9488; --faint:#6f6a60;
+  --accent:#e2a556; --accent-weak:rgba(226,165,86,.14);
+  --feed:#4bb5a4; --feed-weak:rgba(75,181,164,.14);
+  --shadow:0 1px 2px rgba(0,0,0,.4),0 8px 24px rgba(0,0,0,.34);
+  --shadow-lift:0 2px 6px rgba(0,0,0,.5),0 20px 48px rgba(0,0,0,.5);
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--bg);color:var(--text);
+  font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased}
+.mono{font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace}
+.word{font-family:Georgia,"Times New Roman",serif;font-weight:600;font-size:22px;
+  line-height:1;letter-spacing:.2px}
+a{color:inherit}
+header{position:sticky;top:0;z-index:20;
+  background:color-mix(in srgb,var(--bg) 88%,transparent);
+  backdrop-filter:saturate(1.4) blur(10px);border-bottom:1px solid var(--border)}
+.bar{max-width:1240px;margin:0 auto;padding:14px 20px;
+  display:flex;align-items:center;gap:18px;flex-wrap:wrap}
+.brand{display:flex;align-items:center;gap:11px;margin-right:auto;text-decoration:none}
+.brand svg{display:block;flex:none}
+.brand .host{font-size:11.5px;color:var(--faint);margin-top:3px;letter-spacing:.2px}
+.brand .host b{color:var(--muted);font-weight:500}
+.controls{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.search{position:relative;display:flex;align-items:center}
+.search svg{position:absolute;left:11px;color:var(--faint);pointer-events:none}
+#filter{font:inherit;font-size:14px;color:var(--text);background:var(--surface);
+  border:1px solid var(--border-2);border-radius:9px;padding:9px 12px 9px 34px;width:220px;max-width:52vw}
+#filter::placeholder{color:var(--faint)}
+#filter:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-weak)}
+.segmented{display:inline-flex;background:var(--surface);border:1px solid var(--border-2);
+  border-radius:9px;padding:3px;gap:2px}
+.segmented button{font:inherit;font-size:12.5px;color:var(--muted);background:none;border:0;
+  padding:6px 11px;border-radius:6px;cursor:pointer}
+.segmented button:hover{color:var(--text)}
+.segmented button[aria-pressed="true"]{background:var(--surface-2);color:var(--text);
+  box-shadow:inset 0 0 0 1px var(--border)}
+main{max-width:1240px;margin:0 auto;padding:20px;padding-block:22px 56px}
+.count{color:var(--muted);font-size:13px;margin:0 2px 16px;
+  display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}
+.count b{color:var(--text);font-weight:600}
+.count .dot{color:var(--faint)}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:18px}
+.card{display:flex;flex-direction:column;background:var(--surface);border:1px solid var(--border);
+  border-radius:14px;overflow:hidden;text-decoration:none;color:inherit;box-shadow:var(--shadow);
+  transition:transform .16s ease,box-shadow .16s ease,border-color .16s ease}
+.card[hidden]{display:none}
+a.card:hover,a.card:focus-visible{transform:translateY(-3px);box-shadow:var(--shadow-lift);
+  border-color:var(--accent);outline:none}
+.card.ph{opacity:.86}
+.thumb{position:relative;aspect-ratio:16/10;background:var(--surface-2);
+  border-bottom:1px solid var(--border);overflow:hidden}
+.shot{display:block;width:100%;height:100%;object-fit:cover;object-position:top center}
+.ph-thumb{width:100%;height:100%;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;gap:8px;color:var(--faint)}
+.ph-thumb svg{width:38px;height:38px}
+.ph-thumb span{font-size:11.5px}
+.badges{position:absolute;top:9px;left:9px;display:flex;gap:6px;flex-wrap:wrap}
+.chip{display:inline-flex;align-items:center;font-size:10.5px;font-weight:600;
+  padding:3px 8px;border-radius:999px;line-height:1}
+.chip.feed{color:var(--feed);background:var(--feed-weak);
+  box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--feed) 34%,transparent)}
+.caps{position:absolute;bottom:9px;right:9px;font-size:10.5px;font-weight:600;color:var(--text);
+  background:color-mix(in srgb,var(--surface) 82%,transparent);
+  box-shadow:inset 0 0 0 1px var(--border);padding:3px 8px;border-radius:999px}
+.body{padding:13px 14px 14px;display:flex;flex-direction:column;gap:5px;flex:1}
+.title{font-family:Georgia,"Times New Roman",serif;font-weight:600;font-size:17px;
+  line-height:1.2;text-wrap:balance}
+.domain{font-size:12px;color:var(--muted);word-break:break-all}
+.meta{margin-top:auto;padding-top:10px;display:flex;align-items:center;gap:8px;
+  font-size:11.5px;color:var(--faint)}
+.meta .sep{opacity:.5}
+.go{margin-left:auto;color:var(--muted);font-weight:600}
+a.card:hover .go,a.card:focus-visible .go{color:var(--accent)}
+.empty{color:var(--muted);font-size:14px;padding:48px 4px;text-align:center;grid-column:1/-1}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+@media (max-width:560px){.brand .host{display:none}.controls{width:100%}#filter{flex:1;max-width:none}}
+</style>
+<header><div class="bar">
+  <a class="brand" href="/">
+    <svg width="24" height="28" viewBox="0 0 26 30" fill="none" aria-hidden="true">
+      <ellipse cx="13" cy="26" rx="11" ry="3.4" fill="var(--accent)" opacity=".9"/>
+      <rect x="4.5" y="17.5" width="17" height="6.6" rx="3.3" fill="var(--muted)"/>
+      <rect x="6.8" y="10.5" width="12.4" height="6" rx="3" fill="var(--text)"/>
+      <rect x="9" y="4.5" width="8" height="5" rx="2.5" fill="var(--accent)"/>
+    </svg>
+    <div><div class="word">Cairn</div><div class="host mono">__HOST__</div></div>
+  </a>
+  <div class="controls">
+    <label class="search">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+        stroke-width="2.2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/>
+        <path d="m20 20-3.2-3.2"/></svg>
+      <input id="filter" type="search" placeholder="Filter sites…" autocomplete="off"
+        spellcheck="false" aria-label="Filter sites">
+    </label>
+    <div class="segmented" role="group" aria-label="Sort order">
+      <button id="sort-recent" aria-pressed="true">Recent</button>
+      <button id="sort-az" aria-pressed="false">A–Z</button>
+    </div>
+  </div>
+</div></header>
+<main>
+__BODY__
+</main>
+<script>
+(function(){
+  var grid=document.getElementById("grid"); if(!grid) return;
+  var cards=[].slice.call(grid.querySelectorAll(".card"));
+  // Progressive enhancement: with scripts on, open the mini-viewer (which has
+  // the scripts-off toggle). With scripts off, the href stays the bare mp_ URL.
+  cards.forEach(function(c){ var v=c.getAttribute("data-view"); if(v) c.setAttribute("href",v); });
+
+  var countEl=document.getElementById("count");
+  var base=countEl?countEl.innerHTML:"";
+  var total=cards.length, query="";
+  function draw(){
+    var shown=0;
+    cards.forEach(function(c){
+      var hit=!query||(c.getAttribute("data-search")||"").indexOf(query)!==-1;
+      c.hidden=!hit; if(hit) shown++;
+    });
+    if(countEl){
+      countEl.innerHTML = query
+        ? "<b>"+shown+"</b> of "+total+" sites <span class='dot'>·</span> filtered"
+        : base;
+    }
+  }
+  function sort(m){
+    document.getElementById("sort-recent").setAttribute("aria-pressed", m==="recent");
+    document.getElementById("sort-az").setAttribute("aria-pressed", m==="az");
+    var ordered=cards.slice().sort(function(a,b){
+      if(m==="az") return (a.getAttribute("data-title")||"")
+        .localeCompare(b.getAttribute("data-title")||"");
+      return (b.getAttribute("data-sort")||"").localeCompare(a.getAttribute("data-sort")||"");
+    });
+    ordered.forEach(function(c){ grid.appendChild(c); });
+  }
+  var f=document.getElementById("filter");
+  if(f) f.addEventListener("input", function(e){
+    query=(e.target.value||"").trim().toLowerCase(); draw();
+  });
+  var br=document.getElementById("sort-recent"), ba=document.getElementById("sort-az");
+  if(br) br.addEventListener("click", function(){ sort("recent"); });
+  if(ba) ba.addEventListener("click", function(){ sort("az"); });
+})();
+</script>

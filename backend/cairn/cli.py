@@ -53,7 +53,9 @@ def _cmd_replay_init(_args: argparse.Namespace) -> int:
     Runs before pywb starts, and by hand when a restore, a folder move or a
     recreated volume has left the tree disagreeing with the archives.
     """
-    from cairn.services import replay
+    from pathlib import Path
+
+    from cairn.services import gallery, replay
 
     settings = get_settings()
     ensure_directories(settings)
@@ -64,14 +66,23 @@ def _cmd_replay_init(_args: argparse.Namespace) -> int:
     head_insert = replay.write_templates(settings)
 
     engine = get_engine(settings.db_url)
+    gallery_index: Path | None = None
     with sessionmaker_for(engine)() as session:
         linked, removed = replay.sync_collections(session, settings)
+        # The gallery is derived from the same database and archives; rebuild it
+        # here too, best-effort, so a restart repairs it along with the tree.
+        try:
+            gallery_index = gallery.write_gallery(session, settings)
+        except gallery.GalleryError as exc:
+            print(f"Gallery not written: {exc}")
 
     print(f"Wrote {config}")
     if head_insert:
         print(f"Wrote {head_insert} (replay uncovers content-warning overlays)")
     else:
         print("Replay leaves content-warning overlays in place (replay_uncover_overlays=false)")
+    if gallery_index:
+        print(f"Wrote {gallery_index}")
     print(f"Collections: {linked} linked, {removed} removed.")
     return 0
 

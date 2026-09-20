@@ -106,6 +106,44 @@ The tree is derived data: `cairn replay-init` rebuilds it and the config from th
 
 ---
 
+## The gallery
+
+pywb's own landing page lists collections by ID (`site-42`) and, inside each, a
+search box — no titles, no screenshots, and it needs JavaScript to render, which
+is the wrong thing for a site that only replays with scripts off. So
+`gallery.py` generates the page that sits in front of it,
+`/data/replay/gallery/index.html`, the replay origin's landing page.
+
+- **One card per site**, each a static `<a>` linking to that site's newest
+  capture at the exact `(url, timestamp)` its thumbnail was taken of — so
+  clicking the picture opens the page in the picture. Static so the page works
+  with JavaScript disabled; the filter box and the sort control are the only
+  script, and they only enhance.
+- **Screenshots are inlined** as base64 `data:` URIs, reusing `home.jpg`, so the
+  file is self-contained and also browses over SMB with the app stopped.
+- **A site with nothing replayable** — a gated blog whose only record is a
+  redirect, or one not captured yet — gets a placeholder tile that says so,
+  rather than being hidden. The gallery should not quietly omit part of the
+  archive, the same stance the thumbnail service takes.
+- **The mini-viewer.** With JavaScript on, a card opens `view.html`, which frames
+  the capture in the same sandbox the app uses and adds a scripts-on/off
+  toggle — the standalone equivalent of the app's [revocable
+  `allow-scripts`](#required-mitigations). With JavaScript off, the card's href
+  stays the bare `mp_` URL, which renders without scripts, so there is no
+  `<noscript>` special case.
+- **Regenerated** at `replay-init` (every boot), after every capture (the
+  `gallery` post-processor), and when a site is deleted or restored — the same
+  derived-data lifecycle as the collection tree and the CDXJ index. A rename or
+  a folder move runs no capture, so it is picked up on the next capture, the next
+  restart, or the **Rebuild collections** maintenance action, which rebuilds the
+  gallery alongside the tree.
+
+It is served at the replay origin's root by the reverse proxy
+([10](10-deployment-unraid.md#the-gallery)); a LAN install without a proxy still
+has the file on disk to open over the share.
+
+---
+
 ## Uncovering a page the site drew a warning over
 
 **This is the one place Cairn changes what a replayed page renders**, so it is written down in full.

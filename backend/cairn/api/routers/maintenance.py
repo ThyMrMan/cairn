@@ -24,7 +24,10 @@ from cairn.api.schemas import (
     TrashEntry,
 )
 from cairn.db.models import Folder
-from cairn.services import audit, postprocess, replay, symlinks, trash
+from cairn.logging import get_logger
+from cairn.services import audit, gallery, postprocess, replay, symlinks, trash
+
+log = get_logger(__name__)
 
 router = APIRouter(tags=["maintenance"], dependencies=[Csrf])
 
@@ -96,6 +99,13 @@ def rebuild_collections(
     request, so this takes effect without restarting anything.
     """
     linked, removed = replay.sync_collections(db, settings)
+    # The gallery is part of the same replay-facing tree, so the "rebuild it"
+    # button rebuilds it too — best-effort, since a stale gallery is a lesser
+    # problem than the collections this endpoint exists to repair.
+    try:
+        gallery.write_gallery(db, settings)
+    except gallery.GalleryError as exc:
+        log.warning("gallery not rebuilt", extra={"err": str(exc)})
     audit.record(db, "maintenance.collections", actor=user.username, ip=ip)
     return {"linked": linked, "removed": removed}
 

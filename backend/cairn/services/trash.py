@@ -65,6 +65,21 @@ def retention_days(session: Session) -> int:
     return settings_store.get_int(session, RETENTION_SETTING, DEFAULT_RETENTION_DAYS)
 
 
+def _refresh_gallery(session: Session, settings: Settings) -> None:
+    """Rebuild the replay gallery, best-effort, after a site comes or goes.
+
+    Deleting or restoring a site changes which cards belong in the gallery, and
+    neither path runs a capture, so it would otherwise be stale until the next
+    one (or a restart). Never fatal: the gallery is a convenience beside replay.
+    """
+    from cairn.services import gallery
+
+    try:
+        gallery.write_gallery(session, settings)
+    except Exception as exc:  # never fail a delete or restore over the gallery
+        log.warning("gallery not rebuilt", extra={"err": str(exc)})
+
+
 # ── delete ───────────────────────────────────────────────────────────────
 
 
@@ -86,6 +101,7 @@ def trash_site(session: Session, settings: Settings, site: Site) -> None:
     # is broken" rather than "the site was deleted".
     replay.unlink_collection(settings, site.id)
     symlinks.safe_rebuild(session, settings)
+    _refresh_gallery(session, settings)
 
     source = storage.site_dir(settings, site.archive_path)
     if not source.exists():
@@ -156,6 +172,7 @@ def restore_site(session: Session, settings: Settings, site: Site) -> Site:
         )
     site_service.write_site_yaml(session, settings, site)
     symlinks.safe_rebuild(session, settings)
+    _refresh_gallery(session, settings)
     log.info("site restored", extra={"site": site.id, "path": archive_path})
     return site
 
