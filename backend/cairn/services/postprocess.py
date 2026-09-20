@@ -312,6 +312,25 @@ def step_thumbnail(ctx: Context) -> None:
     ctx.stats["thumbnail"] = shot.to_dict()
 
 
+def step_gallery(ctx: Context) -> None:
+    """Rebuild the replay gallery so this capture shows up in it.
+
+    A new site, a refreshed thumbnail and a changed capture count all land on
+    the gallery, so it is regenerated once per capture. Silent on failure, like
+    the thumbnail step and for the same reason: the gallery is a convenience
+    served beside replay, and a warning on every capture would teach the reader
+    to skip the warnings that mean something. It reads the database and writes
+    files — never writes the database — so it needs no `write` transaction.
+    """
+    from cairn.services import gallery
+
+    try:
+        gallery.write_gallery(ctx.session, ctx.settings)
+    except Exception as exc:  # never fail or downgrade a capture over the gallery
+        ctx.stats["gallery_skipped"] = str(exc)
+        log.info("gallery not rebuilt", extra={"site": ctx.site.id, "why": str(exc)})
+
+
 def step_media(ctx: Context) -> None:
     """Fetch the video an archived post embedded, if this site asked for it.
 
@@ -1243,6 +1262,9 @@ CHAIN: list[Step] = [
     # media downloads video and can run for an hour, and the card should not
     # wait behind that for a picture that takes a second.
     Step("screenshot", 65, False, step_thumbnail),
+    # After the screenshot so a fresh picture is in it, before media so it does
+    # not wait behind an hour of video downloads for a page that took a second.
+    Step("gallery", 66, False, step_gallery),
     # Last, and never required: it reaches hosts outside the site's scope and
     # can take longer than the crawl did.
     Step("media", 70, False, step_media),

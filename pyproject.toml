@@ -66,8 +66,13 @@ include = ["cairn*"]
 
 [tool.setuptools.package-data]
 # Built-in engine manifests and the built SPA ship inside the package; without
-# this an installed wheel has no engines and serves no UI.
-cairn = ["engines/builtin/*/engine.yaml", "static/**/*"]
+# this an installed wheel has no engines and serves no UI. The gallery assets
+# are the replay landing page's HTML/CSS/JS templates, rendered at runtime.
+cairn = [
+    "engines/builtin/*/engine.yaml",
+    "static/**/*",
+    "services/gallery_assets/*",
+]
 
 [tool.ruff]
 line-length = 100

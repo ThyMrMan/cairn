@@ -1,0 +1,101 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Replay — Cairn</title>
+<style>
+:root {
+  --bg:#e7e5df; --surface:#f7f6f2; --surface-2:#efede6; --border:#d6d2c8; --border-2:#c8c3b6;
+  --text:#211f1a; --muted:#6d675b; --faint:#8f897c;
+  --accent:#a4611f; --accent-weak:rgba(164,97,31,.10);
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#151419; --surface:#1e1d23; --surface-2:#26242c; --border:#302e38; --border-2:#3b3945;
+  --text:#ece9e2; --muted:#9a9488; --faint:#6f6a60;
+  --accent:#e2a556; --accent-weak:rgba(226,165,86,.14);
+}}
+:root[data-theme="dark"]{
+  --bg:#151419; --surface:#1e1d23; --surface-2:#26242c; --border:#302e38; --border-2:#3b3945;
+  --text:#ece9e2; --muted:#9a9488; --faint:#6f6a60;
+  --accent:#e2a556; --accent-weak:rgba(226,165,86,.14);
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{background:var(--bg);color:var(--text);display:flex;flex-direction:column;
+  font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+.mono{font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace}
+header{border-bottom:1px solid var(--border);background:var(--bg)}
+.bar{max-width:1400px;margin:0 auto;padding:11px 18px;display:flex;align-items:center;gap:12px}
+.back{display:inline-flex;align-items:center;gap:8px;text-decoration:none;
+  color:var(--muted);font-size:13px;font-weight:600}
+.back:hover{color:var(--text)}
+.addr{flex:1;min-width:0;font-size:12px;color:var(--muted);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ctl{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+.toggle{display:inline-flex;align-items:center;gap:7px;font-size:12.5px;
+  color:var(--muted);cursor:pointer;user-select:none}
+.toggle input{accent-color:var(--accent)}
+.raw{text-decoration:none;color:var(--muted);font-size:12.5px;font-weight:600}
+.raw:hover{color:var(--accent)}
+.note{background:var(--accent-weak);color:var(--accent);font-size:11.5px;padding:5px 18px;
+  border-bottom:1px solid color-mix(in srgb,var(--accent) 30%,transparent)}
+main{flex:1;min-height:0;display:flex}
+iframe{flex:1;border:0;width:100%;height:100%;background:#fff}
+.msg{margin:auto;color:var(--muted);font-size:14px;text-align:center;padding:24px}
+</style>
+<header><div class="bar">
+  <a class="back" href="/">
+    <svg width="22" height="26" viewBox="0 0 26 30" fill="none" aria-hidden="true">
+      <ellipse cx="13" cy="26" rx="11" ry="3.4" fill="var(--accent)" opacity=".9"/>
+      <rect x="4.5" y="17.5" width="17" height="6.6" rx="3.3" fill="var(--muted)"/>
+      <rect x="6.8" y="10.5" width="12.4" height="6" rx="3" fill="var(--text)"/>
+      <rect x="9" y="4.5" width="8" height="5" rx="2.5" fill="var(--accent)"/>
+    </svg>
+    <span>Archive</span>
+  </a>
+  <span class="addr mono" id="addr"></span>
+  <div class="ctl">
+    <label class="toggle"><input type="checkbox" id="scripts" checked> run page scripts</label>
+    <a class="raw" id="raw" href="#" target="_blank" rel="noopener">open raw ↗</a>
+  </div>
+</div></header>
+<div class="note" id="note" hidden>
+  Scripts are off — the page is shown without running its archived JavaScript.
+</div>
+<main><div class="msg" id="msg">Loading…</div></main>
+<noscript><p class="msg">This viewer needs JavaScript. Go back to the
+  <a href="/">gallery</a> and open the card with scripts disabled in your browser —
+  its plain link renders the page without them.</p></noscript>
+<script>
+(function(){
+  var p=new URLSearchParams(location.search);
+  var c=p.get("c")||"", t=p.get("t")||"", u=p.get("u")||"";
+  var main=document.querySelector("main"), msg=document.getElementById("msg");
+  if(!/^site-\d+$/.test(c) || !/^\d{14}$/.test(t) || !u){
+    msg.textContent="Nothing to show — this link is missing its target.";
+    return;
+  }
+  var src="/"+c+"/"+t+"mp_/"+u;
+  document.getElementById("addr").textContent=u;
+  document.getElementById("raw").setAttribute("href", src);
+  var note=document.getElementById("note");
+  var scriptsOn=true;
+  function render(){
+    var old=main.querySelector("iframe"); if(old) old.remove();
+    var gone=main.querySelector("#msg"); if(gone) gone.remove();
+    var f=document.createElement("iframe");
+    // Mirrors the app's replay sandbox (docs/07). Dropping allow-scripts is the
+    // only reliable way to stop an archived page's own JavaScript, paired with
+    // the mp_ URL so the page still renders.
+    f.setAttribute("sandbox", scriptsOn
+      ? "allow-scripts allow-same-origin allow-forms allow-popups"
+      : "allow-same-origin allow-forms allow-popups");
+    f.setAttribute("referrerpolicy","no-referrer");
+    f.src=src;
+    main.appendChild(f);
+    note.hidden=scriptsOn;
+  }
+  var box=document.getElementById("scripts");
+  box.addEventListener("change", function(){ scriptsOn=box.checked; render(); });
+  render();
+})();
+</script>

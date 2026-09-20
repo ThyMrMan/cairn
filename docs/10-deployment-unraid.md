@@ -252,6 +252,35 @@ server {
 
 Set `CAIRN_REPLAY_PUBLIC_URL=https://replay.example.com` and `CAIRN_TRUSTED_PROXY` to the proxy's address so `X-Forwarded-For` is honored for rate limiting and the audit log — and *only* then, since trusting those headers from arbitrary sources lets anyone spoof their IP past the login rate limiter.
 
+### The gallery
+
+The [archive gallery](07-replay.md#the-gallery) is the replay origin's landing
+page. It is generated to `/data/replay/gallery/{index.html,view.html}`; the
+proxy serves those two files at `/` and `/view.html`, and passes everything else
+to pywb (collections are `site-<id>`, so `/` never collides). Mount the gallery
+directory into the proxy read-only and add, inside the **replay** `server` block:
+
+```nginx
+    # Serve the generated gallery at the replay root; pywb gets the rest.
+    location = /          { root /gallery; try_files /index.html =404; }
+    location = /view.html { root /gallery; }
+    location / {
+        proxy_pass http://cairn:8081;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+```
+
+with the cairn container's `…/data/replay/gallery` bind-mounted to `/gallery`
+in the proxy. Serve these two paths **without** pywb's `Content-Security-Policy`
+(they are trusted, self-contained pages, not archived content); a page needing
+one of its own is fine with `default-src 'none'; img-src data:; style-src
+'unsafe-inline'; script-src 'unsafe-inline'; frame-src 'self'`.
+
+Without a proxy — a bare LAN install reaching pywb directly on `:8081` — the
+gallery is not served at `/` (pywb's own collection list is), but the file is
+still on disk under `/data/replay/gallery/` to open over the share.
+
 ### Cloudflare Tunnel
 
 Works well and avoids opening ports at all. Two hostnames, two ingress rules. Note that Cloudflare's default proxy timeout will cut idle SSE connections around 100 s — the 15 s heartbeat in [09](09-api.md#sse) handles this.
