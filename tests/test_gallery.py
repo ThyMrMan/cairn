@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from cairn.config import Settings
 from cairn.db.models import Capture, Feed
-from cairn.services import gallery, postprocess, storage, thumbnail
+from cairn.services import gallery, postprocess, replay, storage, thumbnail
 from cairn.services import sites as site_service
 from tests.conftest import XHR
 
@@ -60,8 +60,8 @@ def _index(settings: Settings, site, rows: list[tuple[str, str, str, str, str]])
             "offset": 0,
             "length": 100,
         }
-        lines.append(f"{thumbnail.replay.surt_key(url)} {stamp} {json.dumps(payload)}\n")
-    path = thumbnail.replay.index_path(settings, site.archive_path)
+        lines.append(f"{replay.surt_key(url)} {stamp} {json.dumps(payload)}\n")
+    path = replay.index_path(settings, site.archive_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("".join(sorted(lines)), encoding="utf-8")
 
@@ -76,21 +76,91 @@ def _read(settings: Settings) -> str:
 def test_an_empty_archive_still_writes_a_page(db: Session, settings: Settings) -> None:
     index = gallery.write_gallery(db, settings)
     assert index.is_file()
-    assert gallery.view_path(settings).is_file()
     assert "No archived sites yet" in _read(settings)
 
 
-def test_the_viewer_is_written_and_carries_the_replay_sandbox(
-    db: Session, settings: Settings
-) -> None:
+def test_it_is_written_where_pywb_looks_for_its_home_page(db: Session, settings: Settings) -> None:
+    """pywb 2.9.1's `serve_home` renders `index.html` from the templates
+    directory, hardcoded. Land it anywhere else and the replay root stays
+    pywb's own collection list — which is the whole thing this replaces."""
+    index = gallery.write_gallery(db, settings)
+    assert index == settings.replay_dir / replay.TEMPLATES_DIR / "index.html"
+    assert index.is_file()
+
+
+def test_the_viewer_rides_along_in_the_same_page(db: Session, settings: Settings) -> None:
+    """pywb owns every path under the replay origin, so /view.html would be
+    read as a collection name. The viewer is a second mode of this page."""
     gallery.write_gallery(db, settings)
-    view = gallery.view_path(settings).read_text(encoding="utf-8")
+    page = _read(settings)
+    assert 'id="viewer-root"' in page
+    assert 'data-mode", "viewer"' in page or 'data-mode","viewer"' in page
     # The scripts-off toggle is the whole reason the mini-viewer exists.
-    assert 'id="scripts"' in view
-    assert "allow-scripts allow-same-origin allow-forms allow-popups" in view
-    assert "allow-same-origin allow-forms allow-popups" in view
-    assert "referrerpolicy" in view
-    assert "no-referrer" in view
+    assert 'id="scripts"' in page
+    assert "allow-scripts allow-same-origin allow-forms allow-popups" in page
+    assert "allow-same-origin allow-forms allow-popups" in page
+    assert "referrerpolicy" in page
+    assert "no-referrer" in page
+
+
+# ── it is a template, not a document ─────────────────────────────────────
+
+
+def test_the_page_is_wrapped_against_jinja(db: Session, settings: Settings) -> None:
+    """pywb renders this through Jinja, and the page is full of CSS and
+    JavaScript braces. Without the raw block the home page is a template
+    syntax error the first time somebody writes `{{` in a stylesheet."""
+    gallery.write_gallery(db, settings)
+    page = _read(settings)
+    assert page.lstrip().startswith("<!--{% raw %}-->")
+    assert page.rstrip().endswith("<!--{% endraw %}-->")
+
+
+def test_a_title_cannot_smuggle_template_source(db: Session, settings: Settings) -> None:
+    """Server-side template injection, with the site list as the payload.
+
+    A site called `{{ config }}` is not text pywb prints, it is source pywb
+    evaluates — and `{% endraw %}` in a title would close the wrapper and put
+    everything after it back in Jinja's hands.
+    """
+    _site(db, settings, seed="https://x.example.com/", title="{{ config }} {% endraw %}")
+
+    gallery.write_gallery(db, settings)
+    page = _read(settings)
+    # Exactly one raw block, still enclosing the whole page.
+    assert page.count("{% raw %}") == 1
+    assert page.count("{% endraw %}") == 1
+    # and no double-brace expression anywhere the engine could reach.
+    assert "{{" not in page
+    assert "&#123;&#123; config &#125;&#125;" in page
+
+
+def test_the_page_survives_a_real_jinja_render(db: Session, settings: Settings) -> None:
+    """The contract with pywb, checked against Jinja rather than reasoned about.
+
+    pywb renders this file through its own environment before serving it, so
+    "it is valid HTML" is not the property that matters — "Jinja hands it back
+    unchanged" is. Skipped where jinja2 is absent; it is installed wherever
+    pywb is, which is the environment this has to hold in.
+    """
+    jinja2 = pytest.importorskip("jinja2")
+
+    _site(db, settings, seed="https://x.example.com/", title="{{ config }} {% endraw %}")
+    gallery.write_gallery(db, settings)
+    source = _read(settings)
+
+    # The same context pywb's serve_home passes; the template ignores it.
+    rendered = (
+        jinja2.Environment(autoescape=False).from_string(source).render(routes=[], all_metadata={})
+    )
+
+    # The raw markers sit inside HTML comments, so rendering empties those two
+    # comments and changes nothing else. Anything else differing would mean
+    # Jinja had evaluated part of the page.
+    expected = source.replace("<!--{% raw %}-->", "<!---->").replace(
+        "<!--{% endraw %}-->", "<!---->"
+    )
+    assert rendered == expected
 
 
 # ── a site with a picture ────────────────────────────────────────────────
@@ -106,11 +176,11 @@ def test_a_captured_site_is_a_linked_card_with_its_screenshot_inlined(
     gallery.write_gallery(db, settings)
     html = _read(settings)
 
-    coll = gallery.replay.collection_name(site.id)
+    coll = replay.collection_name(site.id)
     # A real link, with the bare mp_ URL as the no-JS default.
     assert f'href="/{coll}/20260101000000mp_/https://blog.example.com/"' in html
-    # And the mini-viewer as the enhanced target.
-    assert f'data-view="view.html?c={coll}&amp;t=20260101000000&amp;u=' in html
+    # And the in-page viewer as the enhanced target.
+    assert f'data-view="?c={coll}&amp;t=20260101000000&amp;u=' in html
     # The screenshot bytes, inlined.
     assert "data:image/jpeg;base64," + base64.b64encode(JPEG).decode() in html
     assert "1 capture" in html

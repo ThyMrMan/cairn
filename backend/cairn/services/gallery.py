@@ -7,13 +7,32 @@ exactly the wrong thing for the sites that only replay with scripts off
 (docs/07). So browsing straight to pywb is unpleasant enough that the app's own
 UI becomes the only comfortable way in.
 
-This module generates the page that should sit in front of pywb instead: a
-self-contained `index.html` that is the **replay origin's** landing page,
-served there by the reverse proxy (docs/10). It is a filterable grid of
-homepage screenshots, one card per site, each linking to that site's newest
-capture. It is derived data in the same sense the collection tree is —
+This module generates the page that sits in front of pywb instead: a filterable
+grid of homepage screenshots, one card per site, each linking to that site's
+newest capture. It is derived data in the same sense the collection tree is —
 regenerable from the database and the archives at any time, and rebuilt at
 `replay-init`, after every capture, and when a site is deleted or restored.
+
+**pywb serves it, so there is nothing to configure.** It is written to
+`<replay_dir>/templates/index.html`, and `serve_home` in pywb 2.9.1 renders the
+template named `index.html` — hardcoded, with no config key — through the same
+Jinja `ChoiceLoader` over `templates/` that the head insert already relies on.
+So the replay origin's root *is* the gallery, with no reverse-proxy rule, no
+bind mount and no static file server. An earlier design had the proxy serve the
+file; it worked, but it meant mounting a directory into the proxy container,
+which Cloudflare Tunnel and Traefik cannot do at all.
+
+Two consequences follow from pywb owning the route, and both shape the page:
+
+  - **There is no second URL.** `/view.html` would be read as a collection
+    name, so the viewer is the same page in a second mode, entered by query
+    parameters on `/` and chosen before first paint.
+  - **The file is template source, not a document.** It is wrapped in
+    `{% raw %}` so pywb's Jinja leaves our CSS and JavaScript alone, and every
+    user-supplied string has its braces turned into entities by `_esc` — a site
+    titled `{{ config }}` would otherwise be *evaluated* by pywb's template
+    engine. The raw markers sit inside HTML comments, so the file still opens
+    cleanly as a plain file over the share.
 
 Five things shape it, each a decision made before any code:
 
@@ -30,11 +49,12 @@ Five things shape it, each a decision made before any code:
      re-photographed.
 
   3. **Cards open the mini-viewer, degrading to bare replay.** With JavaScript
-     on, a card's href is rewritten to `view.html`, which frames the capture
-     and offers a scripts-on/off toggle (the app's sandbox trick, reimplemented
-     as a static page on the replay origin). With JavaScript off, the href is
-     left as the bare `mp_` URL, which renders without scripts — the plain link
-     is the fallback, and needs no `<noscript>` special-casing.
+     on, a card's href is rewritten to `?c=…&t=…&u=…`, which loads this same
+     page in viewer mode: the capture in an iframe, with a scripts-on/off
+     toggle (the app's sandbox trick, reimplemented on the replay origin). With
+     JavaScript off, the href is left as the bare `mp_` URL, which renders
+     without scripts — the plain link is the fallback, and needs no
+     `<noscript>` special-casing.
 
   4. **Images are inlined.** Each `home.jpg` is embedded as a base64 `data:`
      URI, so the whole gallery is one portable file that also browses over SMB
@@ -76,9 +96,10 @@ from cairn.services import replay, storage, thumbnail
 
 log = get_logger(__name__)
 
-GALLERY_DIR = "gallery"
+# pywb 2.9.1's `serve_home` renders the template named `index.html`, hardcoded —
+# unlike the head insert, there is no config key to point it somewhere else. So
+# the gallery takes that name, in the templates directory pywb already reads.
 INDEX_FILE = "index.html"
-VIEW_FILE = "view.html"
 _ASSET_DIR = "gallery_assets"
 
 # One writer per process: the postprocess chain runs in a worker thread and
@@ -92,16 +113,9 @@ class GalleryError(RuntimeError):
     """The gallery could not be produced."""
 
 
-def gallery_dir(settings: Settings) -> Path:
-    return settings.replay_dir / GALLERY_DIR
-
-
 def index_path(settings: Settings) -> Path:
-    return gallery_dir(settings) / INDEX_FILE
-
-
-def view_path(settings: Settings) -> Path:
-    return gallery_dir(settings) / VIEW_FILE
+    """Where pywb looks for its home page, which is what the gallery replaces."""
+    return settings.replay_dir / replay.TEMPLATES_DIR / INDEX_FILE
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,18 +142,18 @@ class _Card:
 
 
 def write_gallery(session: Session, settings: Settings) -> Path:
-    """Regenerate `index.html` and `view.html`, atomically. Returns the index.
+    """Regenerate pywb's home template — the gallery. Returns its path.
 
     Best rebuilt in full every time, like the collection tree it lives beside:
     it is cheap at this scale and a rebuild can never drift from a partial
-    update it never does.
+    update it never does. Written atomically, because a half-written home page
+    is a replay origin that serves a broken document at its root.
     """
     with _LOCK:
         cards = _collect(session, settings)
         target = index_path(settings)
         try:
             storage.write_atomic(target, _render_index(cards, settings))
-            storage.write_atomic(view_path(settings), _asset(VIEW_FILE))
         except OSError as exc:
             raise GalleryError(f"could not write the gallery: {exc}") from exc
         return target
@@ -289,6 +303,24 @@ def _asset(name: str) -> str:
     return files("cairn.services").joinpath(_ASSET_DIR).joinpath(name).read_text(encoding="utf-8")
 
 
+def _esc(value: str) -> str:
+    """HTML-escape, and take the braces out of Jinja's reach.
+
+    This file is a pywb *template*, not a document: pywb renders it through
+    Jinja before serving it. So a site title is not merely text that might
+    contain markup, it is text that might contain template source — a site
+    called `{{ config }}` would be evaluated rather than printed, which is
+    server-side template injection with the archive's own metadata as the
+    payload. `{% raw %}` wraps the page and handles everything we wrote; this
+    handles everything a person typed, including a title that tries to close
+    that block.
+
+    Entities rather than deletion: the browser renders `&#123;` as `{`, so a
+    site genuinely called `{ᴥ}` still reads correctly on the card.
+    """
+    return html.escape(value, quote=True).replace("{", "&#123;").replace("}", "&#125;")
+
+
 def _render_index(cards: list[_Card], settings: Settings) -> str:
     template = _asset(INDEX_FILE)
     host_label = urlsplit(settings.replay_origin).hostname or "replay"
@@ -305,7 +337,7 @@ def _render_index(cards: list[_Card], settings: Settings) -> str:
             '<div class="empty">No archived sites yet. '
             "Capture one, and it appears here.</div></div>"
         )
-    return template.replace("__HOST__", html.escape(host_label)).replace("__BODY__", body)
+    return template.replace("__HOST__", _esc(host_label)).replace("__BODY__", body)
 
 
 def _summary(cards: list[_Card]) -> str:
@@ -323,7 +355,7 @@ def _media(card: _Card) -> str:
     if card.thumb is not None:
         return (
             f'<img class="shot" src="{card.thumb}" '
-            f'alt="Archived homepage of {html.escape(card.title)}" '
+            f'alt="Archived homepage of {_esc(card.title)}" '
             f'width="640" height="400" loading="lazy">'
         )
     return f'<div class="ph-thumb">{_PLACEHOLDER_SVG}<span>no viewable capture</span></div>'
@@ -340,18 +372,21 @@ def _thumb_block(card: _Card) -> str:
 
 
 def _card_html(card: _Card) -> str:
-    title = html.escape(card.title)
-    host = html.escape(card.host)
+    title = _esc(card.title)
+    host = _esc(card.host)
     terms = " ".join([card.title, card.host, card.folder, *card.tags]).lower()
-    search = html.escape(terms, quote=True)
-    title_attr = html.escape(card.title.lower(), quote=True)
-    when = html.escape(card.when)
+    search = _esc(terms)
+    title_attr = _esc(card.title.lower())
+    when = _esc(card.when)
 
     if card.url is not None and card.timestamp is not None:
         coll = replay.collection_name(card.site_id)
-        bare = f"/{coll}/{card.timestamp}mp_/{html.escape(card.url, quote=True)}"
-        u = html.escape(quote(card.url, safe=""), quote=True)
-        view = f"view.html?c={coll}&amp;t={card.timestamp}&amp;u={u}"
+        bare = f"/{coll}/{card.timestamp}mp_/{_esc(card.url)}"
+        u = _esc(quote(card.url, safe=""))
+        # The viewer is this same page in another mode: pywb owns every path
+        # under the replay origin, so a second file at /view.html would be read
+        # as a collection name.
+        view = f"?c={coll}&amp;t={card.timestamp}&amp;u={u}"
         kind = "imported" if card.imported else "homepage"
         meta = (
             f'<span class="mono">{when}</span><span class="sep">·</span>'
