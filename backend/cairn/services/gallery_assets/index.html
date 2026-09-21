@@ -1,7 +1,20 @@
+<!--{% raw %}-->
 <!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Cairn Archive</title>
+<script>
+/* Decide the mode before anything paints, so a deep link does not flash the
+   grid on its way to the viewer. */
+(function () {
+  try {
+    var p = new URLSearchParams(location.search);
+    if (p.get("c") && p.get("t") && p.get("u")) {
+      document.documentElement.setAttribute("data-mode", "viewer");
+    }
+  } catch (e) { /* no URLSearchParams: stay in gallery mode */ }
+})();
+</script>
 <style>
 :root {
   --bg:#e7e5df; --surface:#f7f6f2; --surface-2:#efede6; --border:#d6d2c8; --border-2:#c8c3b6;
@@ -35,9 +48,17 @@ body{background:var(--bg);color:var(--text);
 .word{font-family:Georgia,"Times New Roman",serif;font-weight:600;font-size:22px;
   line-height:1;letter-spacing:.2px}
 a{color:inherit}
-header{position:sticky;top:0;z-index:20;
-  background:color-mix(in srgb,var(--bg) 88%,transparent);
-  backdrop-filter:saturate(1.4) blur(10px);border-bottom:1px solid var(--border)}
+
+/* ── which half of the page is live ─────────────────────────────── */
+:root:not([data-mode="viewer"]) #viewer-root{display:none}
+:root[data-mode="viewer"] #gallery-root{display:none}
+:root[data-mode="viewer"]{height:100%}
+:root[data-mode="viewer"] body{height:100%}
+#viewer-root{display:flex;flex-direction:column;height:100%}
+
+header{border-bottom:1px solid var(--border);background:var(--bg)}
+#gallery-root header{position:sticky;top:0;z-index:20;
+  background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:saturate(1.4) blur(10px)}
 .bar{max-width:1240px;margin:0 auto;padding:14px 20px;
   display:flex;align-items:center;gap:18px;flex-wrap:wrap}
 .brand{display:flex;align-items:center;gap:11px;margin-right:auto;text-decoration:none}
@@ -58,7 +79,7 @@ header{position:sticky;top:0;z-index:20;
 .segmented button:hover{color:var(--text)}
 .segmented button[aria-pressed="true"]{background:var(--surface-2);color:var(--text);
   box-shadow:inset 0 0 0 1px var(--border)}
-main{max-width:1240px;margin:0 auto;padding:20px;padding-block:22px 56px}
+#gallery-root main{max-width:1240px;margin:0 auto;padding:20px;padding-block:22px 56px}
 .count{color:var(--muted);font-size:13px;margin:0 2px 16px;
   display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}
 .count b{color:var(--text);font-weight:600}
@@ -96,75 +117,165 @@ a.card:hover,a.card:focus-visible{transform:translateY(-3px);box-shadow:var(--sh
 .go{margin-left:auto;color:var(--muted);font-weight:600}
 a.card:hover .go,a.card:focus-visible .go{color:var(--accent)}
 .empty{color:var(--muted);font-size:14px;padding:48px 4px;text-align:center;grid-column:1/-1}
+
+/* ── viewer ──────────────────────────────────────────────────────── */
+.back{display:inline-flex;align-items:center;gap:8px;text-decoration:none;
+  color:var(--muted);font-size:13px;font-weight:600}
+.back:hover{color:var(--text)}
+.addr{flex:1;min-width:0;font-size:12px;color:var(--muted);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ctl{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+.toggle{display:inline-flex;align-items:center;gap:7px;font-size:12.5px;
+  color:var(--muted);cursor:pointer;user-select:none}
+.toggle input{accent-color:var(--accent)}
+.raw{text-decoration:none;color:var(--muted);font-size:12.5px;font-weight:600}
+.raw:hover{color:var(--accent)}
+.note{background:var(--accent-weak);color:var(--accent);font-size:11.5px;padding:5px 18px;
+  border-bottom:1px solid color-mix(in srgb,var(--accent) 30%,transparent)}
+#viewer-root main{flex:1;min-height:0;display:flex}
+#viewer-root iframe{flex:1;border:0;width:100%;height:100%;background:#fff}
+.msg{margin:auto;color:var(--muted);font-size:14px;text-align:center;padding:24px}
+
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
 @media (max-width:560px){.brand .host{display:none}.controls{width:100%}#filter{flex:1;max-width:none}}
 </style>
-<header><div class="bar">
-  <a class="brand" href="/">
-    <svg width="24" height="28" viewBox="0 0 26 30" fill="none" aria-hidden="true">
-      <ellipse cx="13" cy="26" rx="11" ry="3.4" fill="var(--accent)" opacity=".9"/>
-      <rect x="4.5" y="17.5" width="17" height="6.6" rx="3.3" fill="var(--muted)"/>
-      <rect x="6.8" y="10.5" width="12.4" height="6" rx="3" fill="var(--text)"/>
-      <rect x="9" y="4.5" width="8" height="5" rx="2.5" fill="var(--accent)"/>
-    </svg>
-    <div><div class="word">Cairn</div><div class="host mono">__HOST__</div></div>
-  </a>
-  <div class="controls">
-    <label class="search">
-      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-        stroke-width="2.2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/>
-        <path d="m20 20-3.2-3.2"/></svg>
-      <input id="filter" type="search" placeholder="Filter sites…" autocomplete="off"
-        spellcheck="false" aria-label="Filter sites">
-    </label>
-    <div class="segmented" role="group" aria-label="Sort order">
-      <button id="sort-recent" aria-pressed="true">Recent</button>
-      <button id="sort-az" aria-pressed="false">A–Z</button>
-    </div>
-  </div>
-</div></header>
-<main>
-__BODY__
-</main>
-<script>
-(function(){
-  var grid=document.getElementById("grid"); if(!grid) return;
-  var cards=[].slice.call(grid.querySelectorAll(".card"));
-  // Progressive enhancement: with scripts on, open the mini-viewer (which has
-  // the scripts-off toggle). With scripts off, the href stays the bare mp_ URL.
-  cards.forEach(function(c){ var v=c.getAttribute("data-view"); if(v) c.setAttribute("href",v); });
 
-  var countEl=document.getElementById("count");
-  var base=countEl?countEl.innerHTML:"";
-  var total=cards.length, query="";
-  function draw(){
-    var shown=0;
-    cards.forEach(function(c){
-      var hit=!query||(c.getAttribute("data-search")||"").indexOf(query)!==-1;
-      c.hidden=!hit; if(hit) shown++;
+<div id="gallery-root">
+  <header><div class="bar">
+    <a class="brand" href="/">
+      <svg width="24" height="28" viewBox="0 0 26 30" fill="none" aria-hidden="true">
+        <ellipse cx="13" cy="26" rx="11" ry="3.4" fill="var(--accent)" opacity=".9"/>
+        <rect x="4.5" y="17.5" width="17" height="6.6" rx="3.3" fill="var(--muted)"/>
+        <rect x="6.8" y="10.5" width="12.4" height="6" rx="3" fill="var(--text)"/>
+        <rect x="9" y="4.5" width="8" height="5" rx="2.5" fill="var(--accent)"/>
+      </svg>
+      <div><div class="word">Cairn</div><div class="host mono">__HOST__</div></div>
+    </a>
+    <div class="controls">
+      <label class="search">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="2.2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/>
+          <path d="m20 20-3.2-3.2"/></svg>
+        <input id="filter" type="search" placeholder="Filter sites…" autocomplete="off"
+          spellcheck="false" aria-label="Filter sites">
+      </label>
+      <div class="segmented" role="group" aria-label="Sort order">
+        <button id="sort-recent" aria-pressed="true">Recent</button>
+        <button id="sort-az" aria-pressed="false">A–Z</button>
+      </div>
+    </div>
+  </div></header>
+  <main>
+__BODY__
+  </main>
+</div>
+
+<div id="viewer-root">
+  <header><div class="bar">
+    <a class="back" href="/">
+      <svg width="22" height="26" viewBox="0 0 26 30" fill="none" aria-hidden="true">
+        <ellipse cx="13" cy="26" rx="11" ry="3.4" fill="var(--accent)" opacity=".9"/>
+        <rect x="4.5" y="17.5" width="17" height="6.6" rx="3.3" fill="var(--muted)"/>
+        <rect x="6.8" y="10.5" width="12.4" height="6" rx="3" fill="var(--text)"/>
+        <rect x="9" y="4.5" width="8" height="5" rx="2.5" fill="var(--accent)"/>
+      </svg>
+      <span>Archive</span>
+    </a>
+    <span class="addr mono" id="addr"></span>
+    <div class="ctl">
+      <label class="toggle"><input type="checkbox" id="scripts" checked> run page scripts</label>
+      <a class="raw" id="raw" href="#" target="_blank" rel="noopener">open raw ↗</a>
+    </div>
+  </div></header>
+  <div class="note" id="note" hidden>
+    Scripts are off — the page is shown without running its archived JavaScript.
+  </div>
+  <main><div class="msg" id="msg">Loading…</div></main>
+</div>
+
+<script>
+(function () {
+  var params = new URLSearchParams(location.search);
+  var c = params.get("c") || "", t = params.get("t") || "", u = params.get("u") || "";
+  var isViewer = document.documentElement.getAttribute("data-mode") === "viewer";
+
+  /* ── viewer ──────────────────────────────────────────────────── */
+  if (isViewer) {
+    var main = document.querySelector("#viewer-root main");
+    var msg = document.getElementById("msg");
+    if (!/^site-\d+$/.test(c) || !/^\d{14}$/.test(t) || !u) {
+      msg.textContent = "Nothing to show — this link is missing its target.";
+      return;
+    }
+    var src = "/" + c + "/" + t + "mp_/" + u;
+    document.getElementById("addr").textContent = u;
+    document.getElementById("raw").setAttribute("href", src);
+    var note = document.getElementById("note");
+    var scriptsOn = true;
+    var render = function () {
+      var old = main.querySelector("iframe"); if (old) old.remove();
+      var gone = main.querySelector("#msg"); if (gone) gone.remove();
+      var f = document.createElement("iframe");
+      /* Mirrors the app's replay sandbox (docs/07). Dropping allow-scripts is
+         the only reliable way to stop an archived page's own JavaScript, and it
+         is paired with the mp_ URL so the page still renders. */
+      f.setAttribute("sandbox", scriptsOn
+        ? "allow-scripts allow-same-origin allow-forms allow-popups"
+        : "allow-same-origin allow-forms allow-popups");
+      f.setAttribute("referrerpolicy", "no-referrer");
+      f.src = src;
+      main.appendChild(f);
+      note.hidden = scriptsOn;
+    };
+    var box = document.getElementById("scripts");
+    box.addEventListener("change", function () { scriptsOn = box.checked; render(); });
+    render();
+    return;
+  }
+
+  /* ── gallery ─────────────────────────────────────────────────── */
+  var grid = document.getElementById("grid"); if (!grid) return;
+  var cards = [].slice.call(grid.querySelectorAll(".card"));
+  /* Progressive enhancement: with scripts on, open the in-page viewer (which
+     has the scripts-off toggle). With scripts off, the href stays the bare mp_
+     URL, which renders without them. */
+  cards.forEach(function (card) {
+    var v = card.getAttribute("data-view");
+    if (v) card.setAttribute("href", v);
+  });
+
+  var countEl = document.getElementById("count");
+  var base = countEl ? countEl.innerHTML : "";
+  var total = cards.length, query = "";
+  function draw() {
+    var shown = 0;
+    cards.forEach(function (card) {
+      var hit = !query || (card.getAttribute("data-search") || "").indexOf(query) !== -1;
+      card.hidden = !hit; if (hit) shown++;
     });
-    if(countEl){
+    if (countEl) {
       countEl.innerHTML = query
-        ? "<b>"+shown+"</b> of "+total+" sites <span class='dot'>·</span> filtered"
+        ? "<b>" + shown + "</b> of " + total + " sites <span class='dot'>·</span> filtered"
         : base;
     }
   }
-  function sort(m){
-    document.getElementById("sort-recent").setAttribute("aria-pressed", m==="recent");
-    document.getElementById("sort-az").setAttribute("aria-pressed", m==="az");
-    var ordered=cards.slice().sort(function(a,b){
-      if(m==="az") return (a.getAttribute("data-title")||"")
-        .localeCompare(b.getAttribute("data-title")||"");
-      return (b.getAttribute("data-sort")||"").localeCompare(a.getAttribute("data-sort")||"");
+  function sort(mode) {
+    document.getElementById("sort-recent").setAttribute("aria-pressed", mode === "recent");
+    document.getElementById("sort-az").setAttribute("aria-pressed", mode === "az");
+    var ordered = cards.slice().sort(function (a, b) {
+      if (mode === "az") return (a.getAttribute("data-title") || "")
+        .localeCompare(b.getAttribute("data-title") || "");
+      return (b.getAttribute("data-sort") || "").localeCompare(a.getAttribute("data-sort") || "");
     });
-    ordered.forEach(function(c){ grid.appendChild(c); });
+    ordered.forEach(function (card) { grid.appendChild(card); });
   }
-  var f=document.getElementById("filter");
-  if(f) f.addEventListener("input", function(e){
-    query=(e.target.value||"").trim().toLowerCase(); draw();
+  var f = document.getElementById("filter");
+  if (f) f.addEventListener("input", function (e) {
+    query = (e.target.value || "").trim().toLowerCase(); draw();
   });
-  var br=document.getElementById("sort-recent"), ba=document.getElementById("sort-az");
-  if(br) br.addEventListener("click", function(){ sort("recent"); });
-  if(ba) ba.addEventListener("click", function(){ sort("az"); });
+  var br = document.getElementById("sort-recent"), ba = document.getElementById("sort-az");
+  if (br) br.addEventListener("click", function () { sort("recent"); });
+  if (ba) ba.addEventListener("click", function () { sort("az"); });
 })();
 </script>
+<!--{% endraw %}-->

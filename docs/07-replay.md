@@ -111,8 +111,16 @@ The tree is derived data: `cairn replay-init` rebuilds it and the config from th
 pywb's own landing page lists collections by ID (`site-42`) and, inside each, a
 search box — no titles, no screenshots, and it needs JavaScript to render, which
 is the wrong thing for a site that only replays with scripts off. So
-`gallery.py` generates the page that sits in front of it,
-`/data/replay/gallery/index.html`, the replay origin's landing page.
+`gallery.py` generates the page that replaces it.
+
+**pywb serves it, and there is nothing to configure.** It is written to
+`/data/replay/templates/index.html`, and `serve_home` in pywb 2.9.1 renders the
+template named `index.html` — hardcoded, with no config key — through the same
+Jinja `ChoiceLoader` over `templates/` that the head insert already uses. The
+replay origin's root *is* the gallery, with no reverse-proxy rule, no bind mount
+and no static file server. An earlier design had the proxy serve the file; it
+worked, but it meant mounting a directory into the proxy container, which
+Cloudflare Tunnel and Traefik cannot do at all.
 
 - **One card per site**, each a static `<a>` linking to that site's newest
   capture at the exact `(url, timestamp)` its thumbnail was taken of — so
@@ -125,11 +133,14 @@ is the wrong thing for a site that only replays with scripts off. So
   redirect, or one not captured yet — gets a placeholder tile that says so,
   rather than being hidden. The gallery should not quietly omit part of the
   archive, the same stance the thumbnail service takes.
-- **The mini-viewer.** With JavaScript on, a card opens `view.html`, which frames
-  the capture in the same sandbox the app uses and adds a scripts-on/off
-  toggle — the standalone equivalent of the app's [revocable
-  `allow-scripts`](#required-mitigations). With JavaScript off, the card's href
-  stays the bare `mp_` URL, which renders without scripts, so there is no
+- **The mini-viewer is the same page.** pywb owns every path under the replay
+  origin, so a second file at `/view.html` would be read as a collection name.
+  With JavaScript on, a card's href becomes `?c=…&t=…&u=…`, which reloads this
+  page in viewer mode — the capture in an iframe, in the same sandbox the app
+  uses, with a scripts-on/off toggle: the standalone equivalent of the app's
+  [revocable `allow-scripts`](#required-mitigations). The mode is chosen before
+  first paint, so a deep link never flashes the grid. With JavaScript off, the
+  href stays the bare `mp_` URL, which renders without scripts, so there is no
   `<noscript>` special case.
 - **Regenerated** at `replay-init` (every boot), after every capture (the
   `gallery` post-processor), and when a site is deleted or restored — the same
@@ -138,9 +149,32 @@ is the wrong thing for a site that only replays with scripts off. So
   restart, or the **Rebuild collections** maintenance action, which rebuilds the
   gallery alongside the tree.
 
-It is served at the replay origin's root by the reverse proxy
-([10](10-deployment-unraid.md#the-gallery)); a LAN install without a proxy still
-has the file on disk to open over the share.
+### It is a template, not a document
+
+Being served by pywb means the file is *template source*, and that changes two
+things about generating it.
+
+**The page is wrapped in `{% raw %}`.** It is full of CSS and JavaScript braces,
+and without the wrapper the replay origin's home page becomes a Jinja syntax
+error the first time somebody writes `{{` in a stylesheet. The markers sit
+inside HTML comments — `<!--{% raw %}-->` — so Jinja strips the tag and leaves
+an empty comment, while a browser opening the file straight off the share sees
+a comment and shows nothing. The file works both ways.
+
+**Every user-supplied string has its braces turned into entities.** A site
+titled `{{ config }}` is not text pywb prints, it is source pywb *evaluates* —
+server-side template injection with the archive's own metadata as the payload —
+and a title containing `{% endraw %}` would close the wrapper and hand the rest
+of the page back to the engine. `_esc` escapes as HTML *and* replaces `{` and
+`}` with `&#123;`/`&#125;`, which the browser renders back as braces, so a site
+genuinely called `{x}` still reads correctly on its card. A test renders the
+generated page through a real Jinja environment and asserts it comes back
+unchanged but for those two comments.
+
+Nothing about deployment is required beyond the reverse proxy you already need
+for the replay hostname ([10](10-deployment-unraid.md#the-gallery)); a LAN
+install without a proxy gets it on `:8081/` directly, and the file is on disk to
+open over the share either way.
 
 ---
 
