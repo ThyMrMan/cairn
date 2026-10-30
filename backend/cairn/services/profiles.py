@@ -313,6 +313,7 @@ def store_cookies(
     profile.fingerprint = fingerprint(canonical)
     profile.minted_at = utcnow()
     profile.updated_at = utcnow()
+    release_held_captures(session, profile)
     # Non-secret summary, so the UI can render the report without unsealing.
     profile.cookie_meta = {
         "cookie_count": len(report.cookies),
@@ -327,6 +328,29 @@ def store_cookies(
         extra={"profile": profile.id, "cookies": len(report.cookies)},
     )
     return report
+
+
+def release_held_captures(session: Session, profile: AccessProfile) -> int:
+    """Let feed captures waiting on this profile try again now.
+
+    A capture blocked by a content warning or a login gate backs off to a day
+    between attempts, because retrying with the same credentials cannot work.
+    New credentials are the event it was waiting for, so the wait ends here
+    rather than up to a day later. Returns how many feeds were released.
+    """
+    from sqlalchemy import select
+
+    from cairn.db.models import Feed, Site
+
+    sites_using = select(Site.id).where(Site.profile_id == profile.id)
+    released = 0
+    for feed in session.scalars(
+        select(Feed).where(Feed.site_id.in_(sites_using), Feed.next_capture_at.isnot(None))
+    ).all():
+        feed.next_capture_at = None
+        feed.capture_failures = 0
+        released += 1
+    return released
 
 
 def store_script(session: Session, sealer: Sealer, profile: AccessProfile, text: str) -> Any:
@@ -377,6 +401,7 @@ def store_storage_state(
     profile.storage_enc = sealer.seal(json.dumps(state), context=STORAGE_CONTEXT)
     profile.cookie_meta = {**(profile.cookie_meta or {}), "storage": describe_storage(state)}
     profile.updated_at = utcnow()
+    release_held_captures(session, profile)
     session.flush()
 
 
@@ -627,6 +652,7 @@ def store_browser_profile(
     }
     profile.cookie_meta = {**(profile.cookie_meta or {}), "browser_profile": meta}
     profile.updated_at = utcnow()
+    release_held_captures(session, profile)
     session.flush()
     log.info("browser profile stored", extra={"profile": profile.id, "bytes": len(raw)})
     return meta

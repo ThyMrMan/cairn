@@ -71,6 +71,8 @@ FAILURES_BEFORE_DISABLE = 10
 # container restarted mid-job should come back soon, and one failing for a
 # reason that will not fix itself reaches a day after eight attempts.
 CAPTURE_RETRY_MIN = 10
+# Enough doublings of CAPTURE_RETRY_MIN to reach MAX_BACKOFF_MIN.
+MAX_BACKOFF_STEPS = 9
 # ±10%, so twenty feeds added in one sitting do not all fire in the same second
 # for the rest of the installation's life.
 JITTER_FRACTION = 0.10

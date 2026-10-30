@@ -21,7 +21,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
-from cairn.api.deps import AppSettings, CurrentUser, DbSession
+from cairn.api.deps import AppSettings, Csrf, CurrentUser, DbSession
 from cairn.api.errors import ApiError
 from cairn.db.models import Site
 from cairn.logging import get_logger
@@ -104,7 +104,7 @@ def versions(
     return {"url": url, "count": len(found), "versions": [r.to_dict() for r in found]}
 
 
-@router.post("/sites/{site_id}/reindex")
+@router.post("/sites/{site_id}/reindex", dependencies=[Csrf])
 def reindex(
     site_id: int, db: DbSession, settings: AppSettings, _user: CurrentUser
 ) -> dict[str, Any]:

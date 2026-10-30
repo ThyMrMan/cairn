@@ -136,6 +136,52 @@ def _cmd_reindex(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_reconcile_presets(args: argparse.Namespace) -> int:
+    """List, and with --apply fix, scopes that drifted from their preset.
+
+    Applying folds in the preset's current rejects and drops the ones it has
+    retired — exactly what re-applying it from the domain picker does, minus
+    the host changes, for every site at once.
+    """
+    from cairn.db.models import Site
+    from cairn.services import discovery_service, sites
+
+    settings = get_settings()
+    engine = get_engine(settings.db_url)
+    drifted = 0
+    with sessionmaker_for(engine)() as session:
+        query = select(Site).where(Site.deleted_at.is_(None)).order_by(Site.id)
+        if args.slug:
+            query = query.where(Site.slug == args.slug)
+        for site in session.scalars(query).all():
+            preset = discovery_service.preset_for_site(site)
+            if preset is None:
+                continue
+            scope = sites.load_scope(session, site)
+            missing, retired = discovery_service.preset_drift(scope, preset)
+            if not missing and not retired:
+                continue
+            drifted += 1
+            print(f"{site.slug} ({preset.id}):")
+            for pattern in missing:
+                print(f"  + {pattern}")
+            for pattern in retired:
+                print(f"  - {pattern}")
+            if args.apply:
+                discovery_service.apply_preset_to_scope(scope, preset, [])
+                sites.save_scope(session, site, scope)
+                sites.write_site_yaml(session, settings, site)
+        if args.apply:
+            session.commit()
+    if not drifted:
+        print("Every site matches its preset.")
+    elif not args.apply:
+        print(f"\n{drifted} site(s) drifted. Run again with --apply to fix them.")
+    else:
+        print(f"\nUpdated {drifted} site(s).")
+    return 0
+
+
 def _cmd_rebuild_symlinks(_args: argparse.Namespace) -> int:
     """Regenerate `/data/by-tag` from the database.
 
@@ -484,6 +530,14 @@ def main(argv: list[str] | None = None) -> int:
     reindex = sub.add_parser("reindex", help="Rebuild the replay index for one site or all sites")
     reindex.add_argument("slug", nargs="?", help="Site slug; omit for every site")
     reindex.set_defaults(func=_cmd_reindex)
+
+    reconcile = sub.add_parser(
+        "reconcile-presets",
+        help="Show sites whose rejects drifted from their preset; --apply to fix",
+    )
+    reconcile.add_argument("slug", nargs="?", help="Site slug; omit for every site")
+    reconcile.add_argument("--apply", action="store_true", help="Write the fixes")
+    reconcile.set_defaults(func=_cmd_reconcile_presets)
 
     reset = sub.add_parser(
         "reset-password", help="Reset a user's password (also clears any lockout)"

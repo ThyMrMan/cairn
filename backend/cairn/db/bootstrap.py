@@ -125,21 +125,55 @@ def _alembic_config(settings: Settings) -> Config:
     return cfg
 
 
-def backup_database(settings: Settings) -> Path | None:
-    """Copy the database aside before migrating.
+def _revisions(settings: Settings) -> tuple[str | None, str | None]:
+    """(revision the database is at, head revision the code expects)."""
+    import sqlite3
 
-    Skipped when the database does not exist yet. Uses SQLite's backup API
-    rather than a file copy — copying a WAL-mode database mid-write produces
-    a file that restores as corrupt (docs/10).
+    from alembic.script import ScriptDirectory
+
+    head = ScriptDirectory.from_config(_alembic_config(settings)).get_current_head()
+    current: str | None = None
+    conn = sqlite3.connect(f"file:{settings.db_path}?mode=ro", uri=True)
+    try:
+        row = conn.execute("SELECT version_num FROM alembic_version").fetchone()
+        current = str(row[0]) if row else None
+    except sqlite3.Error:
+        current = None
+    finally:
+        conn.close()
+    return current, head
+
+
+def backup_database(settings: Settings) -> Path | None:
+    """Copy the database aside before migrating, once per pending upgrade.
+
+    Skipped when the database does not exist yet or is already at head: a
+    backup on every boot rotated the one copy that mattered out of the window.
+    A failed migration exits the container, a restart loop boots it again and
+    again, and ten boots later the only pre-upgrade copy was gone. Now each
+    (from, to) pair is backed up once, so a loop cannot add more copies.
+
+    Uses SQLite's backup API rather than a file copy — copying a WAL-mode
+    database mid-write produces a file that restores as corrupt (docs/10).
     """
     if not settings.db_path.exists():
         return None
 
     import sqlite3
 
+    current, head = _revisions(settings)
+    if current is not None and current == head:
+        return None
+
     settings.backups_dir.mkdir(parents=True, exist_ok=True)
+    tag = f"pre-{current or 'none'}-to-{head or 'none'}"
+    existing = sorted(settings.backups_dir.glob(f"cairn-{tag}-*.db"))
+    if existing:
+        log.info("pre-migration backup already taken", extra={"path": str(existing[0])})
+        return existing[0]
+
     stamp = datetime.strftime(utcnow(), "%Y%m%dT%H%M%SZ")
-    target = settings.backups_dir / f"cairn-{stamp}.db"
+    target = settings.backups_dir / f"cairn-{tag}-{stamp}.db"
 
     source = sqlite3.connect(settings.db_path)
     try:
@@ -151,7 +185,8 @@ def backup_database(settings: Settings) -> Path | None:
     finally:
         source.close()
 
-    backups = sorted(settings.backups_dir.glob("cairn-*.db"))
+    # Oldest first by modification time: names no longer sort by date.
+    backups = sorted(settings.backups_dir.glob("cairn-*.db"), key=lambda f: f.stat().st_mtime)
     for stale in backups[:-MAX_DB_BACKUPS]:
         stale.unlink(missing_ok=True)
 

@@ -260,7 +260,44 @@ def test_session_survives_a_restart(settings: Settings) -> None:
 
 
 def test_database_backed_up_before_migrating(settings: Settings) -> None:
+    import sqlite3
+
+    from cairn.db.bootstrap import backup_database
+
     ensure_directories(settings)
-    run_migrations(settings)  # creates the db
-    run_migrations(settings)  # should now back it up first
-    assert list(settings.backups_dir.glob("cairn-*.db")), "no backup was taken"
+    run_migrations(settings)  # creates the db, at head
+    assert backup_database(settings) is None, "a database at head needs no backup"
+
+    # Pretend an upgrade is pending.
+    conn = sqlite3.connect(settings.db_path)
+    conn.execute("UPDATE alembic_version SET version_num = 'older'")
+    conn.commit()
+    conn.close()
+
+    first = backup_database(settings)
+    assert first is not None and first.exists()
+    assert "pre-older-to-" in first.name
+
+
+def test_a_restart_loop_does_not_rotate_out_the_pre_upgrade_backup(settings: Settings) -> None:
+    """A failed migration restarts the container over and over.
+
+    Each boot used to take a fresh backup, and ten boots pushed the one good
+    pre-upgrade copy out of the window. The same pending upgrade is now backed
+    up once, however many times it is attempted.
+    """
+    import sqlite3
+
+    from cairn.db.bootstrap import backup_database
+
+    ensure_directories(settings)
+    run_migrations(settings)
+    conn = sqlite3.connect(settings.db_path)
+    conn.execute("UPDATE alembic_version SET version_num = 'older'")
+    conn.commit()
+    conn.close()
+
+    first = backup_database(settings)
+    for _ in range(15):
+        assert backup_database(settings) == first
+    assert list(settings.backups_dir.glob("cairn-*.db")) == [first]

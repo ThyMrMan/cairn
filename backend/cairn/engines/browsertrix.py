@@ -194,6 +194,22 @@ class Runner:
             # capture (docs/05).
             self.events.result("partial", stats, error=f"the crawler exited {code}")
             return 0
+        gated = content_warning_redirects(self.out / "crawl.log")
+        if gated:
+            # Named, because "exited 9" is no help: the post exists, the crawl
+            # worked, and the only thing wrong is a consent the profile lacks.
+            stats["blocked"] = BLOCKED_BY_CONTENT_WARNING
+            message = (
+                f"Blogger's content warning blocked {gated[0]}"
+                + (f" and {len(gated) - 1} other page(s)" if len(gated) > 1 else "")
+                + ". The post redirected to the warning page instead of loading, so "
+                "nothing was archived. Refresh this site's access profile in a browser "
+                "session that has clicked through the warning (or attach one if the "
+                "site has none); feed captures wait for that instead of retrying."
+            )
+            self.events.warning(BLOCKED_BY_CONTENT_WARNING, message)
+            self.events.result("failed", stats, error=message)
+            return code or 1
         self.events.result(
             "failed", stats, error=f"the crawler exited {code} without archiving anything"
         )
@@ -594,6 +610,35 @@ class Runner:
         text = await containers.logs_text(http, container)
         if text:
             (self.out / "crawl.log").write_text(text, encoding="utf-8")
+
+
+BLOCKED_BY_CONTENT_WARNING = "content_warning"
+
+# browsertrix writes one JSON object per line. A seed that 302s to Blogger's
+# interstitial is logged as a redirect to an excluded URL and then skipped,
+# and the crawl ends "no pages crawled successfully" with exit 9. Measured on a
+# live instance: every one of 25 such failures across two blogs was this.
+_EXCLUDED_REDIRECT = "redirects to excluded URL"
+
+
+def content_warning_redirects(log_path: Path) -> list[str]:
+    """Pages a crawl skipped because they redirected to a content warning."""
+    try:
+        text = log_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    pages: list[str] = []
+    for line in text.splitlines():
+        if _EXCLUDED_REDIRECT not in line or "/interstitial" not in line:
+            continue
+        try:
+            details = json.loads(line).get("details") or {}
+        except (ValueError, AttributeError):
+            continue
+        new_url = str(details.get("newUrl") or "")
+        if "/interstitial" in new_url:
+            pages.append(str(details.get("origUrl") or new_url))
+    return list(dict.fromkeys(pages))
 
 
 def _scope_type(configured: Any, scope: Scope) -> str:

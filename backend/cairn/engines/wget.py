@@ -55,6 +55,15 @@ WGET_BIN = os.environ.get("CAIRN_WGET_BIN", "wget")
 # capture (docs/05 — `partial` is a first-class outcome).
 EXIT_OK = 0
 EXIT_PARTIAL = frozenset({4, 5, 6, 7, 8})
+# Exits that mean wget itself stopped, not that some URLs failed. With URLs
+# already fetched they are still reported as partial — the WARC up to that
+# point is valid and worth keeping — but flagged, so a full disk is never
+# mistaken for an ordinary crawl with a few 404s.
+EXIT_ABNORMAL = {
+    1: "a generic error",
+    2: "a command-line or configuration error",
+    3: "a file I/O error, usually a full disk",
+}
 
 
 class Tailer:
@@ -445,7 +454,15 @@ class Runner:
             self.events.result("partial", stats, error=f"wget exited {code}")
             return 0
         if self.urls > 0:
-            self.events.result("partial", stats, error=f"wget exited {code}")
+            reason = EXIT_ABNORMAL.get(code, "an unexpected exit")
+            message = (
+                f"wget stopped early with {reason} (exit {code}). The {self.urls} URL(s) "
+                f"fetched before that are kept; the rest of the site was not crawled.\n"
+                f"{self._log_tail()}"
+            )
+            self.events.warning("abnormal_exit", message)
+            stats["abnormal_exit"] = True
+            self.events.result("partial", stats, error=message)
             return 0
         self.events.result(
             "failed",

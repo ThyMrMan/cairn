@@ -26,6 +26,13 @@ export default function SiteDetail() {
   const client = useQueryClient();
   const navigate = useNavigate();
   const [watching, setWatching] = useState<number | null>(null);
+  // The job whose log is on screen. Outlives `watching`: when a crawl ends,
+  // the log and its outcome stay until dismissed instead of vanishing.
+  const [shownLog, setShownLog] = useState<number | null>(null);
+  const follow = (jobId: number) => {
+    setWatching(jobId);
+    setShownLog(jobId);
+  };
   // Which capture the confirmation panel is armed for, or null. A capture can
   // run for hours and its cost is decided by two settings that live on other
   // tabs, so the button asks first and shows them.
@@ -53,12 +60,12 @@ export default function SiteDetail() {
   // Reattach to a capture that is already running — after a page reload, or
   // when it was started from another tab.
   useEffect(() => {
-    if (site.data?.running_job_id) setWatching(site.data.running_job_id);
+    if (site.data?.running_job_id) follow(site.data.running_job_id);
   }, [site.data?.running_job_id]);
 
   const start = useMutation({
     mutationFn: (kind: string) => endpoints.startCapture(siteId, kind),
-    onSuccess: (result) => setWatching(result.job_id),
+    onSuccess: (result) => follow(result.job_id),
   });
 
   // Beside Capture rather than inside the engine picker. The pass is not a
@@ -69,7 +76,7 @@ export default function SiteDetail() {
   const companion = site.data?.companion_pass ?? null;
   const startCompanion = useMutation({
     mutationFn: () => endpoints.startCompanionPass(siteId, companion?.id ?? ""),
-    onSuccess: (result) => setWatching(result.job_id),
+    onSuccess: (result) => follow(result.job_id),
   });
 
   const cancel = useMutation({
@@ -160,14 +167,15 @@ export default function SiteDetail() {
 
       {watching !== null && <CrawlProjection jobId={watching} />}
 
-      {watching !== null && (
+      {shownLog !== null && (
         <LiveLog
-          jobId={watching}
+          jobId={shownLog}
           onFinished={() => {
             setWatching(null);
             void client.invalidateQueries({ queryKey: ["captures", siteId] });
             void client.invalidateQueries({ queryKey: ["site", siteId] });
           }}
+          onDismiss={() => setShownLog(null)}
         />
       )}
 

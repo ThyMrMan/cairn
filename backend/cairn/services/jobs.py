@@ -853,6 +853,16 @@ class JobSupervisor:
 
             if status == "ok":
                 discovery = discovery_service.persist(session, site, result, job_id)
+                try:
+                    discovery_service.write_discovered_urls(
+                        self._settings, site, discovery.id, result.all_urls
+                    )
+                except (OSError, StoragePathError) as exc:
+                    # Not fatal: captures fall back to the stored sample.
+                    log.warning(
+                        "could not store discovered URLs",
+                        extra={"site": site.slug, "error": str(exc)},
+                    )
                 discovery_service.record_feeds(session, site, result)
                 # Only overwrite the scope while it is still the default one.
                 # A user who has already picked domains does not want a re-run
@@ -1544,6 +1554,12 @@ class JobSupervisor:
                     "and JS — was out of scope and is not in this archive. Press "
                     "Index on the site, check the domain list, and capture again."
                 )
+            if companion is None:
+                from cairn.services import discovery_service
+
+                drift = discovery_service.preset_drift_warning(site, scope)
+                if drift:
+                    warnings.append(drift)
             # One source of truth at the boundary: the site's politeness wins
             # over the engine defaults, and the engine reads only `config`.
             for key in ("wait_s", "random_wait", "rate_limit"):
@@ -1615,7 +1631,9 @@ class JobSupervisor:
                 seeds = list(dict.fromkeys(extra))
                 seed_source = {"feed": len(seeds)}
             else:
-                discovered, seed_source = discovery_service.seeds_for_capture(session, site, scope)
+                discovered, seed_source = discovery_service.seeds_for_capture(
+                    session, site, scope, self._settings
+                )
                 seeds = list(dict.fromkeys([*discovered, *extra]))
                 seed_source["manual"] += len(extra)
             seed_path = temp_dir / SEED_FILE
@@ -1969,9 +1987,13 @@ class JobSupervisor:
                 notify.INTERSTITIAL_DETECTED,
                 title=f"Capture incomplete: {prepared.site_title}",
                 body=(
-                    f"{collector.url_count} URLs, {collector.error_count} errors. "
-                    "Check the capture's gap report — a content warning or an expired "
-                    "access profile is the usual cause."
+                    (collector.error or "")[:500]
+                    if collector.stats.get("abnormal_exit")
+                    else (
+                        f"{collector.url_count} URLs, {collector.error_count} errors. "
+                        "Check the capture's gap report — a content warning or an expired "
+                        "access profile is the usual cause."
+                    )
                 ),
             )
         elif status == "ok" and prepared.item_ids:
@@ -2074,6 +2096,10 @@ class JobSupervisor:
                 "bytes": collector.bytes_written,
                 "status": status,
             }
+            if status == "partial" and collector.stats.get("abnormal_exit"):
+                # The engine stopped, not just some URLs: a full disk reads as
+                # an ordinary partial crawl unless it is said out loud.
+                job.error = (collector.error or "the engine stopped early")[:2000]
             if status == "failed":
                 # Both halves, not whichever came first. The engine's summary
                 # ("wget exited 1") says what happened; the tool's own stderr
@@ -2090,7 +2116,14 @@ class JobSupervisor:
                 site.last_capture_at = finished
 
             if prepared.item_ids:
-                _settle_feed_items(session, prepared.item_ids, capture, status, prepared.feed_id)
+                _settle_feed_items(
+                    session,
+                    prepared.item_ids,
+                    capture,
+                    status,
+                    prepared.feed_id,
+                    blocked=collector.stats.get("blocked"),
+                )
 
         self._write(close, what=f"close job {prepared.job_id}")
 
@@ -2758,7 +2791,13 @@ def _browser_profile_expiry_warnings(profile: Any, hosts: list[str]) -> list[str
 
 
 def _settle_feed_items(
-    session: Session, item_ids: list[int], capture: Capture, status: str, feed_id: int | None
+    session: Session,
+    item_ids: list[int],
+    capture: Capture,
+    status: str,
+    feed_id: int | None,
+    *,
+    blocked: str | None = None,
 ) -> None:
     """Mark a feed poll's items with what the capture actually did.
 
@@ -2799,6 +2838,12 @@ def _settle_feed_items(
         feed.next_capture_at = None
         return
     feed.capture_failures += 1
+    if blocked == "content_warning":
+        # Retrying cannot help until the access profile changes, and saving a
+        # new one releases the hold (`profiles.release_held_captures`). Until
+        # then, the longest wait rather than the doubling from ten minutes,
+        # which on a live instance meant 15 identical failures in 8 days.
+        feed.capture_failures = max(feed.capture_failures, feed_service.MAX_BACKOFF_STEPS)
     feed.next_capture_at = feed_service.next_capture_due(feed)
 
 

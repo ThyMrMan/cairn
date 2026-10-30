@@ -200,29 +200,49 @@ def test_a_warc_that_changed_is_read_again(site_tree: Settings, reads: list[str]
     assert result.path.read_bytes() == as_rebuilt(site_tree)
 
 
-def test_a_warc_that_cannot_be_read_leaves_the_index_as_it_was(
+def test_a_warc_that_cannot_be_read_does_not_block_the_rest(
     site_tree: Settings, reads: list[str]
 ) -> None:
-    """Same policy as a rebuild: all of it or none of it, and the next update
-    starts from a record that still describes the file."""
+    """A crawl killed mid-write leaves a truncated WARC beside good ones.
+
+    All-or-nothing used to mean the update aborted before writing its state,
+    so every later update met the same file, failed the same way, and no new
+    capture of the site ever became replayable. Now the bad file is recorded
+    with its error, the good ones are indexed, and the bad one is not read
+    again until it changes.
+    """
     add_capture(site_tree, 1)
     update(site_tree)
-    before = index_file(site_tree).read_bytes()
-    record = state_file(site_tree).read_bytes()
 
     broken = storage.ensure_capture_dirs(site_tree, ARCHIVE_PATH, dir_name(2)) / "warc"
     # A gzip header over data that is not deflate. Plain junk is not enough:
     # the indexer reads that as one nonsense record rather than refusing it.
     (broken / "part-00000.warc.gz").write_bytes(BROKEN_GZIP)
-    with pytest.raises(replay.ReplayError, match=dir_name(2)):
-        update(site_tree)
+    add_capture(site_tree, 3)
 
-    assert index_file(site_tree).read_bytes() == before
-    assert state_file(site_tree).read_bytes() == record
-    shutil.rmtree(broken.parent)
+    result = update(site_tree)
+    assert list(result.failed) == [f"captures/{dir_name(2)}/warc/part-00000.warc.gz"]
+    text = result.path.read_text(encoding="utf-8")
+    assert "p/1" in text and "p/3" in text, "the readable WARCs are indexed"
+
     reads.clear()
-    assert update(site_tree).read == 0
-    assert reads == []
+    again = update(site_tree)
+    assert again.read == 0 and reads == [], "an unchanged bad file is not retried"
+    assert again.failed == result.failed
+
+    # Repaired (here: replaced), it is read again on the next update.
+    shutil.rmtree(broken.parent)
+    assert update(site_tree).failed == {}
+
+
+def test_a_rebuild_skips_an_unreadable_warc(site_tree: Settings) -> None:
+    add_capture(site_tree, 1)
+    broken = storage.ensure_capture_dirs(site_tree, ARCHIVE_PATH, dir_name(2)) / "warc"
+    (broken / "part-00000.warc.gz").write_bytes(BROKEN_GZIP)
+
+    result = replay.build_index(site_tree, ARCHIVE_PATH)
+    assert len(result.failed) == 1
+    assert "p/1" in result.path.read_text(encoding="utf-8")
 
 
 # ── when an update is not trusted ────────────────────────────────────────
