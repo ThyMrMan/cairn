@@ -415,7 +415,11 @@ def _choose(group: UrlGroup, views: dict[str, list[Selected]]) -> list[Selected]
     """The URLs to fetch for one item: the best preferred view, plus `keep`."""
 
     def newest(candidates: list[Selected]) -> Selected:
-        return max(candidates, key=lambda s: s.timestamp)
+        # The plainest address first, then the newest copy. Wayback holds
+        # tracking variants (`&mibextid=` from Facebook shares) of the same
+        # story, and replay finds a page by its URL: a story saved only under
+        # a variant is missing from the link everyone else uses.
+        return max(candidates, key=lambda s: (-_query_params(s.url), s.timestamp))
 
     if not group.prefer and not group.keep:
         return [newest([s for v in views.values() for s in v])]
@@ -431,6 +435,11 @@ def _choose(group: UrlGroup, views: dict[str, list[Selected]]) -> list[Selected]
         # Only views the group does not mention: better one than none.
         out.append(newest([s for v in views.values() for s in v]))
     return out
+
+
+def _query_params(url: str) -> int:
+    query = urlsplit(url).query
+    return len([p for p in query.split("&") if p]) if query else 0
 
 
 def _order(sel: Selected) -> tuple[int, str]:

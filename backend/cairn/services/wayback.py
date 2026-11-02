@@ -21,7 +21,10 @@ and `selection.jsonl.gz`. The archive directory is the source of truth
 
 from __future__ import annotations
 
+import gzip
 import re
+import shutil
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -29,7 +32,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from cairn.config import Settings
-from cairn.db.models import Job, Site
+from cairn.db.models import Capture, Job, Site
 from cairn.net.polite import USER_AGENT, Pacing, PoliteClient
 from cairn.services import discovery_service, settings_store, storage
 from cairn.services import sites as site_service
@@ -37,10 +40,14 @@ from cairn.wayback import cdx
 from cairn.wayback import survey as wb_survey
 
 JOB_TYPE = "wayback-survey"
+ENGINE_ID = "wayback-import"
+CAPTURE_KIND = "wayback"
+SELECTION_IN_CAPTURE = "wayback-selection.jsonl.gz"
 HOST = "web.archive.org"
 IMPORT_DIR = "import"
 RATE_SETTING = "wayback.rate_per_min"
 CONTACT_SETTING = "wayback.contact_url"
+BUDGET_SETTING = "wayback.daily_budget"
 DEFAULT_RATE_PER_MIN = 10.0
 
 
@@ -159,6 +166,7 @@ def state(session: Session, settings: Settings, site: Site) -> dict[str, Any]:
         "options": options(site),
         "rate_per_min": rate_per_min(session),
         "survey": wb_survey.read_report(directory(settings, site)),
+        "import": _import_state(session, site.id),
         "job": (
             {
                 "id": job.id,
@@ -169,4 +177,86 @@ def state(session: Session, settings: Settings, site: Site) -> dict[str, Any]:
             if job
             else None
         ),
+    }
+
+
+# ── the import (stage 2) ─────────────────────────────────────────────────
+
+
+class NoSurveyError(Exception):
+    pass
+
+
+@dataclass(slots=True)
+class StagedSelection:
+    path: Path
+    count: int
+
+
+def selection_path(settings: Settings, site: Site) -> Path:
+    return directory(settings, site) / wb_survey.SELECTION_FILE
+
+
+def stage_selection(settings: Settings, site: Site, capture_dir: Path) -> StagedSelection:
+    """The capture's own copy of the survey selection, made on its first run."""
+    target = capture_dir / SELECTION_IN_CAPTURE
+    if not target.is_file():
+        source = selection_path(settings, site)
+        if not source.is_file():
+            raise NoSurveyError("this site has no Wayback survey to import from")
+        shutil.copy2(source, target)
+    with gzip.open(target, "rt", encoding="utf-8") as fh:
+        count = sum(1 for line in fh if line.strip())
+    return StagedSelection(path=target, count=count)
+
+
+def engine_config(session: Session, settings: Settings, site: Site) -> dict[str, Any]:
+    """Instance pacing plus what the survey learned about error pages."""
+    report = wb_survey.read_report(directory(settings, site)) or {}
+    boilerplate = report.get("boilerplate") or {}
+    bad = [*boilerplate.get("rate_limit_digests", []), *boilerplate.get("shared_digests", {})]
+    try:
+        budget = max(int(settings_store.get(session, BUDGET_SETTING, 0) or 0), 0)
+    except (TypeError, ValueError):
+        budget = 0
+    return {
+        "rate_per_min": rate_per_min(session),
+        "daily_budget": budget,
+        "user_agent": user_agent(session),
+        "bad_digests": bad,
+    }
+
+
+def import_captures(session: Session, site_id: int) -> list[Capture]:
+    return list(
+        session.scalars(
+            select(Capture)
+            .where(Capture.site_id == site_id, Capture.engine_id == ENGINE_ID)
+            .order_by(Capture.started_at.desc())
+        ).all()
+    )
+
+
+def active_import(session: Session, site_id: int) -> Capture | None:
+    """An import still under way: running, or paused with ground to cover."""
+    for capture in import_captures(session, site_id):
+        if capture.status in ("running", "paused"):
+            return capture
+    return None
+
+
+def _import_state(session: Session, site_id: int) -> dict[str, Any] | None:
+    captures = import_captures(session, site_id)
+    if not captures:
+        return None
+    latest = captures[0]
+    request = latest.request if isinstance(latest.request, dict) else {}
+    return {
+        "capture_id": latest.id,
+        "status": latest.status,
+        "url_count": latest.url_count,
+        "error_count": latest.error_count,
+        "bytes": latest.bytes_written,
+        "resume_at": request.get("resume_at"),
+        "job_id": latest.job_id,
     }

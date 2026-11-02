@@ -51,7 +51,10 @@ export function EnginePicker({ site }: { site: SiteDetail }) {
     },
   });
 
-  const list = engines.data ?? [];
+  // An engine that cannot crawl a site (the Wayback importer) is not a choice here.
+  const list = (engines.data ?? []).filter(
+    (e) => (e.capabilities as Record<string, unknown>).site_engine !== false,
+  );
   const engine = list.find((e) => e.id === chosen);
   const dirty = chosen !== site.engine_id || JSON.stringify(config) !== JSON.stringify(site.engine_config);
 

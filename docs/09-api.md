@@ -239,8 +239,9 @@ of attacker-influenced string that must not be allowed to pick its own type.
 | `GET` | `/api/sites/{id}/wayback` | `{options, rate_per_min, survey, job}`. `survey` is the last coverage report (`<site>/import/wayback/survey.json`) or `null`; `job` is the last survey job |
 | `PUT` | `/api/sites/{id}/wayback/options` | `{url_groups: [{name, pattern, prefer?, keep?}], rate_limit_page?, live_items?}`. A group's pattern must have a `(?P<item>…)` group, plus `(?P<view>…)` when `prefer`/`keep` are set; anything invalid is a `422` that says why. An empty body clears all three |
 | `POST` | `/api/sites/{id}/wayback/survey` | `{refresh?}` → `202 {job_id}`. Lists what archive.org holds for the site's crawlable hosts and reduces it locally. It never contacts the site itself. `409 survey_busy` while one is queued or running. Without `refresh`, CDX pages saved by an earlier run are reused, so a stopped survey continues |
+| `POST` | `/api/sites/{id}/wayback/import` | → `202 {job_id}`. Starts a capture (`kind: "wayback"`, engine `wayback-import`) that copies the surveyed snapshots from archive.org, or continues the site's paused one. `409 no_survey` without a survey, `409 site_busy` while anything is queued or running for the site |
 
-The survey job queues on `web.archive.org`, not on the site's host. Two sites' surveys run one after the other, and a survey never holds up a crawl of its own site. Design: [17](17-wayback-prefill.md); plan: [19](19-wayback-prefill-plan.md).
+The survey job and the import both queue on `web.archive.org`, not on the site's host. Two sites' surveys or imports run one after the other. A survey never holds up a crawl of its own site; an import is a capture, so a site still runs one capture at a time. `GET` also returns `import`: the latest import capture's status, counts and `resume_at` when it has paused itself. Design: [17](17-wayback-prefill.md); plan: [19](19-wayback-prefill-plan.md).
 
 ---
 

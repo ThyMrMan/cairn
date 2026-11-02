@@ -1617,6 +1617,19 @@ class JobSupervisor:
                 # fetching them again would undo the saving this pass exists for.
                 config["page_requisites"] = False
                 scope = _companion_scope(scope, companion)
+            elif kind == "wayback":
+                # Not the site's crawler: a copy from archive.org of what the
+                # survey selected (docs/19, stage 2).
+                from cairn.services import wayback as wayback_service
+
+                engine = self._registry.get(wayback_service.ENGINE_ID)
+                config = {
+                    **engine.defaults(),
+                    **wayback_service.engine_config(session, self._settings, site),
+                }
+                # A copy is one request per URL; the site's page cap counts
+                # pages crawled from the site and would cut an import short.
+                scope.max_pages = None
             else:
                 engine = self._registry.get(site.engine_id)
                 config = engine.validate_config(dict(site.engine_config or {}))
@@ -1637,7 +1650,7 @@ class JobSupervisor:
                 scope.max_depth = 0
 
             warnings: list[str] = []
-            if sites.scope_is_unindexed(session, site):
+            if kind != "wayback" and sites.scope_is_unindexed(session, site):
                 warnings.append(
                     "This site has never been indexed, so the capture ran with the "
                     "default scope: the seed host and nothing else. Everything the "
@@ -1645,7 +1658,7 @@ class JobSupervisor:
                     "and JS — was out of scope and is not in this archive. Press "
                     "Index on the site, check the domain list, and capture again."
                 )
-            if companion is None:
+            if companion is None and kind != "wayback":
                 from cairn.services import discovery_service
 
                 drift = discovery_service.preset_drift_warning(site, scope)
@@ -1653,10 +1666,11 @@ class JobSupervisor:
                     warnings.append(drift)
             # One source of truth at the boundary: the site's politeness wins
             # over the engine defaults, and the engine reads only `config`.
-            for key in ("wait_s", "random_wait", "rate_limit"):
-                if key in scope.politeness:
-                    config[key] = scope.politeness[key]
-            config["keep_mirror"] = site.keep_mirror
+            if kind != "wayback":
+                for key in ("wait_s", "random_wait", "rate_limit"):
+                    if key in scope.politeness:
+                        config[key] = scope.politeness[key]
+                config["keep_mirror"] = site.keep_mirror
 
             started = utcnow()
 
@@ -1667,12 +1681,20 @@ class JobSupervisor:
             # interrupted crawl need no reconciling — which is what makes
             # continuing into the same capture the simple option rather than
             # the clever one.
+            resumed_from: dict[str, Any] | None = None
             if resuming is not None:
                 capture = resuming
                 dir_name = capture.dir_name
+                resumed_from = {
+                    "warc_files": list(capture.warc_files or []),
+                    "url_count": capture.url_count or 0,
+                    "error_count": capture.error_count or 0,
+                }
                 capture.job_id = job.id
                 capture.status = "running"
                 capture.finished_at = None
+                if isinstance(capture.request, dict) and "resume_at" in capture.request:
+                    capture.request = {k: v for k, v in capture.request.items() if k != "resume_at"}
                 if capture.request is None and asked.get("kind") != "resume":
                     # Paused before captures kept their request, and resumed
                     # while its old job still said what it was. Kept now, so a
@@ -1707,7 +1729,17 @@ class JobSupervisor:
             from cairn.services import discovery_service
 
             extra = list(asked.get("extra_seeds") or [])
-            if companion is not None:
+            if kind == "wayback":
+                from cairn.services import wayback as wayback_service
+
+                # The selection is copied into the capture once and kept, so a
+                # resume continues the list it started with even if the site
+                # has been surveyed again since.
+                selection = wayback_service.stage_selection(self._settings, site, output_dir)
+                config["selection_file"] = str(selection.path)
+                seeds = [site.seed_url]
+                seed_source = {"wayback": selection.count}
+            elif companion is not None:
                 # The seed and nothing else. A companion pass walks to its
                 # targets by following links, and handing it the discovered URL
                 # set would make it fetch every post again — with the wrong
@@ -1731,7 +1763,9 @@ class JobSupervisor:
             storage.write_atomic(seed_path, "\n".join(seeds) + "\n")
 
             auth: dict[str, Any] = {"user_agent": config.get("user_agent"), "headers": {}}
-            if site.profile_id is not None:
+            # Never for an import: the site's cookies are for the site, and
+            # every request of a Wayback import goes to archive.org.
+            if site.profile_id is not None and kind != "wayback":
                 material = profiles.materialize(
                     session,
                     self._sealer,
@@ -1799,6 +1833,7 @@ class JobSupervisor:
                 output_dir=output_dir,
                 temp_dir=temp_dir,
                 max_pages=scope.max_pages,
+                resumed_from=resumed_from,
                 seeds=seeds,
                 seed_source=seed_source,
                 warnings=warnings,
@@ -2135,7 +2170,11 @@ class JobSupervisor:
             bool(collector.stats.get("resumable"))
             and (prepared.output_dir / RESUME_STATE_FILE).is_file()
         )
-        if paused and resumable and status in ("ok", "partial"):
+        # An engine may pause itself — the Wayback importer does when
+        # archive.org blocks it or its daily budget is spent — and say when to
+        # come back. The scheduler resumes it then (`_due_resumes`).
+        self_paused = bool(collector.stats.get("self_paused"))
+        if (paused or self_paused) and resumable and status in ("ok", "partial"):
             status = "paused"
         finished = utcnow()
 
@@ -2148,10 +2187,19 @@ class JobSupervisor:
                 return
             capture.status = status
             capture.finished_at = finished
-            capture.url_count = collector.url_count
-            capture.error_count = collector.error_count
+            if status == "paused" and self_paused:
+                wait_s = int(collector.stats.get("resume_after_s") or 3600)
+                capture.request = {
+                    **(capture.request or {}),
+                    "resume_at": (finished + timedelta(seconds=wait_s)).isoformat(),
+                }
+            earlier = prepared.resumed_from or {}
+            capture.url_count = int(earlier.get("url_count") or 0) + collector.url_count
+            capture.error_count = int(earlier.get("error_count") or 0) + collector.error_count
             capture.bytes_written = collector.bytes_written
-            capture.warc_files = collector.artifacts
+            capture.warc_files = merge_artifacts(
+                earlier.get("warc_files") or [], collector.artifacts
+            )
             job.progress = {
                 "done": collector.url_count,
                 "bytes": collector.bytes_written,
@@ -2321,6 +2369,10 @@ class _Prepared:
     temp_dir: Path
     max_pages: int | None
     seeds: list[str] = field(default_factory=list)
+    # What a resumed capture already held before this run: its WARCs and
+    # counts. The engine reports only this run's, and recording those alone
+    # dropped the first half from checksums, manifest and integrity (audit #13).
+    resumed_from: dict[str, Any] | None = None
     seed_source: dict[str, int] = field(default_factory=dict)
     site_title: str = ""
     # The engine's `runtime` block, which decides whether the work happens in
@@ -3024,6 +3076,18 @@ NETWORKED_JOB_TYPES = frozenset({"capture", "discovery", "wayback-survey"})
 # A Wayback survey loads archive.org, not the origin: it must queue behind
 # another site's survey and must not block a crawl of its own site (docs/19).
 FIXED_HOST_JOB_TYPES = {"wayback-survey": "web.archive.org"}
+# The same for captures, by kind: a Wayback import is a capture whose every
+# request goes to archive.org (docs/19, stage 2).
+FIXED_HOST_CAPTURE_KINDS = {"wayback": "web.archive.org"}
+
+
+def capture_kind_of(job: Job) -> str:
+    """What a capture job will capture, seeing through a resume."""
+    spec = job.spec or {}
+    kind = str(spec.get("kind") or "full")
+    if kind == "resume" and isinstance(spec.get("request"), dict):
+        kind = str(spec["request"].get("kind") or kind)
+    return kind
 
 
 def _host_for_job(session: Session, job: Job) -> str | None:
@@ -3039,6 +3103,8 @@ def _host_for_job(session: Session, job: Job) -> str | None:
     if job.type not in NETWORKED_JOB_TYPES or job.site_id is None:
         return None
     fixed = FIXED_HOST_JOB_TYPES.get(job.type)
+    if fixed is None and job.type == "capture":
+        fixed = FIXED_HOST_CAPTURE_KINDS.get(capture_kind_of(job))
     if fixed is not None:
         return fixed
     site = session.get(Site, job.site_id)
@@ -3118,6 +3184,20 @@ def _paused_capture(session: Session, job: Job, site: Site) -> Capture | None:
         )
         return None
     return capture
+
+
+def merge_artifacts(
+    earlier: list[dict[str, Any]], current: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """A resumed capture's artifacts: everything from before, updated by now.
+
+    Keyed by name, so a file the engine re-reports (wget lists every WARC in
+    the directory) is counted once with its current size.
+    """
+    merged = {str(a.get("name")): a for a in earlier if a.get("name")}
+    for artifact in current:
+        merged[str(artifact.get("name"))] = artifact
+    return list(merged.values())
 
 
 def capture_request(spec: dict[str, Any]) -> dict[str, Any]:

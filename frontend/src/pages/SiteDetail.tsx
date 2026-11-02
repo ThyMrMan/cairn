@@ -680,6 +680,14 @@ function CaptureRow({ summary }: { summary: Capture }) {
           <div className="flex items-center gap-2">
             <span className="font-mono text-xs">{summary.dir_name}</span>
             <StatusPill status={summary.status} />
+            {summary.kind === "wayback" && (
+              <span
+                className="rounded bg-raised px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-muted"
+                title="Copied from the Internet Archive's Wayback Machine; each page keeps the date it was archived."
+              >
+                Wayback
+              </span>
+            )}
           </div>
           <p className="mt-0.5 text-xs text-muted">
             {ranFromTo(summary.started_at, summary.finished_at)} · {summary.kind}

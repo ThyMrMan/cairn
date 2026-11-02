@@ -609,3 +609,16 @@ def test_a_saved_report_is_served(authed: TestClient, db: Session, settings: Set
     wb.write(wayback_service.directory(settings, site), {"version": 1, "rows": 3}, [])
     state = authed.get(f"/api/sites/{site.id}/wayback", headers=XHR).json()
     assert state["survey"] == {"version": 1, "rows": 3}
+
+
+def test_the_plainest_address_of_an_item_wins_over_a_tracking_variant() -> None:
+    """Found on the real listing: Facebook-shared `&mibextid=` copies were newer."""
+    plain = story("readtextstory", 7)
+    tracked = plain + "&mibextid=AFdixm"
+    lines = [
+        cdx_line(plain, "20190101000000", digest="PLAIN"),
+        cdx_line(tracked, "20231129040243", digest="TRACKED"),
+    ]
+    result = wb.reduce(rows(lines), wb.ScopeFilter(fm_scope()), wb.parse_groups([STORIES]))
+    (only,) = result.selected
+    assert only.url == plain

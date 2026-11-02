@@ -43,7 +43,7 @@ import asyncio
 import contextlib
 import shutil
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from datetime import time as clock_time
 from pathlib import Path
 from typing import Any
@@ -53,7 +53,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from cairn.config import Settings
 from cairn.crypto.sealing import Sealer
-from cairn.db.models import Feed, FeedItem, Job, Site
+from cairn.db.models import Capture, Feed, FeedItem, Job, Site
 from cairn.db.types import utcnow
 from cairn.logging import get_logger
 from cairn.services import feeds as feed_service
@@ -596,6 +596,7 @@ class Scheduler:
                     done.append(f"recomputed size for {changed} site(s)")
                 session.commit()
 
+            done += self._due_resumes(session, now)
             done += self._due_recaptures(session, now)
             done += self._due_verification(session, now)
             done += self._due_retention(session, now)
@@ -675,6 +676,55 @@ class Scheduler:
                 site.size_bytes = actual
                 changed += 1
         return changed
+
+    def _due_resumes(self, session: Session, now: datetime) -> list[str]:
+        """Continue captures an engine paused itself and said when to resume.
+
+        The Wayback importer does this when archive.org blocks it or its daily
+        budget is spent (docs/19). A multi-day import would otherwise need
+        someone to press Resume every few hours.
+        """
+        from cairn.services import jobs as jobs_service
+
+        paused = session.scalars(select(Capture).where(Capture.status == "paused")).all()
+        done: list[str] = []
+        for capture in paused:
+            request = capture.request if isinstance(capture.request, dict) else {}
+            due = request.get("resume_at")
+            if not due:
+                continue
+            try:
+                when = datetime.fromisoformat(str(due))
+            except ValueError:
+                continue
+            if when.tzinfo is None:
+                when = when.replace(tzinfo=UTC)
+            if when > now:
+                continue
+            site = session.get(Site, capture.site_id)
+            if site is None or site.deleted_at is not None:
+                continue
+            busy = session.scalar(
+                select(Job.id)
+                .where(Job.site_id == site.id, Job.status.in_(("queued", "running")))
+                .limit(1)
+            )
+            if busy is not None:
+                continue
+            asked = {k: v for k, v in request.items() if k != "resume_at"}
+            if not asked:
+                asked = jobs_service.recorded_request(session, capture) or {"kind": capture.kind}
+            job = self._supervisor.enqueue(
+                session,
+                job_type="capture",
+                site_id=site.id,
+                spec={"kind": "resume", "resume_capture_id": capture.id, "request": asked},
+                priority=250,
+            )
+            # Cleared now so the next tick does not queue it twice.
+            capture.request = asked
+            done.append(f"resumed paused capture {capture.id} of {site.slug} (job {job.id})")
+        return done
 
     def _due_recaptures(self, session: Session, now: datetime) -> list[str]:
         """Full recaptures, for sites that asked for one.

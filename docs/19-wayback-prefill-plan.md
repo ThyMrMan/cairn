@@ -1,6 +1,6 @@
 # 19 — Wayback Pre-fill: implementation plan
 
-Status: **Stage 1 built (2026-11-01, branch `wayback-prefill`); Stages 2–4 not started.** This turns the design in [17](17-wayback-prefill.md) into an ordered set of changes, each one PR. It builds on the audit's prerequisite list ([18](18-audit-2026-10.md#prerequisites-for-the-wayback-pre-fill)) and the fictionmania survey (17, "Coverage survey").
+Status: **Stages 1 and 2 built (2026-11-01, branch `wayback-prefill`); Stages 3–4 not started.** This turns the design in [17](17-wayback-prefill.md) into an ordered set of changes, each one PR. It builds on the audit's prerequisite list ([18](18-audit-2026-10.md#prerequisites-for-the-wayback-pre-fill)) and the fictionmania survey (17, "Coverage survey").
 
 The first real user is **www.fictionmania.tv**. Wayback holds about 57,300 of its stories. The origin returns a disguised rate-limit page after about 47 requests. Every step below is judged by one question: does it get that site archived without fighting the origin?
 
@@ -140,6 +140,34 @@ Rejecting `report.html`, the listings and `/cdn-cgi/` would bring the import to 
 **Done when** a 500-story fictionmania import replays correctly. Then the full import runs unattended for about 4 days at 10/min.
 
 Effort: L.
+
+### Stage 2 as built
+
+- **Engine.** `cairn/engines/wayback.py` is registered as the built-in `wayback-import` engine (`engines/builtin/wayback-import/engine.yaml`).
+  - It declares `site_engine: false`. The engine picker hides it, and the sites API refuses it as a site's crawler.
+  - It reads the selection the capture copied from the survey (`wayback-selection.jsonl.gz` in the capture directory, so a resume keeps the original list).
+  - It fetches `id_` snapshots raw, without following redirects. A response with `Memento-Datetime` or `X-Archive-Orig-*` headers is stored as archived, including archived redirects. A redirect without those headers is Wayback moving to a nearby timestamp, and is followed (up to 3 hops, on archive.org only). Anything else from archive.org is never stored.
+  - A 404, or a body whose digest is a known error page, falls back to the next older snapshot.
+- **Output.** Records go into `warc/wayback-<stamp>-NNNNN.warc.gz`, 1,000 per part, and a part name is never reused. `WARC-Date` is the snapshot time, and `WARC-Source-URI` is the `id_` URL. Original headers come back from `X-Archive-Orig-*`, with `Content-Length` recomputed. `warc/part.cdx` uses wget's 11-field layout, so later crawls can dedup against it.
+- **Resume.**
+  - `wayback-ledger.jsonl` records each URL as done, gone or failed. A URL that fails 3 times is left alone.
+  - The engine pauses itself, reporting `self_paused` and `resume_after_s`, in three cases: after 5 consecutive 429s (cool-down 60 min), when the optional daily budget (`wayback.daily_budget`) is spent, and at the capture time cap. The time cap ends a segment, not the import: the work so far is indexed, and the import resumes a minute later.
+  - `_finalize` records `capture.request.resume_at`. `Scheduler._due_resumes` queues the resume when that time comes and nothing else is running for the site.
+- **Core.**
+  - `_prepare` has a `kind == "wayback"` branch: the importer engine, no page cap, no site politeness, and **no access-profile cookies**, since every request goes to archive.org.
+  - `_host_for_job` maps capture kind `wayback`, including its resumes, to `web.archive.org` (`FIXED_HOST_CAPTURE_KINDS`). This is simpler than the engine capability the plan proposed, and does the same job.
+  - **0.1 done:** a resumed capture keeps its earlier WARCs and URL counts (`merge_artifacts`, `_Prepared.resumed_from`).
+- **API and UI.** `POST /api/sites/{id}/wayback/import` starts an import or continues the paused one. The Wayback card has an Import section showing status and the automatic resume time, and import captures carry a "Wayback" badge.
+- **Tests** (`tests/test_wayback_import.py`, 15):
+  - A fake archive.org covers raw gzip preservation, the snapshot date, archived and Wayback redirects, older-snapshot fallback, outage pages, ledger resume, the 429 pause, the daily budget and the time-cap segment.
+  - One end-to-end run puts the real engine process through the queue against a localhost fake (pointed at by `CAIRN_WAYBACK_BASE`, read from the environment only) and checks the replay index.
+
+**Live check (2026-11-01), 5 real fictionmania snapshots** (3 story texts, 2 details pages) taken from the survey selection:
+- All 5 were imported: 5 requests in 25 s at 10/min, with real titles and the original 2017, 2024 and 2026 dates.
+- **Finding 1: tracking variants were being chosen.** Wayback holds Facebook-shared variants such as `…storyID=N&mibextid=AFdixm`, and the survey was picking them because they were newer. Replay finds a page by its URL, so it would have missed those stories. The survey now prefers the address with the fewest query parameters, then the newest copy. On the real listing, 0 of the 99,977 story picks carry extra parameters.
+- **Finding 2: copies archived uncompressed are gzipped by archive.org on the way out.** Those 2017 copies match their CDX digest only after decompressing. The stored record is correct either way. The digest check now accepts both forms.
+
+**Still to do:** a 500-story sample from the deployed instance before the full import.
 
 ---
 

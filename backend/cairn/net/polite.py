@@ -226,6 +226,7 @@ class PoliteClient:
         raw: bool = False,
         reject_html: bool = False,
         accept_status: Callable[[int], bool] | None = None,
+        follow_redirects: bool = True,
     ) -> Response:
         """GET with pacing and retries.
 
@@ -243,7 +244,7 @@ class PoliteClient:
             self._check_stop()
             wait_for: float | None = None
             try:
-                response = self._fetch(url, params=params, raw=raw)
+                response = self._fetch(url, params=params, raw=raw, follow=follow_redirects)
             except httpx.HTTPError as exc:
                 last_problem, last_status = f"{type(exc).__name__}: {exc}", None
             else:
@@ -290,8 +291,10 @@ class PoliteClient:
             return False
         return any(self._soft_429.search(u) for u in (*response.history, response.url))
 
-    def _fetch(self, url: str, *, params: dict[str, str | int] | None, raw: bool) -> Response:
-        with self._client.stream("GET", url, params=params) as r:
+    def _fetch(
+        self, url: str, *, params: dict[str, str | int] | None, raw: bool, follow: bool = True
+    ) -> Response:
+        with self._client.stream("GET", url, params=params, follow_redirects=follow) as r:
             chunks: list[bytes] = []
             size = 0
             stream = r.iter_raw() if raw else r.iter_bytes()

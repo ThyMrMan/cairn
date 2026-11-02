@@ -1015,6 +1015,15 @@ export type WaybackState = {
   rate_per_min: number;
   survey: WaybackSurvey | null;
   job: { id: number; status: string; error: string | null; progress: unknown } | null;
+  import: {
+    capture_id: number;
+    status: string;
+    url_count: number | null;
+    error_count: number | null;
+    bytes: number | null;
+    resume_at: string | null;
+    job_id: number | null;
+  } | null;
 };
 
 // ── search, exports, integrity ───────────────────────────────────────────
@@ -1474,6 +1483,8 @@ export const endpoints = {
     api.put<WaybackState>(`/sites/${siteId}/wayback/options`, body),
   startWaybackSurvey: (siteId: number, refresh = false) =>
     api.post<JobAccepted>(`/sites/${siteId}/wayback/survey`, { refresh }),
+  startWaybackImport: (siteId: number) =>
+    api.post<JobAccepted>(`/sites/${siteId}/wayback/import`),
 
   // ── importing ──────────────────────────────────────────────────────────
   metricsSettings: () =>

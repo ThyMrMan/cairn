@@ -1,0 +1,51 @@
+apiVersion: cairn.engine/v1
+id: wayback-import
+name: "Wayback import"
+version: "1.0.0"
+description: "Copies a site's snapshots from the Internet Archive's Wayback Machine into WARCs. Run from a site's Wayback panel, not as a site's crawler."
+author: "built-in"
+homepage: https://web.archive.org/
+
+runtime:
+  type: subprocess
+  command: ["python", "-m", "cairn.engines.wayback"]
+
+capabilities:
+  outputs: [warc, cdx, log]
+  javascript: false
+  scope: []
+  auth: [user_agent]
+  incremental: false
+  resumable: true
+  max_concurrency: 1
+  requires_browser: false
+  # Not offered as a site's engine: it fetches from archive.org, not the site.
+  site_engine: false
+
+config_schema:
+  type: object
+  additionalProperties: true
+  properties:
+    rate_per_min:
+      type: number
+      title: "Requests per minute to archive.org"
+      minimum: 0.5
+      maximum: 60
+      default: 10
+    max_consecutive_429:
+      type: integer
+      title: "429s in a row before pausing"
+      minimum: 1
+      maximum: 50
+      default: 5
+    cooldown_min:
+      type: number
+      title: "Minutes to wait after archive.org blocks us"
+      minimum: 5
+      maximum: 1440
+      default: 60
+    daily_budget:
+      type: integer
+      title: "Requests per 24 hours (0 = no limit)"
+      minimum: 0
+      default: 0

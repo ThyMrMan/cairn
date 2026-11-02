@@ -1,4 +1,4 @@
-"""Wayback pre-fill: per-site options and the coverage survey (docs/19, stage 1)."""
+"""Wayback pre-fill: per-site options, the coverage survey and the import (docs/19)."""
 
 from __future__ import annotations
 
@@ -6,11 +6,12 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Request, status
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 
 from cairn.api.deps import AppSettings, ClientIp, Csrf, CurrentUser, DbSession
 from cairn.api.errors import ApiError
 from cairn.api.schemas import JobAccepted
-from cairn.db.models import Site
+from cairn.db.models import Job, Site
 from cairn.services import audit, wayback
 from cairn.services import sites as site_service
 
@@ -110,6 +111,60 @@ def start_survey(
         target=site.slug,
         ip=ip,
         detail={"job_id": job.id, "refresh": refresh},
+    )
+    db.commit()
+    supervisor.notify()
+    return JobAccepted(job_id=job.id)
+
+
+@router.post(
+    "/sites/{site_id}/wayback/import",
+    response_model=JobAccepted,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def start_import(
+    site_id: int,
+    db: DbSession,
+    settings: AppSettings,
+    user: CurrentUser,
+    ip: ClientIp,
+    supervisor: Annotated[Any, Depends(_supervisor)],
+) -> JobAccepted:
+    """Copy the surveyed snapshots from archive.org into a capture.
+
+    Continues a paused import rather than starting a second one: the ledger
+    in that capture already knows what is done.
+    """
+    site = _require_site(db, site_id)
+    busy = db.scalar(
+        select(Job.id).where(Job.site_id == site.id, Job.status.in_(("queued", "running"))).limit(1)
+    )
+    if busy is not None:
+        raise ApiError(
+            "site_busy",
+            "Something is already queued or running for this site.",
+            status_code=409,
+            detail={"job_id": busy},
+        )
+    paused = wayback.active_import(db, site.id)
+    if paused is not None and paused.status == "paused":
+        asked = {k: v for k, v in (paused.request or {}).items() if k != "resume_at"} or {
+            "kind": wayback.CAPTURE_KIND
+        }
+        spec: dict[str, Any] = {"kind": "resume", "resume_capture_id": paused.id, "request": asked}
+        action = "wayback.import.resume"
+    else:
+        if not wayback.selection_path(settings, site).is_file():
+            raise ApiError(
+                "no_survey",
+                "Run the Wayback survey first; the import fetches what it selected.",
+                status_code=409,
+            )
+        spec = {"kind": wayback.CAPTURE_KIND}
+        action = "wayback.import"
+    job = supervisor.enqueue(db, job_type="capture", site_id=site.id, spec=spec, priority=200)
+    audit.record(
+        db, action, actor=user.username, target=site.slug, ip=ip, detail={"job_id": job.id}
     )
     db.commit()
     supervisor.notify()

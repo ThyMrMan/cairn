@@ -107,7 +107,10 @@ export function Wayback({ siteId }: { siteId: number }) {
               )}
 
               {data.survey ? (
-                <SurveyReport survey={data.survey} liveItems={data.options.live_items} />
+                <>
+                  <SurveyReport survey={data.survey} liveItems={data.options.live_items} />
+                  <ImportPanel siteId={siteId} state={data} onChange={() => void refresh()} />
+                </>
               ) : (
                 !active && (
                   <p className="hint">
@@ -123,6 +126,79 @@ export function Wayback({ siteId }: { siteId: number }) {
         </div>
       )}
     </section>
+  );
+}
+
+/**
+ * The import itself (docs/19, stage 2): one capture that copies the selected
+ * snapshots from archive.org, pausing itself when archive.org pushes back and
+ * resuming on its own.
+ */
+function ImportPanel({
+  siteId,
+  state,
+  onChange,
+}: {
+  siteId: number;
+  state: WaybackState;
+  onChange: () => void;
+}) {
+  const current = state.import;
+  const [watching, setWatching] = useState<number | null>(null);
+  const running = current?.status === "running";
+  useEffect(() => {
+    if (running && watching === null && current?.job_id) setWatching(current.job_id);
+  }, [running, current, watching]);
+
+  const start = useMutation({
+    mutationFn: () => endpoints.startWaybackImport(siteId),
+    onSuccess: (accepted) => {
+      setWatching(accepted.job_id);
+      onChange();
+    },
+  });
+
+  const paused = current?.status === "paused";
+  const fetches = state.survey?.selected?.total ?? 0;
+  return (
+    <div className="space-y-3 border-t border-border pt-4">
+      <h3 className="text-sm font-medium">Import</h3>
+      {current && (
+        <p className="text-sm">
+          {paused ? "Paused" : running ? "Importing" : "Last import"}: {n(current.url_count)} URLs
+          handled
+          {current.error_count ? `, ${n(current.error_count)} not available` : ""}.
+          {paused && current.resume_at && (
+            <> Resumes on its own around {dateTime(current.resume_at)}.</>
+          )}
+        </p>
+      )}
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          className={paused || !current ? "btn-primary" : "btn-ghost"}
+          disabled={start.isPending || running}
+          onClick={() => start.mutate()}
+        >
+          {start.isPending && <Spinner />}
+          {paused ? "Continue now" : current ? "Start a new import" : "Start import"}
+        </button>
+        <span className="hint">
+          {paused
+            ? "Continues where it stopped; nothing is fetched twice."
+            : `Copies ${n(fetches)} snapshots from archive.org into a capture of their own. Nothing is requested from the site. Pausing it keeps its place.`}
+        </span>
+      </div>
+      {current && !paused && !running && (
+        <p className="hint">
+          A new import fetches the whole selection again. Re-run the survey first if the site has
+          changed.
+        </p>
+      )}
+      {start.error && <Alert kind="error">{(start.error as ApiError).message}</Alert>}
+      {watching !== null && (
+        <LiveLog jobId={watching} onFinished={onChange} onDismiss={() => setWatching(null)} />
+      )}
+    </div>
   );
 }
 
