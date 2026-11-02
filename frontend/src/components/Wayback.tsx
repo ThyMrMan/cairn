@@ -9,7 +9,7 @@ import {
   type WaybackState,
   type WaybackSurvey,
 } from "../lib/api";
-import { dateTime } from "../lib/format";
+import { bytes, dateTime } from "../lib/format";
 import { LiveLog } from "./LiveLog";
 import { Alert, Field, PanelHeader, Spinner, useCollapsible } from "./ui";
 
@@ -221,13 +221,15 @@ function SurveyReport({ survey, liveItems }: { survey: WaybackSurvey; liveItems:
   const maxYear = Math.max(1, ...Object.values(pages));
   const rejected = Object.entries(survey.out_of_scope ?? {}).slice(0, 6);
   const sections = survey.sections ?? [];
+  // From the listing's compressed record sizes; leans high (docs/19).
+  const size = survey.size;
   const boilerplate =
     (survey.boilerplate?.rate_limit_digests.length ?? 0) +
     Object.keys(survey.boilerplate?.shared_digests ?? {}).length;
 
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
         <Figure
           label={groups.length > 0 ? "Items in Wayback" : "Pages in Wayback"}
           value={n(items)}
@@ -237,6 +239,16 @@ function SurveyReport({ survey, liveItems }: { survey: WaybackSurvey; liveItems:
           label="Import would fetch"
           value={n(selected.total)}
           sub={`${n(selected.assets)} assets`}
+        />
+        <Figure
+          label="Estimated size"
+          value={size ? `~${bytes(size.bytes)}` : "—"}
+          sub={
+            size
+              ? `pages ${bytes(size.pages)} · assets ${bytes(size.assets)}` +
+                (size.unknown ? ` · ${n(size.unknown)} unsized` : "")
+              : "run the survey again"
+          }
         />
         <Figure
           label="Time at current pace"
@@ -322,7 +334,10 @@ function SurveyReport({ survey, liveItems }: { survey: WaybackSurvey; liveItems:
                   <code>{s.section}</code>
                   {s.kind && <span className="ml-2 text-muted">{s.kind}</span>}
                 </span>
-                <span className="tabular-nums">{n(s.count)}</span>
+                <span className="tabular-nums">
+                  {n(s.count)}
+                  {s.bytes ? <span className="ml-2 text-muted">{bytes(s.bytes)}</span> : null}
+                </span>
               </li>
             ))}
           </ul>

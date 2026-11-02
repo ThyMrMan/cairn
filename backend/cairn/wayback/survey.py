@@ -322,6 +322,7 @@ def reduce(
             "oldest": min((s.timestamp for s in selected), default=None),
         },
         "sections": _sections(selected),
+        "size": _size(selected),
         "estimate": {
             "rate_per_min": rate_per_min,
             "fetches": len(selected),
@@ -340,18 +341,40 @@ def _sections(items: list[Selected], limit: int = 12) -> list[dict[str, Any]]:
     25,066 "report this story" forms that nobody wants archived.
     """
     counts: Counter[tuple[str, str]] = Counter()
+    sizes: Counter[tuple[str, str]] = Counter()
     for sel in items:
         if sel.group:
-            counts[(f"group: {sel.group}", sel.view or "")] += 1
-            continue
-        path = urlsplit(sel.url).path or "/"
-        first = path.lstrip("/").split("/", 1)[0]
-        section = f"/{first}/" if "/" in path.lstrip("/") else f"/{first}"
-        counts[(section, sel.kind)] += 1
+            key = (f"group: {sel.group}", sel.view or "")
+        else:
+            path = urlsplit(sel.url).path or "/"
+            first = path.lstrip("/").split("/", 1)[0]
+            key = (f"/{first}/" if "/" in path.lstrip("/") else f"/{first}", sel.kind)
+        counts[key] += 1
+        sizes[key] += sel.length or 0
     return [
-        {"section": section, "kind": kind, "count": count}
+        {"section": section, "kind": kind, "count": count, "bytes": sizes[(section, kind)]}
         for (section, kind), count in counts.most_common(limit)
     ]
+
+
+def _size(items: list[Selected]) -> dict[str, int]:
+    """Roughly how much disk the import will take.
+
+    The CDX `length` is the size of archive.org's own compressed WARC record
+    for that snapshot, and the import writes compressed records much like it.
+    Within a few hundred bytes a record, except copies archived uncompressed:
+    archive.org counts those at full size but serves them gzipped, and they
+    are stored as served. So the estimate leans high. `unknown` counts rows
+    with no length in the listing.
+    """
+    out = {"bytes": 0, "pages": 0, "assets": 0, "unknown": 0}
+    for sel in items:
+        if sel.length is None:
+            out["unknown"] += 1
+            continue
+        out["bytes"] += sel.length
+        out["pages" if sel.kind == "page" else "assets"] += sel.length
+    return out
 
 
 def _status_class(code: str) -> str:
