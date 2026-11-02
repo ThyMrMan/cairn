@@ -76,6 +76,7 @@ Effort: M–L.
 - **Settings live in `sites.scope_settings`**, not in the scope tables: `url_groups`, `rate_limit_page`, and `wayback.live_items`.
 - **0.2 is half done.** Job types can name a fixed host (`FIXED_HOST_JOB_TYPES`), and `_busy_hosts` now asks `_host_for_job` per job. The engine capability `network_host` comes with Stage 2, when an engine first needs it.
 - **Shutdown stops a survey.** The survey runs on a worker thread that can sit in an archive.org backoff for up to an hour. It checks the supervisor's stopping flag as well as cancel, so a restart doesn't wait for it.
+- **Added beyond the plan: a size estimate** (2026-11-02). The report sums the CDX `length` of every selected snapshot, which is archive.org's compressed WARC record size. The total is split into pages and assets, with a count of rows that list no length; each section in the breakdown carries its share too. It leans high, because copies archived uncompressed are counted at full size but arrive and are stored gzipped. The October fictionmania pull did not request `length`, so its size is unknown until the survey runs in the app.
 - **Added beyond the plan: "Biggest parts of the import".** This breakdown by first path segment is what showed the noise in fictionmania's import (below).
 
 **Run against the real fictionmania listing** (the 98 pages from 17, reduced in about 6 s). The settings were the stories group, `/err429\.html` as the rate-limit page, and `/review/` rejected:
