@@ -142,6 +142,16 @@ Rejecting `report.html`, the listings and `/cdn-cgi/` would bring the import to 
 
 Effort: L.
 
+### 0.5 as built (2026-11-02)
+
+The site's `rate_limit_page` (set on the Wayback card) now does three things:
+
+- **Wayback copies of it are skipped**, as before.
+- **wget stops.** The engine checks each CDX record's URL and redirect target. After 3 hits (`rate_limit_stop_after`) it stops wget and reports `partial` with `rate_limited`, and the job's error says why. Real fictionmania CDX lines carry the target as `/err429.html`.
+- **Replay hides it.** `replay.withheld_patterns` adds the page and a `redirect-to:` rule. Indexing reads the Location of 3xx records only when such a rule exists. Saving a changed page on the card rebuilds the replay index. On the real 30 Oct capture this withheld 5,128 of 5,557 records (each block left a redirect and an error-page copy), leaving 429.
+
+Not done: the crawl stops but doesn't come back by itself, because wget can't resume. The gap crawl (Stage 3) is where a slow, resumable pass belongs.
+
 ### Stage 2 as built
 
 - **Engine.** `cairn/engines/wayback.py` is registered as the built-in `wayback-import` engine (`engines/builtin/wayback-import/engine.yaml`).
