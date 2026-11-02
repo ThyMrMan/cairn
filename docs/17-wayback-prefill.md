@@ -174,10 +174,37 @@ Site page → **Import from Wayback**:
 3. **Planner + gap crawl.** Buckets, link extraction from imported HTML, `only_extra_seeds` hand-off, asset backfill.
 4. **Polish.** Daily budget with scheduled resume, live-first's "gone pages" feed into phase 3, nearest-date asset selection.
 
+## Target site notes: fictionmania.tv
+
+- **Soft 429 on the origin.** Blocked requests redirect to `/err429.html` and are served with 200 after roughly 47 requests in 84 s, and the block persists while requests continue (measured 2026-10-30, docs/18). The live gap crawl must recognise that page as a rate-limit signal and stop, not archive it. Otherwise phase 4 fills the archive with error pages exactly as the existing full captures did.
+- **The same page may be in Wayback.** archive.org may have captured `err429.html` content under story URLs too. The import should treat any `id_` body matching the error page's size or digest (1,170 bytes here) as a missing snapshot and fall back to an older timestamp.
+- **Wayback listing size:** `showNumPages` reports 98 CDX pages for the `www.fictionmania.tv/` prefix. A one-row-per-URL `collapse=urlkey` query over the whole prefix timed out (504), so the survey must page and reduce locally, as phase 1 already specifies.
+- **archive.org was also throttling** on 2026-10-30: the availability API answered 429 on the first request of the session.
+
+### Coverage survey (2026-11-01)
+
+All 98 CDX pages were pulled one request at a time, about 10 s apart. Over roughly two sessions this produced about 20 transient 503/504s and no hard 429 block. Rows were then reduced locally.
+
+| Measure | Result |
+| --- | --- |
+| Snapshot rows, whole host | 594,759 |
+| Snapshot rows, story pages | 263,813 (200: 182k, 302: 42k, revisit `-`: 29k, 301: 10k, 404: 465) |
+| Distinct storyIDs seen | 57,851 |
+| storyIDs with a good text view | **57,298** (57,562 counting `details.html`) |
+| Good copies by view | `readtextstory` 50,299 · `details` 42,679 · `readxstory` 32,661 · `readhtmlstory` 9,653 · `readststory` 2,895 |
+| Error/boilerplate pages under story URLs | 86 rows: err429 digests, plus two digests shared by 33–48 storyIDs |
+
+- **Story views.** A story appears under five URL shapes: `/stories/{readtextstory,readststory,readxstory,readhtmlstory,details}.html?storyID=N`. The import plan should pick one text view per story, preferring `readtextstory`, then `readxstory`/`readhtmlstory`, plus `details`. Fetching every view would roughly double the request budget for little gain.
+- **storyIDs are opaque.** They are 13–20 digit numbers, not a sequence, so the site's total story count cannot be inferred from them. The "missing" share needs one count from the live site, such as a listing page that shows a total.
+- **Freshness.** Newest good text copy per story, by year: 2017: 4,973; 2019: 27,669; 2020: 1,903; 2021: 4,577; 2022: 3,033; 2023: 2,623; 2024: 2,181; 2025: 5,325; 2026: 5,008. Wayback has picked up about 2,000–4,600 new stories every year since 2019, so the gap at the newest end should be small. Stories edited after their newest snapshot will import as the older text.
+- **Contamination is low.** The err429 page is in Wayback (5 distinct digests on `/err429.html` itself), but only about 85 story snapshots carry it or other shared boilerplate. Digest matching plus the "digest shared by ≥20 storyIDs" heuristic catches them, and the import falls back to an older timestamp.
+- **Effort estimate.** About 57,300 story fetches at the 10/min default is roughly 4 days from Wayback. The live origin blocks after about 47 requests and stays blocked for about 90 minutes, so the same set would take around 2.5 months. Existing full captures held only about 385 real pages each.
+- **Survey tooling.** The scratch scripts used are a resumable CDX pager and a per-story reducer. They are the prototype for milestone 1. The pager's behaviour (one request at a time, `Retry-After`-aware backoff 60→1800 s, reject HTML bodies, save each page as it arrives) worked unchanged across a session restart.
+
 ## Open questions
 
 1. ~~`id_` body encoding~~: answered by the 2026-10-30 probe (see phase 3). Still worth one more probe on an uncompressed original (an image) and a `br`-encoded one before milestone 2.
 2. ~~Is the target site still online?~~ Yes, and it's the origin that rate-limits. So wayback-first is the primary strategy.
-3. **Archive.org pacing at volume.** Only a few requests have been tried, so the 10/min default is a guess. Milestone 1's survey run against the real site is the first measurement. Raise the default only once a few hundred fetches have run without a 429.
+3. **Archive.org pacing at volume.** The CDX survey (98 requests at ~6/min, 2026-11-01) saw only transient 503/504s, but `id_` snapshot fetches are a different endpoint and remain unmeasured at volume, so the 10/min default is still a guess. Raise the default only once a few hundred fetches have run without a 429.
 4. **Old versions.** Should the import bring only the newest snapshot per URL, or optionally several (e.g. one per year)? The WARC/CDXJ model handles several fine; only the request budget argues against it.
 5. **Authenticated or archive.org-account access.** Logged-in users may get higher limits. Out of scope unless rate limits make the feature unusable.
