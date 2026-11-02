@@ -421,13 +421,20 @@ function OptionsForm({ siteId, options }: { siteId: number; options: WaybackOpti
   }, [options]);
 
   const save = useMutation({
-    mutationFn: () =>
-      endpoints.putWaybackOptions(siteId, {
+    mutationFn: async () => {
+      const page = ratePage.trim() || null;
+      const changed = page !== (options.rate_limit_page ?? null);
+      const data = await endpoints.putWaybackOptions(siteId, {
         url_groups: groups.filter((g) => g.name || g.pattern),
-        rate_limit_page: ratePage.trim() || null,
+        rate_limit_page: page,
         live_items: liveItems.trim() ? Number(liveItems) : null,
-      }),
-    onSuccess: (data) => client.setQueryData(["wayback", siteId], data),
+      });
+      // The rate-limit page is withheld from replay, so a change rebuilds the
+      // replay index now: existing captures stop showing the error page.
+      const rebuilt = changed ? await endpoints.reindex(siteId) : null;
+      return { data, rebuilt };
+    },
+    onSuccess: ({ data }) => client.setQueryData(["wayback", siteId], data),
   });
 
   const update = (index: number, patch: Partial<UrlGroup>) =>
@@ -492,7 +499,7 @@ function OptionsForm({ siteId, options }: { siteId: number; options: WaybackOpti
       <div className="grid gap-3 sm:grid-cols-2">
         <Field
           label="Rate-limit page"
-          hint="A pattern for the error page the site shows instead of content when it is throttling, e.g. /err429\.html. Copies of it in Wayback are skipped."
+          hint="A pattern for the error page the site shows instead of content when it is throttling, e.g. /err429\.html. Wayback copies of it are skipped, crawls stop when they start landing on it, and it is hidden from replay, along with every redirect to it."
         >
           <input
             className="field font-mono text-xs"
@@ -519,7 +526,13 @@ function OptionsForm({ siteId, options }: { siteId: number; options: WaybackOpti
           Save settings
         </button>
         {save.isSuccess && !save.isPending && (
-          <span className="hint">Saved. Run the survey again to apply.</span>
+          <span className="hint">
+            Saved.
+            {save.data?.rebuilt
+              ? ` Replay index rebuilt (${save.data.rebuilt.records.toLocaleString()} records).`
+              : ""}{" "}
+            Run the survey again to apply.
+          </span>
         )}
       </div>
       {save.error && <Alert kind="error">{(save.error as ApiError).message}</Alert>}
