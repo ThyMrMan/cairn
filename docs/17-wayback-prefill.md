@@ -1,6 +1,6 @@
 # 17 — Wayback Pre-fill (design, not built)
 
-Status: **draft for review.** Nothing here is implemented.
+Status: **draft for review.** Nothing here is implemented. The implementation plan is [19](19-wayback-prefill-plan.md).
 
 The goal: when the Internet Archive's Wayback Machine already holds a decent copy of a site, bring that copy into Cairn and fetch only the gap, so a backup does not cost a full crawl. The motivating case is a site whose Wayback copy is good but incomplete, and whose **origin rate-limits hard**. Every request to the origin is expensive, and archive.org is the cheap source. That makes **wayback-first** the primary strategy. live-first is kept for sites where it's the other way round.
 

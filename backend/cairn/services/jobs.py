@@ -33,11 +33,13 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import json
 import os
 import shutil
 import signal
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -668,7 +670,15 @@ class JobSupervisor:
             if job_type == "move":
                 await self._run_move(running)
                 return
-            if job_type in ("export", "verify", "index", "purge", "import", "thumbnail"):
+            if job_type in (
+                "export",
+                "verify",
+                "index",
+                "purge",
+                "import",
+                "thumbnail",
+                "wayback-survey",
+            ):
                 await self._run_maintenance(running, job_type)
                 return
             # Before the capture, never during it: see _refresh_stale_profile.
@@ -1127,15 +1137,21 @@ class JobSupervisor:
                 raise _CancelledJobError
             self._bus.publish(job_id, EV_PROGRESS, {"done": done, "total": total, "url": label})
 
-        runner = {
+        runners: dict[str, Callable[..., dict[str, Any]]] = {
             "export": self._execute_export,
             "verify": self._execute_verify,
             "index": self._execute_reindex,
             "purge": self._execute_retention,
             "import": self._execute_import,
             "thumbnail": self._execute_thumbnails,
-        }[job_type]
-        result = await asyncio.to_thread(runner, job_id, say, step)
+            # Stops on shutdown too: a survey waits in archive.org backoffs
+            # of up to an hour, and a thread cannot be cancelled from outside.
+            "wayback-survey": functools.partial(
+                self._execute_wayback_survey,
+                stopping=lambda: self._stopping or self._cancel_pending(running),
+            ),
+        }
+        result = await asyncio.to_thread(runners[job_type], job_id, say, step)
 
         findings = int(result.get("findings") or 0)
         if job_type == "verify" and findings:
@@ -1150,6 +1166,81 @@ class JobSupervisor:
                 priority="high",
             )
         self._bus.publish(job_id, EV_STATUS, result)
+
+    def _execute_wayback_survey(
+        self, job_id: int, say: Any, step: Any, *, stopping: Any
+    ) -> dict[str, Any]:
+        """List what the Wayback Machine holds of a site (docs/19, stage 1).
+
+        Holds no database session while it talks to archive.org: a survey can
+        take an hour, mostly waiting, and a session held that long would
+        block every writer behind it.
+        """
+        from cairn.net.polite import PoliteError, StopRequestedError
+        from cairn.services import wayback
+        from cairn.wayback import cdx
+        from cairn.wayback import survey as wb_survey
+
+        with self._sessions() as session:
+            job = session.get(Job, job_id)
+            if job is None or job.site_id is None:  # pragma: no cover
+                return {"status": "failed", "error": "the job has no site"}
+            site = session.get(Site, job.site_id)
+            if site is None or site.deleted_at is not None:
+                return self._finish_job(session, job, "failed", "the site was deleted")
+            try:
+                inputs = wayback.survey_inputs(session, self._settings, site)
+            except ValueError as exc:
+                return self._finish_job(session, job, "failed", f"URL groups: {exc}")
+            refresh = bool((job.spec or {}).get("refresh"))
+            agent = wayback.user_agent(session)
+            title = site.title
+
+        say(
+            f"Surveying the Wayback Machine's copy of {title}. "
+            "archive.org is asked slowly, one request at a time."
+        )
+        error: str | None = None
+        report: dict[str, Any] | None = None
+        hooks = {"should_stop": stopping, "on_wait": lambda why, _s: say(why)}
+        with wayback.cdx_client(agent, **hooks) as client:
+            try:
+                report = wb_survey.run(inputs, client, refresh=refresh, say=say, step=step)
+            except StopRequestedError:
+                raise _CancelledJobError from None
+            except (PoliteError, cdx.CdxError, wb_survey.SurveyError, OSError) as exc:
+                error = str(exc)
+
+        with self._sessions() as session:
+            job = session.get(Job, job_id)
+            if job is None:  # pragma: no cover
+                return {"status": "failed", "error": "the job vanished"}
+            if error is not None:
+                say(
+                    f"Survey stopped: {error}. "
+                    "Pages already listed are kept; running it again continues."
+                )
+                return self._finish_job(session, job, "failed", error)
+            assert report is not None
+            selected = report["selected"]
+            estimate = report["estimate"]
+            say(
+                f"Wayback holds {report['urls_with_good_snapshot']:,} in-scope URLs with a "
+                f"usable copy; an import would fetch {selected['total']:,} "
+                f"({selected['pages']:,} pages), about {estimate['hours']} hours at "
+                f"{estimate['rate_per_min']}/min."
+            )
+            return self._finish_job(
+                session,
+                job,
+                "ok",
+                None,
+                progress={
+                    "urls": report["urls_with_good_snapshot"],
+                    "fetches": selected["total"],
+                    "pages": selected["pages"],
+                },
+            )
 
     def _execute_export(self, job_id: int, say: Any, step: Any) -> dict[str, Any]:
         from cairn.services import wacz
@@ -2927,7 +3018,12 @@ def _host_of(url: str) -> str:
 
 # Job types that make requests to somebody else's server. A move copies bytes
 # between two local directories and has no business waiting for a crawl.
-NETWORKED_JOB_TYPES = frozenset({"capture", "discovery"})
+NETWORKED_JOB_TYPES = frozenset({"capture", "discovery", "wayback-survey"})
+
+# Job types whose requests go to one fixed host rather than the site's own.
+# A Wayback survey loads archive.org, not the origin: it must queue behind
+# another site's survey and must not block a crawl of its own site (docs/19).
+FIXED_HOST_JOB_TYPES = {"wayback-survey": "web.archive.org"}
 
 
 def _host_for_job(session: Session, job: Job) -> str | None:
@@ -2942,17 +3038,23 @@ def _host_for_job(session: Session, job: Job) -> str | None:
     """
     if job.type not in NETWORKED_JOB_TYPES or job.site_id is None:
         return None
+    fixed = FIXED_HOST_JOB_TYPES.get(job.type)
+    if fixed is not None:
+        return fixed
     site = session.get(Site, job.site_id)
     return site.primary_host.lower() if site and site.primary_host else None
 
 
 def _busy_hosts(session: Session) -> set[str]:
-    rows = session.execute(
-        select(Site.primary_host)
-        .join(Job, Job.site_id == Site.id)
-        .where(Job.status == "running", Job.type.in_(NETWORKED_JOB_TYPES))
+    """The hosts running jobs are loading, by the same rule as `_host_for_job`.
+
+    Asked per job rather than joined on `Site.primary_host`, so a job that
+    loads a host other than its site's is counted against the right one.
+    """
+    running = session.scalars(
+        select(Job).where(Job.status == "running", Job.type.in_(NETWORKED_JOB_TYPES))
     ).all()
-    return {str(host).lower() for (host,) in rows if host}
+    return {host for job in running if (host := _host_for_job(session, job))}
 
 
 # A CDX line is ~200 bytes; a site with a hundred thousand archived URLs makes

@@ -48,6 +48,7 @@ JOB_TYPES = (
     "purge",
     "feed-poll",
     "import",
+    "wayback-survey",
 )
 # `paused` is a stopped crawl that kept its engine's resume state, so it can be
 # continued rather than restarted. Distinct from `cancelled`, which is the same

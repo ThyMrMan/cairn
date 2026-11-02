@@ -232,6 +232,16 @@ type and everything else is a 404, with `nosniff` and a `sandbox` CSP on top.
 yt-dlp takes the extension from the remote server, so it is precisely the sort
 of attacker-influenced string that must not be allowed to pick its own type.
 
+### Wayback pre-fill
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/api/sites/{id}/wayback` | `{options, rate_per_min, survey, job}`. `survey` is the last coverage report (`<site>/import/wayback/survey.json`) or `null`; `job` is the last survey job |
+| `PUT` | `/api/sites/{id}/wayback/options` | `{url_groups: [{name, pattern, prefer?, keep?}], rate_limit_page?, live_items?}`. A group's pattern must have a `(?P<item>…)` group, plus `(?P<view>…)` when `prefer`/`keep` are set; anything invalid is a `422` that says why. An empty body clears all three |
+| `POST` | `/api/sites/{id}/wayback/survey` | `{refresh?}` → `202 {job_id}`. Lists what archive.org holds for the site's crawlable hosts and reduces it locally. It never contacts the site itself. `409 survey_busy` while one is queued or running. Without `refresh`, CDX pages saved by an earlier run are reused, so a stopped survey continues |
+
+The survey job queues on `web.archive.org`, not on the site's host. Two sites' surveys run one after the other, and a survey never holds up a crawl of its own site. Design: [17](17-wayback-prefill.md); plan: [19](19-wayback-prefill-plan.md).
+
 ---
 
 ## Reading & annotations
