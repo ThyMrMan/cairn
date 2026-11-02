@@ -515,7 +515,7 @@ def write_site_yaml(session: Session, settings: Settings, site: Site) -> None:
 # ── queries ──────────────────────────────────────────────────────────────
 
 
-def visible() -> Select[tuple[Site]]:
+def visible() -> Select[Site]:
     return select(Site).where(Site.deleted_at.is_(None))
 
 

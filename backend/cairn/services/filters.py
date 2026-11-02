@@ -165,7 +165,7 @@ class SiteFilter:
 
     # ── to SQL ───────────────────────────────────────────────────────────
 
-    def apply(self, session: Session, stmt: Select[tuple[Site]]) -> Select[tuple[Site]]:
+    def apply(self, session: Session, stmt: Select[Site]) -> Select[Site]:
         if self.folder_id is not None:
             stmt = stmt.where(Site.folder_id.in_(self._folder_ids(session)))
         if self.tags:
@@ -207,7 +207,7 @@ class SiteFilter:
             )
         return stmt
 
-    def order(self, stmt: Select[tuple[Site]]) -> Select[tuple[Site]]:
+    def order(self, stmt: Select[Site]) -> Select[Site]:
         column = SORT_COLUMNS.get(self.sort.lstrip("-"), Site.updated_at)
         ordered = column.desc() if self.sort.startswith("-") else column.asc()
         # A stable tiebreak, so paging through sites that share a timestamp
@@ -225,7 +225,7 @@ class SiteFilter:
         ).all()
         return [folder.id, *below]
 
-    def _apply_tags(self, stmt: Select[tuple[Site]]) -> Select[tuple[Site]]:
+    def _apply_tags(self, stmt: Select[Site]) -> Select[Site]:
         tagged = select(SiteTag.site_id).join(Tag, Tag.id == SiteTag.tag_id)
         if self.tag_mode == "any":
             return stmt.where(Site.id.in_(tagged.where(Tag.slug.in_(self.tags))))
