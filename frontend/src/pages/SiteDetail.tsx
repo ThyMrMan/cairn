@@ -8,6 +8,7 @@ import { EnginePicker } from "../components/EnginePicker";
 import { Feeds } from "../components/Feeds";
 import { LiveLog } from "../components/LiveLog";
 import { Media } from "../components/Media";
+import { Wayback } from "../components/Wayback";
 import { Replay } from "../components/Replay";
 import { Alert, EmptyState, Spinner } from "../components/ui";
 import {
@@ -26,6 +27,13 @@ export default function SiteDetail() {
   const client = useQueryClient();
   const navigate = useNavigate();
   const [watching, setWatching] = useState<number | null>(null);
+  // The job whose log is on screen. Outlives `watching`: when a crawl ends,
+  // the log and its outcome stay until dismissed instead of vanishing.
+  const [shownLog, setShownLog] = useState<number | null>(null);
+  const follow = (jobId: number) => {
+    setWatching(jobId);
+    setShownLog(jobId);
+  };
   // Which capture the confirmation panel is armed for, or null. A capture can
   // run for hours and its cost is decided by two settings that live on other
   // tabs, so the button asks first and shows them.
@@ -53,12 +61,12 @@ export default function SiteDetail() {
   // Reattach to a capture that is already running — after a page reload, or
   // when it was started from another tab.
   useEffect(() => {
-    if (site.data?.running_job_id) setWatching(site.data.running_job_id);
+    if (site.data?.running_job_id) follow(site.data.running_job_id);
   }, [site.data?.running_job_id]);
 
   const start = useMutation({
     mutationFn: (kind: string) => endpoints.startCapture(siteId, kind),
-    onSuccess: (result) => setWatching(result.job_id),
+    onSuccess: (result) => follow(result.job_id),
   });
 
   // Beside Capture rather than inside the engine picker. The pass is not a
@@ -69,7 +77,7 @@ export default function SiteDetail() {
   const companion = site.data?.companion_pass ?? null;
   const startCompanion = useMutation({
     mutationFn: () => endpoints.startCompanionPass(siteId, companion?.id ?? ""),
-    onSuccess: (result) => setWatching(result.job_id),
+    onSuccess: (result) => follow(result.job_id),
   });
 
   const cancel = useMutation({
@@ -160,14 +168,15 @@ export default function SiteDetail() {
 
       {watching !== null && <CrawlProjection jobId={watching} />}
 
-      {watching !== null && (
+      {shownLog !== null && (
         <LiveLog
-          jobId={watching}
+          jobId={shownLog}
           onFinished={() => {
             setWatching(null);
             void client.invalidateQueries({ queryKey: ["captures", siteId] });
             void client.invalidateQueries({ queryKey: ["site", siteId] });
           }}
+          onDismiss={() => setShownLog(null)}
         />
       )}
 
@@ -210,6 +219,8 @@ export default function SiteDetail() {
       <Changes siteId={siteId} captureCount={data.capture_count} />
 
       <Media siteId={siteId} />
+
+      <Wayback siteId={siteId} />
 
       <Exports siteId={siteId} captures={captures.data ?? []} />
 
@@ -669,6 +680,14 @@ function CaptureRow({ summary }: { summary: Capture }) {
           <div className="flex items-center gap-2">
             <span className="font-mono text-xs">{summary.dir_name}</span>
             <StatusPill status={summary.status} />
+            {summary.kind === "wayback" && (
+              <span
+                className="rounded bg-raised px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-muted"
+                title="Copied from the Internet Archive's Wayback Machine; each page keeps the date it was archived."
+              >
+                Wayback
+              </span>
+            )}
           </div>
           <p className="mt-0.5 text-xs text-muted">
             {ranFromTo(summary.started_at, summary.finished_at)} · {summary.kind}

@@ -8,7 +8,9 @@ without a database, and re-run without touching one.
 
 from __future__ import annotations
 
-from typing import Any
+import gzip
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
 from sqlalchemy import select
@@ -22,12 +24,55 @@ from cairn.discovery.runner import DiscoveryResult
 from cairn.logging import get_logger
 from cairn.services.scope import HostRule, Scope
 
+if TYPE_CHECKING:
+    from cairn.config import Settings
+
 log = get_logger(__name__)
 
 # Sitemaps and feeds are the complete URL list; handing them to the crawler up
 # front is what removes the depth ceiling. Bounded so a 100k-post site does not
 # produce a seed file the engine chokes on.
 MAX_SEEDS = 50_000
+
+# The complete discovered URL list lives beside the site's index rather than
+# in the discovery row: it can run to megabytes, and the row is read by every
+# discovery view. The row keeps a 200-URL sample for previews.
+DISCOVERED_URLS_FILE = "discovered-urls.txt.gz"
+_DISCOVERED_HEADER = "# discovery "
+
+
+def discovered_urls_path(settings: Settings, site: Site) -> Path:
+    from cairn.services import storage
+
+    return storage.site_dir(settings, site.archive_path) / storage.INDEX_DIR / DISCOVERED_URLS_FILE
+
+
+def write_discovered_urls(
+    settings: Settings, site: Site, discovery_id: int, urls: list[str]
+) -> None:
+    """Store every URL a discovery found, tagged with the run it came from.
+
+    Written atomically, so a crash leaves the previous run's list or this
+    one's, never half of one.
+    """
+    from cairn.services import storage
+
+    path = discovered_urls_path(settings, site)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    body = "\n".join([f"{_DISCOVERED_HEADER}{discovery_id}", *urls[:MAX_SEEDS]]) + "\n"
+    storage.write_atomic(path, gzip.compress(body.encode("utf-8")))
+
+
+def read_discovered_urls(settings: Settings, site: Site, discovery_id: int) -> list[str] | None:
+    """The full list for that run, or None if the file is missing or stale."""
+    path = discovered_urls_path(settings, site)
+    try:
+        lines = gzip.decompress(path.read_bytes()).decode("utf-8").splitlines()
+    except (OSError, EOFError, gzip.BadGzipFile, UnicodeDecodeError):
+        return None
+    if not lines or lines[0] != f"{_DISCOVERED_HEADER}{discovery_id}":
+        return None
+    return [line for line in lines[1:] if line]
 
 
 def persist(session: Session, site: Site, result: DiscoveryResult, job_id: int | None) -> Discovery:
@@ -210,6 +255,47 @@ def apply_preset_to_scope(scope: Scope, preset: Preset, hosts_seen: list[str]) -
     return changes
 
 
+def preset_drift(scope: Scope, preset: Preset) -> tuple[list[str], list[str]]:
+    """How a scope has drifted from the preset it is labelled with.
+
+    Returns (rejects the preset recommends that the scope lacks, retired
+    patterns the scope still carries). Presets improve after sites adopt them,
+    and applying one is the only thing that folds the improvement in, so a
+    scope can carry a preset's name and none of its newer rejects. Measured on
+    a real instance: 10 of 22 sites labelled `blogger-lean` lacked its pager
+    reject, and those were the sites whose crawls were 80-97% pagination.
+    """
+    present = set(scope.reject_patterns)
+    missing = [pattern for pattern, _note in preset.reject_patterns if pattern not in present]
+    retired = [pattern for pattern in preset.retired_patterns if pattern in present]
+    return missing, retired
+
+
+def preset_for_site(site: Site) -> Preset | None:
+    return PRESETS.get(str((site.scope_settings or {}).get("preset") or ""))
+
+
+def preset_drift_warning(site: Site, scope: Scope) -> str | None:
+    """A capture warning when the scope has drifted from its preset, else None."""
+    preset = preset_for_site(site)
+    if preset is None:
+        return None
+    missing, retired = preset_drift(scope, preset)
+    if not missing and not retired:
+        return None
+    parts = []
+    if missing:
+        parts.append(f"lacks {len(missing)} reject(s) it recommends ({', '.join(missing[:3])})")
+    if retired:
+        parts.append(f"still carries {len(retired)} it has retired ({', '.join(retired[:3])})")
+    return (
+        f"This site is labelled with the '{preset.name}' preset but its scope "
+        f"{' and '.join(parts)}. That usually means the preset improved after it "
+        "was applied. Re-apply the preset from the domain picker, or run "
+        "`cairn reconcile-presets --apply`, to bring it up to date."
+    )
+
+
 def preset_by_id(preset_id: str) -> Preset | None:
     return PRESETS.get(preset_id)
 
@@ -229,7 +315,7 @@ def companion_pass_for(site: Site) -> CompanionPass | None:
 
 
 def seeds_for_capture(
-    session: Session, site: Site, scope: Scope
+    session: Session, site: Site, scope: Scope, settings: Settings | None = None
 ) -> tuple[list[str], dict[str, int]]:
     """Every URL the crawler should start from, and where each came from.
 
@@ -251,7 +337,13 @@ def seeds_for_capture(
     if latest is None or not latest.summary:
         return seeds, counts
 
-    stored: list[str] = list((latest.summary or {}).get("sample_urls") or [])
+    # The full list when it is on disk; the row's 200-URL sample only for a
+    # discovery that predates the file. Seeding from the sample alone silently
+    # dropped every sitemap URL past the 200th.
+    stored = read_discovered_urls(settings, site, latest.id) if settings is not None else None
+    if stored is None:
+        stored = list((latest.summary or {}).get("sample_urls") or [])
+    seen = set(seeds)
     allowed = {rule.host for rule in scope.hosts if rule.crawl_pages}
     rejects = compiled_rejects(scope)
 
@@ -259,13 +351,14 @@ def seeds_for_capture(
         if len(seeds) >= MAX_SEEDS:
             break
         host = (urlsplit(url).hostname or "").lower()
-        if host not in allowed or url in seeds:
+        if host not in allowed or url in seen:
             continue
         # A seed the scope would reject anyway is a wasted fetch and a
         # confusing error in the URL list.
         if any(pattern.search(url) for pattern in rejects):
             continue
         seeds.append(url)
+        seen.add(url)
         counts["sitemap"] += 1
 
     # Assets the crawler provably cannot reach on its own. wget requests the
@@ -279,9 +372,10 @@ def seeds_for_capture(
         if len(seeds) >= MAX_SEEDS:
             break
         host = (urlsplit(url).hostname or "").lower()
-        if host not in asset_hosts or url in seeds:
+        if host not in asset_hosts or url in seen:
             continue
         seeds.append(url)
+        seen.add(url)
         counts["css_escaped"] += 1
 
     return seeds, counts

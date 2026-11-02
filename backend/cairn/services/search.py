@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import delete, func, select, text
+from sqlalchemy import bindparam, delete, func, select, text
 from sqlalchemy.orm import Session
 
 from cairn.config import Settings
@@ -262,6 +262,16 @@ _MATCH_SQL = (
     f"FROM {FTS_TABLE} WHERE {FTS_TABLE} MATCH :q ORDER BY score LIMIT :cap"
 )
 
+# The same match restricted to some sites *before* the candidate cap. Filtering
+# after it meant a search of one small site for a common word could come back
+# empty: other sites filled the top 2,000 and the filter then dropped them all.
+_MATCH_IN_SITES_SQL = text(
+    f"SELECT {FTS_TABLE}.rowid AS rid, bm25({FTS_TABLE}, 10.0, 1.0) AS score "  # noqa: S608
+    f"FROM {FTS_TABLE} JOIN page_text ON page_text.id = {FTS_TABLE}.rowid "
+    f"WHERE {FTS_TABLE} MATCH :q AND page_text.site_id IN :sites "
+    "ORDER BY score LIMIT :cap"
+).bindparams(bindparam("sites", expanding=True))
+
 
 def _fts_insert(session: Session, rowid: int, title: str | None, body: str) -> None:
     session.execute(
@@ -302,10 +312,20 @@ def search(
     limit = max(1, min(int(limit or DEFAULT_LIMIT), MAX_LIMIT))
     offset = max(0, int(offset or 0))
 
+    allowed = _filtered_site_ids(session, site_id=site_id, folder=folder, tag=tag)
+    if allowed is not None and not allowed:
+        return Results(hits=[], total=0, query=query, terms=parsed.terms)
+
     try:
-        rows = session.execute(
-            text(_MATCH_SQL), {"q": parsed.expression, "cap": CANDIDATE_LIMIT}
-        ).all()
+        if allowed is None:
+            rows = session.execute(
+                text(_MATCH_SQL), {"q": parsed.expression, "cap": CANDIDATE_LIMIT}
+            ).all()
+        else:
+            rows = session.execute(
+                _MATCH_IN_SITES_SQL,
+                {"q": parsed.expression, "sites": sorted(allowed), "cap": CANDIDATE_LIMIT},
+            ).all()
     except Exception as exc:
         raise SearchError(str(exc)) from exc
 
@@ -362,6 +382,30 @@ def search(
         terms=parsed.terms,
         truncated=len(rows) >= CANDIDATE_LIMIT,
     )
+
+
+def _filtered_site_ids(
+    session: Session, *, site_id: int | None, folder: str | None, tag: str | None
+) -> set[int] | None:
+    """The sites a filtered search may return, or None when unfiltered."""
+    if site_id is None and not folder and not tag:
+        return None
+    stmt = select(Site.id).where(Site.deleted_at.is_(None))
+    if site_id is not None:
+        stmt = stmt.where(Site.id == site_id)
+    if folder:
+        from cairn.db.models import Folder
+
+        stmt = stmt.join(Folder, Folder.id == Site.folder_id).where(
+            (Folder.path == folder) | (Folder.path.startswith(f"{folder}/"))
+        )
+    if tag:
+        stmt = stmt.where(
+            Site.id.in_(
+                select(SiteTag.site_id).join(Tag, Tag.id == SiteTag.tag_id).where(Tag.slug == tag)
+            )
+        )
+    return {int(sid) for sid in session.scalars(stmt).all()}
 
 
 def _folder_paths(session: Session, folder_ids: set[int]) -> dict[int, str]:

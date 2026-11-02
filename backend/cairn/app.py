@@ -37,6 +37,7 @@ from cairn.api.routers import search as search_router
 from cairn.api.routers import setup as setup_router
 from cairn.api.routers import sites as sites_router
 from cairn.api.routers import system as system_router
+from cairn.api.routers import wayback as wayback_router
 from cairn.config import Settings, get_settings, load_or_create_secret_key
 from cairn.crypto.sealing import Sealer
 from cairn.db.base import get_engine, sessionmaker_for
@@ -185,6 +186,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(organization_router.router, prefix="/api")
     app.include_router(maintenance_router.router, prefix="/api")
     app.include_router(sites_router.router, prefix="/api")
+    app.include_router(wayback_router.router, prefix="/api")
     app.include_router(captures_router.router, prefix="/api")
     app.include_router(discovery_router.router, prefix="/api")
     app.include_router(feeds_router.router, prefix="/api")

@@ -33,11 +33,13 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import json
 import os
 import shutil
 import signal
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -668,7 +670,15 @@ class JobSupervisor:
             if job_type == "move":
                 await self._run_move(running)
                 return
-            if job_type in ("export", "verify", "index", "purge", "import", "thumbnail"):
+            if job_type in (
+                "export",
+                "verify",
+                "index",
+                "purge",
+                "import",
+                "thumbnail",
+                "wayback-survey",
+            ):
                 await self._run_maintenance(running, job_type)
                 return
             # Before the capture, never during it: see _refresh_stale_profile.
@@ -853,6 +863,16 @@ class JobSupervisor:
 
             if status == "ok":
                 discovery = discovery_service.persist(session, site, result, job_id)
+                try:
+                    discovery_service.write_discovered_urls(
+                        self._settings, site, discovery.id, result.all_urls
+                    )
+                except (OSError, StoragePathError) as exc:
+                    # Not fatal: captures fall back to the stored sample.
+                    log.warning(
+                        "could not store discovered URLs",
+                        extra={"site": site.slug, "error": str(exc)},
+                    )
                 discovery_service.record_feeds(session, site, result)
                 # Only overwrite the scope while it is still the default one.
                 # A user who has already picked domains does not want a re-run
@@ -1117,15 +1137,21 @@ class JobSupervisor:
                 raise _CancelledJobError
             self._bus.publish(job_id, EV_PROGRESS, {"done": done, "total": total, "url": label})
 
-        runner = {
+        runners: dict[str, Callable[..., dict[str, Any]]] = {
             "export": self._execute_export,
             "verify": self._execute_verify,
             "index": self._execute_reindex,
             "purge": self._execute_retention,
             "import": self._execute_import,
             "thumbnail": self._execute_thumbnails,
-        }[job_type]
-        result = await asyncio.to_thread(runner, job_id, say, step)
+            # Stops on shutdown too: a survey waits in archive.org backoffs
+            # of up to an hour, and a thread cannot be cancelled from outside.
+            "wayback-survey": functools.partial(
+                self._execute_wayback_survey,
+                stopping=lambda: self._stopping or self._cancel_pending(running),
+            ),
+        }
+        result = await asyncio.to_thread(runners[job_type], job_id, say, step)
 
         findings = int(result.get("findings") or 0)
         if job_type == "verify" and findings:
@@ -1140,6 +1166,81 @@ class JobSupervisor:
                 priority="high",
             )
         self._bus.publish(job_id, EV_STATUS, result)
+
+    def _execute_wayback_survey(
+        self, job_id: int, say: Any, step: Any, *, stopping: Any
+    ) -> dict[str, Any]:
+        """List what the Wayback Machine holds of a site (docs/19, stage 1).
+
+        Holds no database session while it talks to archive.org: a survey can
+        take an hour, mostly waiting, and a session held that long would
+        block every writer behind it.
+        """
+        from cairn.net.polite import PoliteError, StopRequestedError
+        from cairn.services import wayback
+        from cairn.wayback import cdx
+        from cairn.wayback import survey as wb_survey
+
+        with self._sessions() as session:
+            job = session.get(Job, job_id)
+            if job is None or job.site_id is None:  # pragma: no cover
+                return {"status": "failed", "error": "the job has no site"}
+            site = session.get(Site, job.site_id)
+            if site is None or site.deleted_at is not None:
+                return self._finish_job(session, job, "failed", "the site was deleted")
+            try:
+                inputs = wayback.survey_inputs(session, self._settings, site)
+            except ValueError as exc:
+                return self._finish_job(session, job, "failed", f"URL groups: {exc}")
+            refresh = bool((job.spec or {}).get("refresh"))
+            agent = wayback.user_agent(session)
+            title = site.title
+
+        say(
+            f"Surveying the Wayback Machine's copy of {title}. "
+            "archive.org is asked slowly, one request at a time."
+        )
+        error: str | None = None
+        report: dict[str, Any] | None = None
+        hooks = {"should_stop": stopping, "on_wait": lambda why, _s: say(why)}
+        with wayback.cdx_client(agent, **hooks) as client:
+            try:
+                report = wb_survey.run(inputs, client, refresh=refresh, say=say, step=step)
+            except StopRequestedError:
+                raise _CancelledJobError from None
+            except (PoliteError, cdx.CdxError, wb_survey.SurveyError, OSError) as exc:
+                error = str(exc)
+
+        with self._sessions() as session:
+            job = session.get(Job, job_id)
+            if job is None:  # pragma: no cover
+                return {"status": "failed", "error": "the job vanished"}
+            if error is not None:
+                say(
+                    f"Survey stopped: {error}. "
+                    "Pages already listed are kept; running it again continues."
+                )
+                return self._finish_job(session, job, "failed", error)
+            assert report is not None
+            selected = report["selected"]
+            estimate = report["estimate"]
+            say(
+                f"Wayback holds {report['urls_with_good_snapshot']:,} in-scope URLs with a "
+                f"usable copy; an import would fetch {selected['total']:,} "
+                f"({selected['pages']:,} pages), about {estimate['hours']} hours at "
+                f"{estimate['rate_per_min']}/min."
+            )
+            return self._finish_job(
+                session,
+                job,
+                "ok",
+                None,
+                progress={
+                    "urls": report["urls_with_good_snapshot"],
+                    "fetches": selected["total"],
+                    "pages": selected["pages"],
+                },
+            )
 
     def _execute_export(self, job_id: int, say: Any, step: Any) -> dict[str, Any]:
         from cairn.services import wacz
@@ -1516,6 +1617,19 @@ class JobSupervisor:
                 # fetching them again would undo the saving this pass exists for.
                 config["page_requisites"] = False
                 scope = _companion_scope(scope, companion)
+            elif kind == "wayback":
+                # Not the site's crawler: a copy from archive.org of what the
+                # survey selected (docs/19, stage 2).
+                from cairn.services import wayback as wayback_service
+
+                engine = self._registry.get(wayback_service.ENGINE_ID)
+                config = {
+                    **engine.defaults(),
+                    **wayback_service.engine_config(session, self._settings, site),
+                }
+                # A copy is one request per URL; the site's page cap counts
+                # pages crawled from the site and would cut an import short.
+                scope.max_pages = None
             else:
                 engine = self._registry.get(site.engine_id)
                 config = engine.validate_config(dict(site.engine_config or {}))
@@ -1536,7 +1650,7 @@ class JobSupervisor:
                 scope.max_depth = 0
 
             warnings: list[str] = []
-            if sites.scope_is_unindexed(session, site):
+            if kind != "wayback" and sites.scope_is_unindexed(session, site):
                 warnings.append(
                     "This site has never been indexed, so the capture ran with the "
                     "default scope: the seed host and nothing else. Everything the "
@@ -1544,12 +1658,19 @@ class JobSupervisor:
                     "and JS — was out of scope and is not in this archive. Press "
                     "Index on the site, check the domain list, and capture again."
                 )
+            if companion is None and kind != "wayback":
+                from cairn.services import discovery_service
+
+                drift = discovery_service.preset_drift_warning(site, scope)
+                if drift:
+                    warnings.append(drift)
             # One source of truth at the boundary: the site's politeness wins
             # over the engine defaults, and the engine reads only `config`.
-            for key in ("wait_s", "random_wait", "rate_limit"):
-                if key in scope.politeness:
-                    config[key] = scope.politeness[key]
-            config["keep_mirror"] = site.keep_mirror
+            if kind != "wayback":
+                for key in ("wait_s", "random_wait", "rate_limit"):
+                    if key in scope.politeness:
+                        config[key] = scope.politeness[key]
+                config["keep_mirror"] = site.keep_mirror
 
             started = utcnow()
 
@@ -1560,12 +1681,20 @@ class JobSupervisor:
             # interrupted crawl need no reconciling — which is what makes
             # continuing into the same capture the simple option rather than
             # the clever one.
+            resumed_from: dict[str, Any] | None = None
             if resuming is not None:
                 capture = resuming
                 dir_name = capture.dir_name
+                resumed_from = {
+                    "warc_files": list(capture.warc_files or []),
+                    "url_count": capture.url_count or 0,
+                    "error_count": capture.error_count or 0,
+                }
                 capture.job_id = job.id
                 capture.status = "running"
                 capture.finished_at = None
+                if isinstance(capture.request, dict) and "resume_at" in capture.request:
+                    capture.request = {k: v for k, v in capture.request.items() if k != "resume_at"}
                 if capture.request is None and asked.get("kind") != "resume":
                     # Paused before captures kept their request, and resumed
                     # while its old job still said what it was. Kept now, so a
@@ -1600,7 +1729,17 @@ class JobSupervisor:
             from cairn.services import discovery_service
 
             extra = list(asked.get("extra_seeds") or [])
-            if companion is not None:
+            if kind == "wayback":
+                from cairn.services import wayback as wayback_service
+
+                # The selection is copied into the capture once and kept, so a
+                # resume continues the list it started with even if the site
+                # has been surveyed again since.
+                selection = wayback_service.stage_selection(self._settings, site, output_dir)
+                config["selection_file"] = str(selection.path)
+                seeds = [site.seed_url]
+                seed_source = {"wayback": selection.count}
+            elif companion is not None:
                 # The seed and nothing else. A companion pass walks to its
                 # targets by following links, and handing it the discovered URL
                 # set would make it fetch every post again — with the wrong
@@ -1615,14 +1754,18 @@ class JobSupervisor:
                 seeds = list(dict.fromkeys(extra))
                 seed_source = {"feed": len(seeds)}
             else:
-                discovered, seed_source = discovery_service.seeds_for_capture(session, site, scope)
+                discovered, seed_source = discovery_service.seeds_for_capture(
+                    session, site, scope, self._settings
+                )
                 seeds = list(dict.fromkeys([*discovered, *extra]))
                 seed_source["manual"] += len(extra)
             seed_path = temp_dir / SEED_FILE
             storage.write_atomic(seed_path, "\n".join(seeds) + "\n")
 
             auth: dict[str, Any] = {"user_agent": config.get("user_agent"), "headers": {}}
-            if site.profile_id is not None:
+            # Never for an import: the site's cookies are for the site, and
+            # every request of a Wayback import goes to archive.org.
+            if site.profile_id is not None and kind != "wayback":
                 material = profiles.materialize(
                     session,
                     self._sealer,
@@ -1690,6 +1833,7 @@ class JobSupervisor:
                 output_dir=output_dir,
                 temp_dir=temp_dir,
                 max_pages=scope.max_pages,
+                resumed_from=resumed_from,
                 seeds=seeds,
                 seed_source=seed_source,
                 warnings=warnings,
@@ -1969,9 +2113,13 @@ class JobSupervisor:
                 notify.INTERSTITIAL_DETECTED,
                 title=f"Capture incomplete: {prepared.site_title}",
                 body=(
-                    f"{collector.url_count} URLs, {collector.error_count} errors. "
-                    "Check the capture's gap report — a content warning or an expired "
-                    "access profile is the usual cause."
+                    (collector.error or "")[:500]
+                    if collector.stats.get("abnormal_exit")
+                    else (
+                        f"{collector.url_count} URLs, {collector.error_count} errors. "
+                        "Check the capture's gap report — a content warning or an expired "
+                        "access profile is the usual cause."
+                    )
                 ),
             )
         elif status == "ok" and prepared.item_ids:
@@ -2022,7 +2170,11 @@ class JobSupervisor:
             bool(collector.stats.get("resumable"))
             and (prepared.output_dir / RESUME_STATE_FILE).is_file()
         )
-        if paused and resumable and status in ("ok", "partial"):
+        # An engine may pause itself — the Wayback importer does when
+        # archive.org blocks it or its daily budget is spent — and say when to
+        # come back. The scheduler resumes it then (`_due_resumes`).
+        self_paused = bool(collector.stats.get("self_paused"))
+        if (paused or self_paused) and resumable and status in ("ok", "partial"):
             status = "paused"
         finished = utcnow()
 
@@ -2035,10 +2187,19 @@ class JobSupervisor:
                 return
             capture.status = status
             capture.finished_at = finished
-            capture.url_count = collector.url_count
-            capture.error_count = collector.error_count
+            if status == "paused" and self_paused:
+                wait_s = int(collector.stats.get("resume_after_s") or 3600)
+                capture.request = {
+                    **(capture.request or {}),
+                    "resume_at": (finished + timedelta(seconds=wait_s)).isoformat(),
+                }
+            earlier = prepared.resumed_from or {}
+            capture.url_count = int(earlier.get("url_count") or 0) + collector.url_count
+            capture.error_count = int(earlier.get("error_count") or 0) + collector.error_count
             capture.bytes_written = collector.bytes_written
-            capture.warc_files = collector.artifacts
+            capture.warc_files = merge_artifacts(
+                earlier.get("warc_files") or [], collector.artifacts
+            )
             job.progress = {
                 "done": collector.url_count,
                 "bytes": collector.bytes_written,
@@ -2074,6 +2235,10 @@ class JobSupervisor:
                 "bytes": collector.bytes_written,
                 "status": status,
             }
+            if status == "partial" and collector.stats.get("abnormal_exit"):
+                # The engine stopped, not just some URLs: a full disk reads as
+                # an ordinary partial crawl unless it is said out loud.
+                job.error = (collector.error or "the engine stopped early")[:2000]
             if status == "failed":
                 # Both halves, not whichever came first. The engine's summary
                 # ("wget exited 1") says what happened; the tool's own stderr
@@ -2090,7 +2255,14 @@ class JobSupervisor:
                 site.last_capture_at = finished
 
             if prepared.item_ids:
-                _settle_feed_items(session, prepared.item_ids, capture, status, prepared.feed_id)
+                _settle_feed_items(
+                    session,
+                    prepared.item_ids,
+                    capture,
+                    status,
+                    prepared.feed_id,
+                    blocked=collector.stats.get("blocked"),
+                )
 
         self._write(close, what=f"close job {prepared.job_id}")
 
@@ -2197,6 +2369,10 @@ class _Prepared:
     temp_dir: Path
     max_pages: int | None
     seeds: list[str] = field(default_factory=list)
+    # What a resumed capture already held before this run: its WARCs and
+    # counts. The engine reports only this run's, and recording those alone
+    # dropped the first half from checksums, manifest and integrity (audit #13).
+    resumed_from: dict[str, Any] | None = None
     seed_source: dict[str, int] = field(default_factory=dict)
     site_title: str = ""
     # The engine's `runtime` block, which decides whether the work happens in
@@ -2758,7 +2934,13 @@ def _browser_profile_expiry_warnings(profile: Any, hosts: list[str]) -> list[str
 
 
 def _settle_feed_items(
-    session: Session, item_ids: list[int], capture: Capture, status: str, feed_id: int | None
+    session: Session,
+    item_ids: list[int],
+    capture: Capture,
+    status: str,
+    feed_id: int | None,
+    *,
+    blocked: str | None = None,
 ) -> None:
     """Mark a feed poll's items with what the capture actually did.
 
@@ -2799,6 +2981,12 @@ def _settle_feed_items(
         feed.next_capture_at = None
         return
     feed.capture_failures += 1
+    if blocked == "content_warning":
+        # Retrying cannot help until the access profile changes, and saving a
+        # new one releases the hold (`profiles.release_held_captures`). Until
+        # then, the longest wait rather than the doubling from ten minutes,
+        # which on a live instance meant 15 identical failures in 8 days.
+        feed.capture_failures = max(feed.capture_failures, feed_service.MAX_BACKOFF_STEPS)
     feed.next_capture_at = feed_service.next_capture_due(feed)
 
 
@@ -2882,7 +3070,24 @@ def _host_of(url: str) -> str:
 
 # Job types that make requests to somebody else's server. A move copies bytes
 # between two local directories and has no business waiting for a crawl.
-NETWORKED_JOB_TYPES = frozenset({"capture", "discovery"})
+NETWORKED_JOB_TYPES = frozenset({"capture", "discovery", "wayback-survey"})
+
+# Job types whose requests go to one fixed host rather than the site's own.
+# A Wayback survey loads archive.org, not the origin: it must queue behind
+# another site's survey and must not block a crawl of its own site (docs/19).
+FIXED_HOST_JOB_TYPES = {"wayback-survey": "web.archive.org"}
+# The same for captures, by kind: a Wayback import is a capture whose every
+# request goes to archive.org (docs/19, stage 2).
+FIXED_HOST_CAPTURE_KINDS = {"wayback": "web.archive.org"}
+
+
+def capture_kind_of(job: Job) -> str:
+    """What a capture job will capture, seeing through a resume."""
+    spec = job.spec or {}
+    kind = str(spec.get("kind") or "full")
+    if kind == "resume" and isinstance(spec.get("request"), dict):
+        kind = str(spec["request"].get("kind") or kind)
+    return kind
 
 
 def _host_for_job(session: Session, job: Job) -> str | None:
@@ -2897,17 +3102,25 @@ def _host_for_job(session: Session, job: Job) -> str | None:
     """
     if job.type not in NETWORKED_JOB_TYPES or job.site_id is None:
         return None
+    fixed = FIXED_HOST_JOB_TYPES.get(job.type)
+    if fixed is None and job.type == "capture":
+        fixed = FIXED_HOST_CAPTURE_KINDS.get(capture_kind_of(job))
+    if fixed is not None:
+        return fixed
     site = session.get(Site, job.site_id)
     return site.primary_host.lower() if site and site.primary_host else None
 
 
 def _busy_hosts(session: Session) -> set[str]:
-    rows = session.execute(
-        select(Site.primary_host)
-        .join(Job, Job.site_id == Site.id)
-        .where(Job.status == "running", Job.type.in_(NETWORKED_JOB_TYPES))
+    """The hosts running jobs are loading, by the same rule as `_host_for_job`.
+
+    Asked per job rather than joined on `Site.primary_host`, so a job that
+    loads a host other than its site's is counted against the right one.
+    """
+    running = session.scalars(
+        select(Job).where(Job.status == "running", Job.type.in_(NETWORKED_JOB_TYPES))
     ).all()
-    return {str(host).lower() for (host,) in rows if host}
+    return {host for job in running if (host := _host_for_job(session, job))}
 
 
 # A CDX line is ~200 bytes; a site with a hundred thousand archived URLs makes
@@ -2971,6 +3184,20 @@ def _paused_capture(session: Session, job: Job, site: Site) -> Capture | None:
         )
         return None
     return capture
+
+
+def merge_artifacts(
+    earlier: list[dict[str, Any]], current: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """A resumed capture's artifacts: everything from before, updated by now.
+
+    Keyed by name, so a file the engine re-reports (wget lists every WARC in
+    the directory) is counted once with its current size.
+    """
+    merged = {str(a.get("name")): a for a in earlier if a.get("name")}
+    for artifact in current:
+        merged[str(artifact.get("name"))] = artifact
+    return list(merged.values())
 
 
 def capture_request(spec: dict[str, Any]) -> dict[str, Any]:

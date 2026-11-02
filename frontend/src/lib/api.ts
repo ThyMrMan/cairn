@@ -961,6 +961,71 @@ export type ScopePreview = {
 
 export type JobAccepted = { job_id: number };
 
+// ── Wayback pre-fill (docs/19) ──────────────────────────────────────────
+
+export type UrlGroup = { name: string; pattern: string; prefer: string[]; keep: string[] };
+
+export type WaybackOptions = {
+  url_groups: UrlGroup[];
+  rate_limit_page: string | null;
+  live_items: number | null;
+};
+
+export type WaybackGroupStats = {
+  name: string;
+  items: number;
+  urls: number;
+  fetches: number;
+  skipped_variants: number;
+  views: Record<string, number>;
+};
+
+export type WaybackSurvey = {
+  version: number;
+  generated_at?: string;
+  hosts?: string[];
+  cdx_pages?: Record<string, number>;
+  rows: number;
+  status?: Record<string, number>;
+  out_of_scope?: Record<string, number>;
+  urls_in_scope?: number;
+  urls_with_good_snapshot?: number;
+  urls_only_error_pages?: number;
+  boilerplate?: { rate_limit_digests: string[]; shared_digests: Record<string, number> };
+  groups?: WaybackGroupStats[];
+  selected?: { total: number; pages: number; assets: number };
+  freshness?: {
+    pages: Record<string, number>;
+    assets: Record<string, number>;
+    newest: string | null;
+    oldest: string | null;
+  };
+  sections?: { section: string; kind: string; count: number }[];
+  estimate?: { rate_per_min: number; fetches: number; hours: number };
+  discovered?: {
+    discovered: number;
+    in_wayback: number;
+    missing_from_wayback: number;
+    wayback_only_pages: number;
+  };
+};
+
+export type WaybackState = {
+  options: WaybackOptions;
+  rate_per_min: number;
+  survey: WaybackSurvey | null;
+  job: { id: number; status: string; error: string | null; progress: unknown } | null;
+  import: {
+    capture_id: number;
+    status: string;
+    url_count: number | null;
+    error_count: number | null;
+    bytes: number | null;
+    resume_at: string | null;
+    job_id: number | null;
+  } | null;
+};
+
 // ── search, exports, integrity ───────────────────────────────────────────
 
 export type SearchHit = {
@@ -1411,6 +1476,15 @@ export const endpoints = {
   /** Playable straight from a <video>/<audio> element; it answers Range. */
   mediaUrl: (siteId: number, captureDir: string, filename: string) =>
     `/api/sites/${siteId}/media/${encodeURIComponent(captureDir)}/${encodeURIComponent(filename)}`,
+
+  // ── Wayback pre-fill ───────────────────────────────────────────────────
+  wayback: (siteId: number) => api.get<WaybackState>(`/sites/${siteId}/wayback`),
+  putWaybackOptions: (siteId: number, body: WaybackOptions) =>
+    api.put<WaybackState>(`/sites/${siteId}/wayback/options`, body),
+  startWaybackSurvey: (siteId: number, refresh = false) =>
+    api.post<JobAccepted>(`/sites/${siteId}/wayback/survey`, { refresh }),
+  startWaybackImport: (siteId: number) =>
+    api.post<JobAccepted>(`/sites/${siteId}/wayback/import`),
 
   // ── importing ──────────────────────────────────────────────────────────
   metricsSettings: () =>

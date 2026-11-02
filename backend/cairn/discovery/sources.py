@@ -194,6 +194,14 @@ async def collect_sitemaps(fetcher: Fetcher, roots: list[str]) -> UrlSource:
         if urls and _looks_paginated(url):
             queue += await _blogger_sitemap_pages(fetcher, url, source, seen)
 
+    # A walk cut short by a cap has not read the whole site. Recorded as an
+    # error so nothing treats the partial list as complete — a sitemap watcher
+    # would otherwise report every unread URL as gone.
+    if queue and (len(source.documents) >= MAX_SITEMAP_DOCS or len(source.urls) >= MAX_URLS):
+        source.errors.append(
+            f"sitemap walk stopped at its limit ({len(source.documents)} documents, "
+            f"{len(source.urls)} URLs); the URL list is incomplete"
+        )
     source.urls = _dedupe(source.urls)
     return source
 
@@ -223,10 +231,16 @@ async def _blogger_sitemap_pages(
             break
         result = await fetcher.get(candidate)
         if not result.ok:
+            # 404/410 is how some servers end pagination. Anything else — a
+            # 429, a 5xx, a timeout — means pages were left unread, and the
+            # walk must say so rather than pass for the complete list.
+            if result.error is not None or result.status not in (404, 410):
+                source.errors.append(f"{candidate}: {result.error or result.status}")
             break
         try:
             urls, _children = parse_sitemap(result.body)
         except ValueError:
+            # An HTML page past the end, from a server that never 404s.
             break
         if not urls:
             break
@@ -243,6 +257,10 @@ async def _blogger_sitemap_pages(
             if lastmod:
                 source.lastmod[loc] = lastmod
         if len(source.urls) >= MAX_URLS:
+            source.errors.append(
+                f"{base}: pagination stopped at the {MAX_URLS}-URL limit; "
+                "the URL list is incomplete"
+            )
             break
     return found
 

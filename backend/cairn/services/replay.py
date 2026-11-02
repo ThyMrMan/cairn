@@ -141,6 +141,9 @@ class IndexResult:
     read: int = 0
     #: Why the index was rebuilt from scratch; None when it was updated.
     rebuilt: str | None = None
+    #: WARCs that could not be read, with why. Left out of the index and not
+    #: retried until the file changes.
+    failed: dict[str, str] = dataclasses.field(default_factory=dict)
 
 
 def collection_name(site_id: int) -> str:
@@ -289,9 +292,9 @@ def _rebuild(
         # Before reading, so a WARC still growing is recorded smaller than it
         # ends up, and the next update reads it again.
         size, mtime_ns = _stat(warc)
-        kept, withheld = _index_warc(site_root, warc, compiled)
+        kept, withheld, error = _index_warc_safely(site_root, warc, compiled)
         lines.extend(kept)
-        files[_relative(site_root, warc)] = _Warc(size, mtime_ns, len(kept), withheld)
+        files[_relative(site_root, warc)] = _Warc(size, mtime_ns, len(kept), withheld, error)
 
     # A CDXJ line is `<surt> <timestamp> <json>`, and the timestamp is a
     # fixed-width 14 digits, so ordinary string sort is SURT-then-time order —
@@ -332,9 +335,9 @@ def _update(
     compiled = _compile(patterns)
     fresh: list[str] = []
     for name in sorted(new | changed):
-        kept, withheld = _index_warc(site_root, on_disk[name], compiled)
+        kept, withheld, error = _index_warc_safely(site_root, on_disk[name], compiled)
         fresh.extend(kept)
-        files[name] = _Warc(*seen[name], records=len(kept), withheld=withheld)
+        files[name] = _Warc(*seen[name], records=len(kept), withheld=withheld, error=error)
     fresh.sort()
 
     # Both inputs are in plain string order, so a merge of the two is the
@@ -356,6 +359,7 @@ def _result(
         withheld=sum(w.withheld for w in files.values()),
         read=read,
         rebuilt=rebuilt,
+        failed={name: w.error for name, w in files.items() if w.error},
     )
 
 
@@ -373,6 +377,27 @@ def _index_warc(
     if not compiled:
         return lines, 0
     return _drop_matching(lines, compiled)
+
+
+def _index_warc_safely(
+    site_root: Path, warc: Path, compiled: list[re.Pattern[str]]
+) -> tuple[list[str], int, str | None]:
+    """`_index_warc`, with one unreadable WARC kept from sinking the rest.
+
+    A crawl killed mid-write leaves a truncated `.warc.gz`. Letting that raise
+    aborted the whole update before its state was written, so every later
+    update met the same file and failed the same way, and no new capture of
+    the site ever became replayable. The bad file is now recorded with its
+    error and indexed as empty; it is read again only when it changes.
+    """
+    try:
+        kept, withheld = _index_warc(site_root, warc, compiled)
+    except ReplayError as exc:
+        log.warning(
+            "left an unreadable WARC out of the index", extra={"warc": str(warc), "error": str(exc)}
+        )
+        return [], 0, str(exc)
+    return kept, withheld, None
 
 
 def _lines_except(current: BinaryIO, files: set[str]) -> Iterator[str]:
@@ -405,6 +430,8 @@ class _Warc:
     mtime_ns: int
     records: int
     withheld: int
+    #: Why this WARC could not be indexed; None when it was.
+    error: str | None = None
 
 
 _EXCLUSIVE: dict[str, threading.Lock] = {}

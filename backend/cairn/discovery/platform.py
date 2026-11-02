@@ -322,6 +322,21 @@ BLOGGER_PRESET = Preset(
             "archive pagination repeated once per label, which is where it "
             "multiplies; the blog's own Older-posts trail is left alone",
         ),
+        # The trail's *variants*, which are where its cost actually is. Blogger
+        # links each pager page again with `start=`, `by-date=` and
+        # `reverse-paginate=` added, and each of those links to more. Measured
+        # on a live instance over six weeks: 1.15 M of 1.76 M fetched URLs
+        # (65%) were pager pages, and on the seven crawls that hit the 48 h
+        # cap the plain trail was 19-356 pages while the variants were
+        # 69k-115k, so those crawls ran out of time before the posts. The
+        # plain `updated-max=&max-results=` link carries none of these
+        # parameters, so Older posts still works in replay. Newer posts
+        # (`reverse-paginate`) does not; it only walks back up the same trail.
+        (
+            r"/search(?:/label/[^?]*)?\?(?:[^#]*&)?(?:reverse-paginate|by-date|start)=",
+            "re-sorted and re-offset copies of the Older-posts pages: about 90% "
+            "of a long Blogger crawl, measured. The trail itself is kept",
+        ),
         (r"\?action=backlinks", "backlink stubs"),
         (
             r"^https?://www\.blogger\.com/dyn-css/",
@@ -368,6 +383,17 @@ BLOGGER_PRESET = Preset(
             "a page navigation, which block rules exempt — but it starves the "
             "gate of its own sub-resources, measured at roughly 500 KB down to "
             "80 KB each, and keeps it out of replay's index",
+        ),
+        (
+            r"^https?://www\.blogger\.com/share-post\.g",
+            "the share-to-social buttons, one URL per post per network. Measured "
+            "at 36% of one capture and 55-60% of each feed capture on another, "
+            "and about a quarter of them answered 400 anyway",
+        ),
+        (
+            r"[?&]xssi_token=",
+            "widget data calls made with a per-page token; a new URL every load "
+            "and nothing a replayed page can use",
         ),
         (
             r"/feeds/posts/default\?[^#]*callback=",

@@ -177,6 +177,20 @@ def _filter_from(request: Request) -> SiteFilter:
     return SiteFilter.from_params(raw)
 
 
+def _require_site_engine(registry: Any, engine_id: str) -> None:
+    """An engine a site can be crawled with — not the Wayback importer."""
+    try:
+        engine = registry.get(engine_id)
+    except EngineError as exc:
+        raise ApiError("unknown_engine", str(exc), status_code=400) from exc
+    if engine.capabilities.get("site_engine") is False:
+        raise ApiError(
+            "unknown_engine",
+            f"{engine.name} is not a crawler; it is run from the site's Wayback panel.",
+            status_code=400,
+        )
+
+
 @router.post("/sites", response_model=SiteDetail, status_code=status.HTTP_201_CREATED)
 def create_site(
     body: SiteCreate,
@@ -186,10 +200,7 @@ def create_site(
     ip: ClientIp,
     registry: Annotated[Any, Depends(_registry)],
 ) -> SiteDetail:
-    try:
-        registry.get(body.engine_id)
-    except EngineError as exc:
-        raise ApiError("unknown_engine", str(exc), status_code=400) from exc
+    _require_site_engine(registry, body.engine_id)
     try:
         site = site_service.create_site(
             db,
@@ -294,10 +305,7 @@ def update_site(
     site = _require_site(db, site_id)
 
     if body.engine_id is not None:
-        try:
-            registry.get(body.engine_id)
-        except EngineError as exc:
-            raise ApiError("unknown_engine", str(exc), status_code=400) from exc
+        _require_site_engine(registry, body.engine_id)
         site.engine_id = body.engine_id
 
     if body.engine_config is not None:

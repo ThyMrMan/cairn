@@ -216,6 +216,13 @@ def step_cdxj_index(ctx: Context) -> None:
             "records anyway, like Blogger's content-warning iframe. Clear the pattern and "
             "rebuild the index to get them back."
         )
+    if result.failed:
+        names = ", ".join(sorted(result.failed)[:3])
+        ctx.warnings.append(
+            f"{len(result.failed)} WARC file(s) could not be read and are left out of replay "
+            f"({names}). Usually a crawl that was killed mid-write. The rest of the site "
+            "replays normally; run the integrity check to see the damage."
+        )
     try:
         replay.link_collection(ctx.settings, ctx.site.id, ctx.site.archive_path)
     except replay.ReplayError as exc:

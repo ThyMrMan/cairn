@@ -18,9 +18,12 @@ const MAX_LINES = 2000;
 export function LiveLog({
   jobId,
   onFinished,
+  onDismiss,
 }: {
   jobId: number;
   onFinished?: (status: string) => void;
+  /** Offered once the job has finished, so its outcome stays until read. */
+  onDismiss?: () => void;
 }) {
   const [lines, setLines] = useState<Line[]>([]);
   // `unit` because the engines do not count the same thing: browsertrix has
@@ -130,7 +133,14 @@ export function LiveLog({
               <span className="font-medium">Capturing…</span>
             </>
           ) : (
-            <span className="font-medium">Finished — {status}</span>
+            <span
+              role="status"
+              className={`font-medium ${
+                status === "ok" ? "text-fg" : status === "partial" || status === "paused" ? "text-warn" : "text-danger"
+              }`}
+            >
+              Finished — {status}
+            </span>
           )}
         </div>
         {progress && (
@@ -140,6 +150,11 @@ export function LiveLog({
               <span className="ml-2 text-warn">{progress.failed} failed</span>
             ) : null}
           </span>
+        )}
+        {status !== "running" && onDismiss && (
+          <button className="btn-ghost text-xs" onClick={onDismiss}>
+            Dismiss
+          </button>
         )}
       </div>
 
