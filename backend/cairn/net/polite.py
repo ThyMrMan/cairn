@@ -96,18 +96,25 @@ class Response:
     history: list[str] = field(default_factory=list)
 
 
-# Shared across clients: (host, clock) -> [lock, time the next request may go].
-# Keyed by clock too so a test's fake clock never inherits a real deadline.
-_HOSTS: dict[tuple[str, object], list[object]] = {}
+@dataclass(slots=True)
+class _Slot:
+    """One host's turn-taking: a lock, and when the next request may go."""
+
+    lock: threading.Lock = field(default_factory=threading.Lock)
+    ready_at: float = float("-inf")
+
+
+# Shared across clients, keyed by (host, clock) so a test's fake clock never
+# inherits a real deadline.
+_HOSTS: dict[tuple[str, object], _Slot] = {}
 _HOSTS_LOCK = threading.Lock()
 
 
-def _host_slot(host: str, clock: object) -> list[object]:
+def _host_slot(host: str, clock: object) -> _Slot:
     with _HOSTS_LOCK:
         slot = _HOSTS.get((host, clock))
         if slot is None:
-            slot = [threading.Lock(), float("-inf")]
-            _HOSTS[(host, clock)] = slot
+            slot = _HOSTS[(host, clock)] = _Slot()
         return slot
 
 
@@ -196,25 +203,21 @@ class PoliteClient:
     def _take_turn(self, host: str) -> None:
         """Wait for this host's gap, then claim the next slot."""
         slot = _host_slot(host, self._clock)
-        lock = slot[0]
-        assert isinstance(lock, threading.Lock)
         while True:
-            with lock:
-                ready_at = float(slot[1])  # type: ignore[arg-type]
+            with slot.lock:
+                ready_at = slot.ready_at
                 now = self._clock()
                 if now >= ready_at:
                     gap = self.pacing.min_gap_s + random.uniform(0, self.pacing.jitter_s)  # noqa: S311 — jitter, not security
-                    slot[1] = now + gap
+                    slot.ready_at = now + gap
                     return
             self.wait(ready_at - now)
 
     def _push_back(self, host: str, seconds: float) -> None:
         """Hold every client of this host back, not only this one."""
         slot = _host_slot(host, self._clock)
-        lock = slot[0]
-        assert isinstance(lock, threading.Lock)
-        with lock:
-            slot[1] = max(float(slot[1]), self._clock() + seconds)  # type: ignore[arg-type]
+        with slot.lock:
+            slot.ready_at = max(slot.ready_at, self._clock() + seconds)
 
     # ── requests ─────────────────────────────────────────────────────────
 
