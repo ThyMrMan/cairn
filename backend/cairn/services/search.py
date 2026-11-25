@@ -24,6 +24,7 @@ trailing `*` — are recognised deliberately rather than passed through.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -163,7 +164,7 @@ def index_capture(
     *,
     site: Site,
     capture: Capture,
-    pages: list[textextract.Page] | None = None,
+    pages: Iterable[textextract.Page] | None = None,
 ) -> int:
     """Put one capture's pages into the index, replacing older versions.
 
@@ -171,11 +172,12 @@ def index_capture(
     rather than accumulating a copy per capture. That is what makes a search
     result "the archive's current answer" instead of a list of every time the
     crawler saw the same page.
+
+    Pages are taken as they come, never gathered into a list: a capture's
+    text can run to gigabytes.
     """
     if pages is None:
-        pages = list(textextract.read_pages(settings, site.archive_path, capture.dir_name))
-    if not pages:
-        return 0
+        pages = textextract.read_pages(settings, site.archive_path, capture.dir_name)
 
     stamp = utcnow()
     indexed = 0

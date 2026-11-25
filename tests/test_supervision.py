@@ -360,6 +360,17 @@ def probe_step(order: int, into: list[bool], path: Path) -> postprocess.Step:
     return postprocess.Step(f"probe-{order}", order, False, probe)
 
 
+def extracted(n: int) -> SimpleNamespace:
+    """What `extract_capture` returns: counts, and the pages read on demand."""
+    pages = extracted_pages(n)
+    return SimpleNamespace(
+        pages=len(pages),
+        words=sum(len(p.text.split()) for p in pages),
+        dropped_blocks=0,
+        iter_pages=lambda: iter(pages),
+    )
+
+
 def extracted_pages(count: int) -> list[textextract.Page]:
     return [
         textextract.Page(
@@ -385,7 +396,7 @@ def test_post_processing_runs_with_the_database_writable(
     monkeypatch.setattr(
         textextract,
         "extract_capture",
-        lambda *_a, **_k: SimpleNamespace(pages=extracted_pages(3), dropped_blocks=0),
+        lambda *_a, **_k: extracted(3),
     )
     seen: list[bool] = []
     monkeypatch.setattr(
@@ -497,7 +508,7 @@ def test_text_is_indexed_in_short_transactions_of_its_own(
     monkeypatch.setattr(
         textextract,
         "extract_capture",
-        lambda *_a, **_k: SimpleNamespace(pages=extracted_pages(5), dropped_blocks=0),
+        lambda *_a, **_k: extracted(5),
     )
     monkeypatch.setattr(postprocess, "TEXT_INDEX_BATCH", 2)
 
