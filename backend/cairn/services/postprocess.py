@@ -19,6 +19,7 @@ optional step that fails is logged and skipped.
 from __future__ import annotations
 
 import hashlib
+import itertools
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -249,28 +250,28 @@ def step_text_extract(ctx: Context) -> None:
         return
     if ctx.write is None:
         indexed = search.index_capture(
-            ctx.session, ctx.settings, site=ctx.site, capture=ctx.capture, pages=result.pages
+            ctx.session, ctx.settings, site=ctx.site, capture=ctx.capture, pages=result.iter_pages()
         )
     else:
         # In batches, each its own transaction: indexing is a select, an
         # insert and two FTS statements per page, and a capture of thousands
         # of pages done in one go held the write lock for all of them. A
-        # batch is safe to repeat — rows are keyed on (site, url).
+        # batch is safe to repeat — rows are keyed on (site, url). Read from
+        # the file a batch at a time, so the capture is never in memory whole.
         indexed = 0
-        for start in range(0, len(result.pages), TEXT_INDEX_BATCH):
-            batch = result.pages[start : start + TEXT_INDEX_BATCH]
+        for batch in itertools.batched(result.iter_pages(), TEXT_INDEX_BATCH):
             indexed += ctx.write(
                 partial(
                     search.index_capture,
                     settings=ctx.settings,
                     site=ctx.site,
                     capture=ctx.capture,
-                    pages=batch,
+                    pages=list(batch),
                 ),
                 what=f"index the text of capture {ctx.capture.id}",
             )
     ctx.stats["text_pages"] = indexed
-    ctx.stats["text_words"] = sum(len(p.text.split()) for p in result.pages)
+    ctx.stats["text_words"] = result.words
     ctx.stats["text_boilerplate_blocks"] = result.dropped_blocks
 
 

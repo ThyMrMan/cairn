@@ -284,6 +284,7 @@ def _rebuild(
     site_root = storage.site_dir(settings, archive_path)
     target.parent.mkdir(parents=True, exist_ok=True)
     compiled = _compile(patterns)
+    redirects = _redirect_rules(patterns)
 
     lines: list[str] = []
     files: dict[str, _Warc] = {}
@@ -292,7 +293,7 @@ def _rebuild(
         # Before reading, so a WARC still growing is recorded smaller than it
         # ends up, and the next update reads it again.
         size, mtime_ns = _stat(warc)
-        kept, withheld, error = _index_warc_safely(site_root, warc, compiled)
+        kept, withheld, error = _index_warc_safely(site_root, warc, compiled, redirects)
         lines.extend(kept)
         files[_relative(site_root, warc)] = _Warc(size, mtime_ns, len(kept), withheld, error)
 
@@ -333,9 +334,10 @@ def _update(
         return _result(target, files, len(on_disk), read=0)
 
     compiled = _compile(patterns)
+    redirects = _redirect_rules(patterns)
     fresh: list[str] = []
     for name in sorted(new | changed):
-        kept, withheld, error = _index_warc_safely(site_root, on_disk[name], compiled)
+        kept, withheld, error = _index_warc_safely(site_root, on_disk[name], compiled, redirects)
         fresh.extend(kept)
         files[name] = _Warc(*seen[name], records=len(kept), withheld=withheld, error=error)
     fresh.sort()
@@ -364,7 +366,10 @@ def _result(
 
 
 def _index_warc(
-    site_root: Path, warc: Path, compiled: list[re.Pattern[str]]
+    site_root: Path,
+    warc: Path,
+    compiled: list[re.Pattern[str]],
+    redirects: list[re.Pattern[str]] | None = None,
 ) -> tuple[list[str], int]:
     """One WARC's lines, and how many of its records were withheld.
 
@@ -374,13 +379,20 @@ def _index_warc(
     the property an update depends on.
     """
     lines = cdxj_lines(site_root, [warc])
+    dropped = 0
+    if redirects:
+        lines, dropped = _drop_redirects_to(warc, lines, redirects)
     if not compiled:
-        return lines, 0
-    return _drop_matching(lines, compiled)
+        return lines, dropped
+    kept, more = _drop_matching(lines, compiled)
+    return kept, dropped + more
 
 
 def _index_warc_safely(
-    site_root: Path, warc: Path, compiled: list[re.Pattern[str]]
+    site_root: Path,
+    warc: Path,
+    compiled: list[re.Pattern[str]],
+    redirects: list[re.Pattern[str]] | None = None,
 ) -> tuple[list[str], int, str | None]:
     """`_index_warc`, with one unreadable WARC kept from sinking the rest.
 
@@ -391,7 +403,7 @@ def _index_warc_safely(
     error and indexed as empty; it is read again only when it changes.
     """
     try:
-        kept, withheld = _index_warc(site_root, warc, compiled)
+        kept, withheld = _index_warc(site_root, warc, compiled, redirects)
     except ReplayError as exc:
         log.warning(
             "left an unreadable WARC out of the index", extra={"warc": str(warc), "error": str(exc)}
@@ -575,6 +587,8 @@ def withheld_patterns(session: Any, site: Any) -> list[str]:
         patterns = list(site_service.resolved_scope(session, site).all_reject_patterns)
     except Exception:  # pragma: no cover — a site mid-delete
         return []
+    # A site's rate-limit page is never content (docs/19, 0.5).
+    patterns += rate_limit_rules((site.scope_settings or {}).get("rate_limit_page"))
 
     companion = discovery_service.companion_pass_for(site)
     if companion is None:
@@ -606,11 +620,80 @@ def _compile(patterns: list[str]) -> list[re.Pattern[str]]:
     """
     compiled = []
     for pattern in patterns:
+        if pattern.startswith(REDIRECT_RULE):
+            continue
         try:
             compiled.append(re.compile(pattern))
         except re.error as exc:
             log.warning("skipping an unusable withhold pattern", extra={"err": str(exc)})
     return compiled
+
+
+# A withhold rule on where a redirect points rather than on its own URL. It
+# exists for sites that rate-limit by redirecting to an error page served with
+# 200 (fictionmania's /err429.html, docs/18): the crawl records the story URL
+# as a redirect to that page, and replaying it shows the error in place of the
+# story — and shadows a good copy from another capture.
+REDIRECT_RULE = "redirect-to:"
+
+
+def rate_limit_rules(page: str | None) -> list[str]:
+    """Withhold rules for a site's rate-limit page: the page, and redirects to it."""
+    if not page:
+        return []
+    return [page, f"{REDIRECT_RULE}{page}"]
+
+
+def _redirect_rules(patterns: list[str]) -> list[re.Pattern[str]]:
+    rules = []
+    for pattern in patterns:
+        if pattern.startswith(REDIRECT_RULE):
+            try:
+                rules.append(re.compile(pattern[len(REDIRECT_RULE) :], re.I))
+            except re.error as exc:
+                log.warning("skipping an unusable redirect rule", extra={"err": str(exc)})
+    return rules
+
+
+def _drop_redirects_to(
+    warc: Path, lines: list[str], rules: list[re.Pattern[str]]
+) -> tuple[list[str], int]:
+    """Drop index lines for redirects whose Location matches a rule.
+
+    The index line has no Location, so the WARC is read for it — only when a
+    rule exists and only the 3xx records' headers.
+    """
+    if not any('"status": "3' in line for line in lines):
+        return lines, 0
+    from warcio.archiveiterator import ArchiveIterator
+
+    offsets: set[str] = set()
+    with warc.open("rb") as fh:
+        records = ArchiveIterator(fh)
+        for record in records:
+            if record.rec_type != "response" or record.http_headers is None:
+                continue
+            status = record.http_headers.get_statuscode() or ""
+            if not status.startswith("3"):
+                continue
+            location = record.http_headers.get_header("Location") or ""
+            if location and any(rule.search(location) for rule in rules):
+                offsets.add(str(records.get_record_offset()))
+    if not offsets:
+        return lines, 0
+    keep: list[str] = []
+    dropped = 0
+    for line in lines:
+        parts = line.split(" ", 2)
+        try:
+            fields = json.loads(parts[2]) if len(parts) == 3 else {}
+        except ValueError:  # pragma: no cover — the indexer writes JSON
+            fields = {}
+        if str(fields.get("status", "")).startswith("3") and str(fields.get("offset")) in offsets:
+            dropped += 1
+            continue
+        keep.append(line)
+    return keep, dropped
 
 
 def _drop_matching(lines: list[str], compiled: list[re.Pattern[str]]) -> tuple[list[str], int]:

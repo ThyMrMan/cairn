@@ -38,7 +38,7 @@ import hashlib
 import json
 import re
 from collections import Counter
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from pathlib import Path
@@ -158,10 +158,17 @@ class Page:
 
 @dataclass(slots=True)
 class ExtractResult:
+    """What an extraction wrote. The pages stay on disk: `iter_pages` reads them."""
+
     path: Path | None
-    pages: list[Page]
+    pages: int
+    words: int
     scanned: int
     dropped_blocks: int
+
+    def iter_pages(self) -> Iterator[Page]:
+        if self.path is not None:
+            yield from _read_jsonl(self.path)
 
 
 # ── the parser ───────────────────────────────────────────────────────────
@@ -321,8 +328,11 @@ def read_pages(settings: Settings, archive_path: str, capture_dir: str) -> Itera
     a re-parse of gigabytes of WARC.
     """
     path = text_path(settings, archive_path, capture_dir)
-    if not path.is_file():
-        return
+    if path.is_file():
+        yield from _read_jsonl(path)
+
+
+def _read_jsonl(path: Path) -> Iterator[Page]:
     with open(path, "rb") as fh:
         offset = 0
         for raw in fh:
@@ -367,10 +377,14 @@ def read_page_at(path: Path, offset: int, length: int) -> Page | None:
 def extract_capture(settings: Settings, archive_path: str, capture_dir: str) -> ExtractResult:
     """Extract every HTML page of one capture into `derived/text/<capture>.jsonl`.
 
-    One pass over the WARCs, because they are the large thing. The repetition
-    filter needs the whole capture before it can decide anything, so pages are
-    held as blocks in memory — text only, no markup, and bounded per page —
-    and written once the counts are known.
+    One pass over the WARCs, because they are the large thing. Each page is
+    parsed once and spooled to disk beside the output, and every later pass —
+    finding the boilerplate, writing the result — reads the spool one page at
+    a time, so memory does not grow with the capture.
+
+    It used to. Every page was held as blocks until the end, and a Wayback
+    import, which grows a segment at a time and is extracted again after each,
+    reached a 2 GB text file and a 12 GB app process that Python then kept.
     """
     try:
         from warcio.archiveiterator import ArchiveIterator
@@ -379,35 +393,61 @@ def extract_capture(settings: Settings, archive_path: str, capture_dir: str) -> 
 
     warcs = _warcs(settings, archive_path, capture_dir)
     if not warcs:
-        return ExtractResult(path=None, pages=[], scanned=0, dropped_blocks=0)
-
-    # Keyed by URL: a WARC can hold the same page twice, and the later record
-    # is the one the index will serve.
-    pages: dict[str, Page] = {}
-    scanned = 0
-    for warc in warcs:
-        try:
-            with open(warc, "rb") as fh:
-                for record in ArchiveIterator(fh):
-                    page = _page_from(record)
-                    if page is None:
-                        continue
-                    scanned += 1
-                    pages[page.url] = page
-        except Exception as exc:
-            log.warning(
-                "text extraction could not read a WARC",
-                extra={"warc": warc.name, "err": str(exc)},
-            )
-            continue
-
-    ordered = list(pages.values())
-    dropped = _drop_repeated(ordered)
-    ordered = [p for p in ordered if p.blocks]
+        return ExtractResult(path=None, pages=0, words=0, scanned=0, dropped_blocks=0)
 
     path = text_path(settings, archive_path, capture_dir)
-    _write_jsonl(path, ordered)
-    return ExtractResult(path=path, pages=ordered, scanned=scanned, dropped_blocks=dropped)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    spool = path.with_name(f"{path.name}.spool")
+    try:
+        with open(spool, "w+b") as sp:
+            # Keyed by URL: a WARC can hold the same page twice, and the later
+            # record is the one the index will serve. Only where each page sits
+            # in the spool is held here, and how many distinct blocks it has.
+            latest: dict[str, tuple[int, int, int]] = {}
+            scanned = 0
+            for warc in warcs:
+                try:
+                    with open(warc, "rb") as fh:
+                        for record in ArchiveIterator(fh):
+                            page = _page_from(record)
+                            if page is None:
+                                continue
+                            scanned += 1
+                            raw = _encode(page)
+                            latest[page.url] = (sp.tell(), len(raw), len(_keys(page)))
+                            sp.write(raw)
+                except Exception as exc:
+                    log.warning(
+                        "text extraction could not read a WARC",
+                        extra={"warc": warc.name, "err": str(exc)},
+                    )
+                    continue
+
+            def spooled() -> Iterator[Page]:
+                for offset, length, _ in latest.values():
+                    sp.seek(offset)
+                    yield _decode(sp.read(length))
+
+            common = _common_keys(
+                lambda: (_keys(p) for p in spooled()),
+                pages=len(latest),
+                keys=sum(n for _, _, n in latest.values()),
+            )
+            written = words = dropped = 0
+            with storage.atomic_writer(path) as out:
+                for page in spooled():
+                    dropped += _drop_blocks(page, common)
+                    if not page.blocks:
+                        continue
+                    out.write(_encode(page))
+                    written += 1
+                    words += sum(len(b.split()) for b in page.blocks)
+    finally:
+        with contextlib.suppress(OSError):
+            spool.unlink()
+    return ExtractResult(
+        path=path, pages=written, words=words, scanned=scanned, dropped_blocks=dropped
+    )
 
 
 def _page_from(record: Any) -> Page | None:
@@ -435,36 +475,109 @@ def _page_from(record: Any) -> Page | None:
     )
 
 
-def _drop_repeated(pages: list[Page]) -> int:
-    """Remove blocks that appear on most of the capture's pages.
+# ── blocks on most pages ─────────────────────────────────────────────────
 
-    Returns how many block occurrences went, which is what makes the effect
-    visible in the capture report rather than something to take on trust.
+
+def _common_keys(keysets: Callable[[], Iterator[set[str]]], *, pages: int, keys: int) -> set[str]:
+    """Keys of the blocks on at least `REPEAT_SHARE` of `pages` pages.
+
+    `keysets` is called twice and must give each page's set of block keys the
+    same way both times; `keys` is the total size of those sets. Counting
+    every block exactly is what held tens of millions of keys at once, so the
+    first pass narrows them to candidates and the second counts only those.
+
+    The narrowing is the Misra-Gries summary: with k counters over a stream
+    of `keys` items, every item occurring more than keys/(k+1) times survives.
+    A common block occurs at least `threshold` times, so k is chosen to make
+    keys/(k+1) fall below that. It comes to about twice the blocks on an
+    average page: memory follows the size of a page, not of the capture, and
+    the answer is exact.
     """
-    if len(pages) < REPEAT_MIN_PAGES:
-        return 0
-    threshold = max(REPEAT_MIN_PAGES, int(len(pages) * REPEAT_SHARE))
+    if pages < REPEAT_MIN_PAGES:
+        return set()
+    threshold = max(REPEAT_MIN_PAGES, int(pages * REPEAT_SHARE))
+    capacity = keys // threshold + 1
 
+    counters: dict[str, int] = {}
+    for keyset in keysets():
+        for key in keyset:
+            if key in counters:
+                counters[key] += 1
+            elif len(counters) < capacity:
+                counters[key] = 1
+            else:
+                for other in list(counters):
+                    counters[other] -= 1
+                    if not counters[other]:
+                        del counters[other]
+    if not counters:
+        return set()
+
+    candidates = set(counters)
     counts: Counter[str] = Counter()
-    for page in pages:
-        counts.update({_key(b) for b in page.blocks})
-    common = {key for key, n in counts.items() if n >= threshold}
+    for keyset in keysets():
+        counts.update(keyset & candidates)
+    return {key for key, n in counts.items() if n >= threshold}
+
+
+def _keys(page: Page) -> set[str]:
+    return {_key(b) for b in page.blocks}
+
+
+def _drop_blocks(page: Page, common: set[str]) -> int:
+    """Remove the `common` blocks from one page; return how many went."""
     if not common:
         return 0
-
-    dropped = 0
-    for page in pages:
-        # Filtered in lockstep: the two lists are positional, so dropping a
-        # block without its kind silently shifts every heading after it.
-        keep = [i for i, b in enumerate(page.blocks) if _key(b) not in common]
-        dropped += len(page.blocks) - len(keep)
+    # Filtered in lockstep: the two lists are positional, so dropping a
+    # block without its kind silently shifts every heading after it.
+    keep = [i for i, b in enumerate(page.blocks) if _key(b) not in common]
+    dropped = len(page.blocks) - len(keep)
+    if dropped:
         page.kinds = [page.kind_of(i) for i in keep]
         page.blocks = [page.blocks[i] for i in keep]
     return dropped
 
 
+def _drop_repeated(pages: list[Page]) -> int:
+    """Remove blocks that appear on most of `pages`, held in memory.
+
+    Returns how many block occurrences went, which is what makes the effect
+    visible in the capture report rather than something to take on trust.
+    """
+    sets = [_keys(p) for p in pages]
+    common = _common_keys(lambda: iter(sets), pages=len(sets), keys=sum(map(len, sets)))
+    return sum(_drop_blocks(page, common) for page in pages)
+
+
 def _key(block: str) -> str:
     return hashlib.blake2b(block.encode("utf-8", "replace"), digest_size=16).hexdigest()
+
+
+def _encode(page: Page) -> bytes:
+    return (
+        json.dumps(
+            {
+                "url": page.url,
+                "title": page.title,
+                "ts": page.timestamp,
+                "blocks": page.blocks,
+                "kinds": page.kinds,
+            },
+            ensure_ascii=False,
+        )
+        + "\n"
+    ).encode("utf-8")
+
+
+def _decode(raw: bytes) -> Page:
+    doc = json.loads(raw)
+    return Page(
+        url=str(doc.get("url") or ""),
+        title=str(doc.get("title") or ""),
+        blocks=[str(b) for b in (doc.get("blocks") or [])],
+        kinds=[str(k) for k in (doc.get("kinds") or [])],
+        timestamp=str(doc.get("ts") or ""),
+    )
 
 
 def _write_jsonl(path: Path, pages: list[Page]) -> None:
@@ -474,27 +587,14 @@ def _write_jsonl(path: Path, pages: list[Page]) -> None:
     half-written text file would be read by the indexer as a capture that
     stops halfway through the alphabet.
     """
-    chunks: list[bytes] = []
     offset = 0
-    for page in pages:
-        raw = (
-            json.dumps(
-                {
-                    "url": page.url,
-                    "title": page.title,
-                    "ts": page.timestamp,
-                    "blocks": page.blocks,
-                    "kinds": page.kinds,
-                },
-                ensure_ascii=False,
-            )
-            + "\n"
-        ).encode("utf-8")
-        page.offset = offset
-        page.length = len(raw)
-        offset += len(raw)
-        chunks.append(raw)
-    storage.write_atomic(path, b"".join(chunks))
+    with storage.atomic_writer(path) as out:
+        for page in pages:
+            raw = _encode(page)
+            page.offset = offset
+            page.length = len(raw)
+            offset += len(raw)
+            out.write(raw)
 
 
 def remove_capture_text(settings: Settings, archive_path: str, capture_dir: str) -> None:

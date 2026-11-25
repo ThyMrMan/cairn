@@ -17,7 +17,13 @@ from cairn.db.models import Capture, Job, Site
 from cairn.db.types import utcnow
 from cairn.engines.registry import EngineError
 from cairn.services import audit
-from cairn.services.events import EV_STATUS, BusEvent, EventBus, format_sse
+from cairn.services.events import (
+    EV_STATUS,
+    TERMINAL_STATUSES,
+    BusEvent,
+    EventBus,
+    format_sse,
+)
 from cairn.services.jobs import PHASE_POSTPROCESSING
 
 router = APIRouter(tags=["jobs"], dependencies=[Csrf])
@@ -444,9 +450,6 @@ def clear_jobs(
 
 
 # ── SSE ──────────────────────────────────────────────────────────────────
-
-
-TERMINAL_STATUSES = frozenset({"ok", "partial", "failed", "cancelled", "interrupted"})
 
 
 def _is_terminal(event: BusEvent) -> bool:

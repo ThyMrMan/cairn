@@ -1671,6 +1671,11 @@ class JobSupervisor:
                     if key in scope.politeness:
                         config[key] = scope.politeness[key]
                 config["keep_mirror"] = site.keep_mirror
+                # The site's disguised-429 page, so the crawl can stop when it
+                # starts landing there (docs/19, 0.5).
+                rate_page = (site.scope_settings or {}).get("rate_limit_page")
+                if rate_page:
+                    config["rate_limit_page"] = rate_page
 
             started = utcnow()
 
@@ -2235,6 +2240,8 @@ class JobSupervisor:
                 "bytes": collector.bytes_written,
                 "status": status,
             }
+            if status == "partial" and collector.stats.get("rate_limited"):
+                job.error = (collector.error or "stopped: the site is rate-limiting")[:2000]
             if status == "partial" and collector.stats.get("abnormal_exit"):
                 # The engine stopped, not just some URLs: a full disk reads as
                 # an ordinary partial crawl unless it is said out loud.

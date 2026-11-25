@@ -182,8 +182,8 @@ def test_a_whole_capture_comes_out_with_the_furniture_gone(
     site, capture = archived()
     result = textextract.extract_capture(settings, site.archive_path, capture.dir_name)
 
-    assert len(result.pages) == 4
-    joined = "\n".join(p.text for p in result.pages)
+    assert result.pages == 4
+    joined = "\n".join(p.text for p in result.iter_pages())
     assert "machair in flower" in joined
     assert not any(t in joined for t in SIDEBAR_TITLES)
     assert "Powered by Blogger" not in joined
@@ -213,7 +213,7 @@ def test_repetition_catches_what_class_names_cannot(
     site, capture = archived(builder=plain_page)
     result = textextract.extract_capture(settings, site.archive_path, capture.dir_name)
 
-    joined = "\n".join(p.text for p in result.pages)
+    joined = "\n".join(p.text for p in result.iter_pages())
     assert "machair in flower" in joined
     assert not any(t in joined for t in SIDEBAR_TITLES)
     assert "About this blog" not in joined
@@ -235,7 +235,7 @@ def test_a_single_page_capture_keeps_everything(settings: Settings, tmp_path: Pa
 
     assert root.exists()
     assert result.dropped_blocks == 0
-    assert "machair in flower" in result.pages[0].text
+    assert "machair in flower" in next(result.iter_pages()).text
 
 
 def test_extraction_writes_a_seekable_file(archived, settings: Settings) -> None:
@@ -243,7 +243,7 @@ def test_extraction_writes_a_seekable_file(archived, settings: Settings) -> None
     result = textextract.extract_capture(settings, site.archive_path, capture.dir_name)
     assert result.path is not None
 
-    for page in result.pages:
+    for page in result.iter_pages():
         again = textextract.read_page_at(result.path, page.offset, page.length)
         assert again is not None
         assert again.url == page.url

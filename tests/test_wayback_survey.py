@@ -392,6 +392,8 @@ def test_the_survey_counts_what_an_import_would_fetch() -> None:
     assert report["boilerplate"]["shared_digests"] == {"BOIL": 25}
     assert report["urls_only_error_pages"] == 26  # story 4 and the 25 boilerplate pages
     assert report["selected"] == {"total": 5, "pages": 4, "assets": 1}
+    # Every listed row says 1,234 bytes: the estimate is their sum.
+    assert report["size"] == {"bytes": 5 * 1234, "pages": 4 * 1234, "assets": 1234, "unknown": 0}
     assert report["freshness"]["pages"] == {"2017": 1, "2019": 2, "2021": 1}
     # The breakdown a user reads to decide what else to reject.
     sections = {(s["section"], s["kind"]): s["count"] for s in report["sections"]}
@@ -622,3 +624,9 @@ def test_the_plainest_address_of_an_item_wins_over_a_tracking_variant() -> None:
     result = wb.reduce(rows(lines), wb.ScopeFilter(fm_scope()), wb.parse_groups([STORIES]))
     (only,) = result.selected
     assert only.url == plain
+
+
+def test_a_row_without_a_length_is_counted_as_unknown() -> None:
+    line = cdx_line(story("readtextstory", 9), "20190101000000").rsplit(" ", 1)[0] + " -"
+    result = wb.reduce(rows([line]), wb.ScopeFilter(fm_scope()), wb.parse_groups([STORIES]))
+    assert result.report["size"] == {"bytes": 0, "pages": 0, "assets": 0, "unknown": 1}

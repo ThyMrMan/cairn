@@ -1000,7 +1000,8 @@ export type WaybackSurvey = {
     newest: string | null;
     oldest: string | null;
   };
-  sections?: { section: string; kind: string; count: number }[];
+  sections?: { section: string; kind: string; count: number; bytes?: number }[];
+  size?: { bytes: number; pages: number; assets: number; unknown: number };
   estimate?: { rate_per_min: number; fetches: number; hours: number };
   discovered?: {
     discovered: number;

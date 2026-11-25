@@ -76,6 +76,7 @@ Effort: M–L.
 - **Settings live in `sites.scope_settings`**, not in the scope tables: `url_groups`, `rate_limit_page`, and `wayback.live_items`.
 - **0.2 is half done.** Job types can name a fixed host (`FIXED_HOST_JOB_TYPES`), and `_busy_hosts` now asks `_host_for_job` per job. The engine capability `network_host` comes with Stage 2, when an engine first needs it.
 - **Shutdown stops a survey.** The survey runs on a worker thread that can sit in an archive.org backoff for up to an hour. It checks the supervisor's stopping flag as well as cancel, so a restart doesn't wait for it.
+- **Added beyond the plan: a size estimate** (2026-11-02). The report sums the CDX `length` of every selected snapshot, which is archive.org's compressed WARC record size. The total is split into pages and assets, with a count of rows that list no length; each section in the breakdown carries its share too. It leans high, because copies archived uncompressed are counted at full size but arrive and are stored gzipped. The October fictionmania pull did not request `length`, so its size is unknown until the survey runs in the app.
 - **Added beyond the plan: "Biggest parts of the import".** This breakdown by first path segment is what showed the noise in fictionmania's import (below).
 
 **Run against the real fictionmania listing** (the 98 pages from 17, reduced in about 6 s). The settings were the stories group, `/err429\.html` as the rate-limit page, and `/review/` rejected:
@@ -140,6 +141,16 @@ Rejecting `report.html`, the listings and `/cdn-cgi/` would bring the import to 
 **Done when** a 500-story fictionmania import replays correctly. Then the full import runs unattended for about 4 days at 10/min.
 
 Effort: L.
+
+### 0.5 as built (2026-11-02)
+
+The site's `rate_limit_page` (set on the Wayback card) now does three things:
+
+- **Wayback copies of it are skipped**, as before.
+- **wget stops.** The engine checks each CDX record's URL and redirect target. After 3 hits (`rate_limit_stop_after`) it stops wget and reports `partial` with `rate_limited`, and the job's error says why. Real fictionmania CDX lines carry the target as `/err429.html`.
+- **Replay hides it.** `replay.withheld_patterns` adds the page and a `redirect-to:` rule. Indexing reads the Location of 3xx records only when such a rule exists. Saving a changed page on the card rebuilds the replay index. On the real 30 Oct capture this withheld 5,128 of 5,557 records (each block left a redirect and an error-page copy), leaving 429.
+
+Not done: the crawl stops but doesn't come back by itself, because wget can't resume. The gap crawl (Stage 3) is where a slow, resumable pass belongs.
 
 ### Stage 2 as built
 

@@ -17,6 +17,7 @@ subscriber has a bounded queue and is marked lagged rather than waited on.
 from __future__ import annotations
 
 import asyncio
+import time
 from collections import deque
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -29,6 +30,11 @@ from cairn.logging import get_logger
 log = get_logger(__name__)
 
 BUFFER_PER_JOB = 500
+# How long a finished job's buffer outlives it: long enough for a tab that
+# was watching to reconnect and be told how it ended, short enough that an
+# instance running for months does not hold one buffer per job it ever ran.
+FINISHED_RETAIN_SECONDS = 600.0
+SWEEP_SECONDS = 60.0
 SUBSCRIBER_QUEUE_SIZE = 1000
 HEARTBEAT_SECONDS = 15.0
 
@@ -40,6 +46,11 @@ EV_URL = "url"
 EV_WARNING = "warning"
 EV_ARTIFACT = "artifact"
 EV_LAGGED = "lagged"
+
+# Statuses after which a job publishes nothing more. A capture that paused
+# itself ends its job too: the resume is a new job.
+TERMINAL_STATUSES = frozenset({"ok", "partial", "failed", "cancelled", "interrupted"})
+ENDED_STATUSES = TERMINAL_STATUSES | {"paused"}
 
 
 @dataclass(slots=True)
@@ -73,11 +84,22 @@ class _Subscriber:
 
 
 class EventBus:
-    def __init__(self, buffer_per_job: int = BUFFER_PER_JOB) -> None:
+    def __init__(
+        self,
+        buffer_per_job: int = BUFFER_PER_JOB,
+        *,
+        retain_s: float = FINISHED_RETAIN_SECONDS,
+        clock: Any = time.monotonic,
+    ) -> None:
         self._seq = 0
         self._buffer_size = buffer_per_job
         self._buffers: dict[int, deque[BusEvent]] = {}
         self._subscribers: set[_Subscriber] = set()
+        self._retain_s = retain_s
+        self._clock = clock
+        # Job id -> when it published its final status.
+        self._ended: dict[int, float] = {}
+        self._next_sweep = 0.0
 
     # ── publishing ───────────────────────────────────────────────────────
 
@@ -90,6 +112,12 @@ class EventBus:
             if buffer is None:
                 buffer = self._buffers[job_id] = deque(maxlen=self._buffer_size)
             buffer.append(item)
+            if event == EV_STATUS:
+                if data.get("status") in ENDED_STATUSES:
+                    self._ended[job_id] = self._clock()
+                else:
+                    self._ended.pop(job_id, None)
+        self._sweep()
 
         for sub in self._subscribers:
             if sub.job_id is not None and sub.job_id != job_id:
@@ -109,6 +137,22 @@ class EventBus:
         it has ever run.
         """
         self._buffers.pop(job_id, None)
+        self._ended.pop(job_id, None)
+
+    def _sweep(self) -> None:
+        """Release the buffers of jobs that finished a while ago.
+
+        Every job used to keep its buffer until somebody deleted the job row,
+        which on an instance left running meant one buffer for every job since
+        it started.
+        """
+        now = self._clock()
+        if now < self._next_sweep:
+            return
+        self._next_sweep = now + SWEEP_SECONDS
+        expired = [j for j, at in self._ended.items() if now - at >= self._retain_s]
+        for job_id in expired:
+            self.forget(job_id)
 
     # ── history ──────────────────────────────────────────────────────────
 

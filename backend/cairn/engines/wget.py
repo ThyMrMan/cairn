@@ -316,6 +316,18 @@ class Runner:
         # reconciled at the end of the crawl. See `_report_revisits`.
         self._cdx_urls: set[str] = set()
         self._log_urls: dict[str, None] = {}
+        # A site that rate-limits by redirecting to an error page served with
+        # 200 (fictionmania's /err429.html, docs/18). Each further request
+        # while blocked only archives the error page and keeps the block in
+        # place, so the crawl stops after a few (docs/19, 0.5).
+        page = str(spec.config.get("rate_limit_page") or "").strip()
+        try:
+            self._rate_page = re.compile(page, re.I) if page else None
+        except re.error:
+            self._rate_page = None
+        self._rate_hits = 0
+        self._rate_stop_after = max(int(spec.config.get("rate_limit_stop_after") or 3), 1)
+        self.rate_limited = False
 
     # ── lifecycle ────────────────────────────────────────────────────────
 
@@ -403,6 +415,23 @@ class Runner:
         code = self._finish(cdx, crawl_log, started)
         return code
 
+    def _check_rate_limit(self, url: str, redirect: str | None) -> None:
+        if self._rate_page is None or self.rate_limited:
+            return
+        if not (self._rate_page.search(url) or (redirect and self._rate_page.search(redirect))):
+            return
+        self._rate_hits += 1
+        if self._rate_hits < self._rate_stop_after:
+            return
+        self.rate_limited = True
+        self.events.warning(
+            "rate_limited",
+            f"The site is rate-limiting: {self._rate_hits} requests landed on its error page "
+            f"({redirect or url}). Stopping now: carrying on would only archive that page "
+            "and keep the block in place.",
+        )
+        self.request_stop(signal.SIGTERM, None)
+
     def _over_limit(self, started: float) -> bool:
         limit = self.spec.limits.max_duration_s
         if limit and (time.monotonic() - started) > limit:
@@ -442,6 +471,19 @@ class Runner:
             "wget_exit": code,
         }
 
+        if self.rate_limited:
+            stats["rate_limited"] = True
+            stats["rate_limit_hits"] = self._rate_hits
+            self.events.result(
+                "partial",
+                stats,
+                error=(
+                    f"Stopped: the site started rate-limiting after {self.urls} URL(s) "
+                    "(requests were redirected to its error page). Those pages are not "
+                    "replayed. Try again later with a longer delay between requests."
+                ),
+            )
+            return 0
         if self.terminating:
             self.events.result("partial", stats, error="cancelled")
             return 0
@@ -498,6 +540,7 @@ class Runner:
                 continue
             self.urls += 1
             self._cdx_urls.add(record["url"])
+            self._check_rate_limit(record["url"], record["redirect"])
             status = record["status"]
             if status is not None and status >= 400:
                 self.errors += 1
