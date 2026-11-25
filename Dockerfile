@@ -98,10 +98,13 @@ ENV PATH="/opt/venv/bin:$PATH" \
     S6_BEHAVIOUR_IF_STAGE2_FAILS=2 \
     S6_KEEP_ENV=1
 
+# libatomic1 is for Playwright's bundled Node driver, which links against it
+# from 1.65 on. `playwright install --with-deps` below cannot add it: the
+# driver that would do the installing is the thing that will not start.
 RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
-        wget ca-certificates tzdata curl xz-utils gosu; \
+        wget ca-certificates tzdata curl xz-utils gosu libatomic1; \
     rm -rf /var/lib/apt/lists/*
 
 # The scope regexes in the wget engine rely on lookahead, which POSIX ERE does

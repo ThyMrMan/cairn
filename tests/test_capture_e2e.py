@@ -318,7 +318,11 @@ def test_temp_directory_is_cleaned_up(
 ) -> None:
     """Plaintext cookie jars live there for the life of the job."""
     job, _site_id = run_capture(authed, site_server)
-    leftovers = list(settings.tmp_dir.glob("job-*"))
+    # The directory goes as the job's very last step, a moment after its row
+    # says `ok`, so a quick poll can land in between. Allow it a few seconds.
+    deadline = time.monotonic() + 5
+    while (leftovers := list(settings.tmp_dir.glob("job-*"))) and time.monotonic() < deadline:
+        time.sleep(0.05)
     assert leftovers == [], f"job directory survived: {leftovers}"
     assert job["status"] == "ok"
 
